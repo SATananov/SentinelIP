@@ -11,8 +11,15 @@ function App() {
   const [events, setEvents] = useState([])
   const [error, setError] = useState(null)
 
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
+
+  const [severityFilter, setSeverityFilter] = useState('ALL')
+  const [ipFilter, setIpFilter] = useState('ALL')
+
   async function loadData() {
     try {
+      setIsRefreshing(true)
       setError(null)
 
       const [
@@ -26,7 +33,7 @@ function App() {
         fetch(`${API_BASE}/stats/severity`),
         fetch(`${API_BASE}/stats/top-ips?limit=5`),
         fetch(`${API_BASE}/alerts?limit=5`),
-        fetch(`${API_BASE}/events?limit=10`),
+        fetch(`${API_BASE}/events?limit=100`),
       ])
 
       if (
@@ -58,9 +65,12 @@ function App() {
       setTopIps(topIpsData.items)
       setAlerts(alertsData.alerts)
       setEvents(eventsData.events)
+      setLastUpdated(new Date())
     } catch (err) {
       setError(err.message)
       setHealth(null)
+    } finally {
+      setIsRefreshing(false)
     }
   }
 
@@ -103,8 +113,34 @@ function App() {
     [severitySummary],
   )
 
+  const sourceIps = useMemo(() => {
+    return [...new Set(events.map((event) => event.source_ip))].sort()
+  }, [events])
+
+  const filteredEvents = useMemo(() => {
+    return events.filter((event) => {
+      const matchesSeverity =
+        severityFilter === 'ALL' ||
+        event.severity === severityFilter
+
+      const matchesIp =
+        ipFilter === 'ALL' ||
+        event.source_ip === ipFilter
+
+      return matchesSeverity && matchesIp
+    })
+  }, [events, severityFilter, ipFilter])
+
   function severityClass(value) {
     return `severity-badge severity-${value.toLowerCase()}`
+  }
+
+  function formatUpdatedTime(value) {
+    if (!value) {
+      return 'Waiting for first update'
+    }
+
+    return value.toLocaleTimeString()
   }
 
   return (
@@ -118,13 +154,30 @@ function App() {
           </p>
         </div>
 
-        <div
-          className={`status ${
-            health?.status === 'ok' ? 'online' : 'offline'
-          }`}
-        >
-          <span className="status-dot" />
-          {health?.status === 'ok' ? 'API Online' : 'API Offline'}
+        <div className="header-actions">
+          <div
+            className={`status ${
+              health?.status === 'ok' ? 'online' : 'offline'
+            }`}
+          >
+            <span className="status-dot" />
+            {health?.status === 'ok'
+              ? 'API Online'
+              : 'API Offline'}
+          </div>
+
+          <button
+            className="refresh-button"
+            type="button"
+            onClick={loadData}
+            disabled={isRefreshing}
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh now'}
+          </button>
+
+          <span className="last-updated">
+            Last updated: {formatUpdatedTime(lastUpdated)}
+          </span>
         </div>
       </header>
 
@@ -165,13 +218,23 @@ function App() {
         </div>
 
         {topIps.length === 0 ? (
-          <p className="empty-state">No source IP data.</p>
+          <p className="empty-state">
+            No source IP data.
+          </p>
         ) : (
           <div className="simple-list">
             {topIps.map((item) => (
-              <div className="list-row" key={item.source_ip}>
-                <span className="mono">{item.source_ip}</span>
-                <strong>{item.event_total} events</strong>
+              <div
+                className="list-row"
+                key={item.source_ip}
+              >
+                <span className="mono">
+                  {item.source_ip}
+                </span>
+
+                <strong>
+                  {item.event_total} events
+                </strong>
               </div>
             ))}
           </div>
@@ -197,9 +260,16 @@ function App() {
         ) : (
           <div className="alert-list">
             {alerts.map((alert) => (
-              <article className="alert-item" key={alert.id}>
+              <article
+                className="alert-item"
+                key={alert.id}
+              >
                 <div className="alert-item-top">
-                  <span className={severityClass(alert.severity)}>
+                  <span
+                    className={severityClass(
+                      alert.severity,
+                    )}
+                  >
                     {alert.severity}
                   </span>
 
@@ -212,10 +282,19 @@ function App() {
 
                 <div className="alert-meta">
                   <span>
-                    Source: <b className="mono">{alert.source_ip}</b>
+                    Source:{' '}
+                    <b className="mono">
+                      {alert.source_ip}
+                    </b>
                   </span>
-                  <span>Event: {alert.event_type}</span>
-                  <span>Count: {alert.event_count}</span>
+
+                  <span>
+                    Event: {alert.event_type}
+                  </span>
+
+                  <span>
+                    Count: {alert.event_count}
+                  </span>
                 </div>
               </article>
             ))}
@@ -224,19 +303,69 @@ function App() {
       </section>
 
       <section className="panel">
-        <div className="panel-heading">
+        <div className="panel-heading events-heading">
           <div>
             <p className="panel-kicker">Live History</p>
             <h2>Recent Events</h2>
           </div>
 
           <span className="panel-count">
-            {events.length}
+            {filteredEvents.length}/{events.length}
           </span>
         </div>
 
-        {events.length === 0 ? (
-          <p className="empty-state">No events recorded.</p>
+        <div className="filters">
+          <label>
+            <span>Severity</span>
+
+            <select
+              value={severityFilter}
+              onChange={(event) =>
+                setSeverityFilter(event.target.value)
+              }
+            >
+              <option value="ALL">All severities</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ALERT">ALERT</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Source IP</span>
+
+            <select
+              value={ipFilter}
+              onChange={(event) =>
+                setIpFilter(event.target.value)
+              }
+            >
+              <option value="ALL">All source IPs</option>
+
+              {sourceIps.map((ip) => (
+                <option key={ip} value={ip}>
+                  {ip}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            className="clear-filters"
+            type="button"
+            onClick={() => {
+              setSeverityFilter('ALL')
+              setIpFilter('ALL')
+            }}
+          >
+            Clear filters
+          </button>
+        </div>
+
+        {filteredEvents.length === 0 ? (
+          <p className="empty-state">
+            No events match the selected filters.
+          </p>
         ) : (
           <div className="event-table">
             <div className="event-row event-head">
@@ -247,14 +376,21 @@ function App() {
               <span>Count</span>
             </div>
 
-            {events.map((event) => (
-              <div className="event-row" key={event.id}>
+            {filteredEvents.map((event) => (
+              <div
+                className="event-row"
+                key={event.id}
+              >
                 <span className="event-time">
                   {event.timestamp}
                 </span>
 
                 <span>
-                  <span className={severityClass(event.severity)}>
+                  <span
+                    className={severityClass(
+                      event.severity,
+                    )}
+                  >
                     {event.severity}
                   </span>
                 </span>
@@ -275,7 +411,7 @@ function App() {
       </section>
 
       <footer className="dashboard-footer">
-        Auto-refresh every 5 seconds
+        Automatic refresh every 5 seconds
       </footer>
     </div>
   )
