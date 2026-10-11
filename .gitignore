@@ -1,6 +1,15 @@
 .venv/
 __pycache__/
 *.pyc
-database/*.db
-.env
 .pytest_cache/
+
+database/*.db
+
+.env
+.env.*
+
+frontend/node_modules/
+frontend/dist/
+
+sentinelip-security-report-*.pdf
+sentinelip-events-*.csv

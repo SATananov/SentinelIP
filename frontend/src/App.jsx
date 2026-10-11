@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -96,7 +101,7 @@ function App() {
     timeRange,
   ])
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
       setIsRefreshing(true)
       setError(null)
@@ -158,7 +163,7 @@ function App() {
     } finally {
       setIsRefreshing(false)
     }
-  }
+  }, [eventsUrl])
 
   useEffect(() => {
     const initialLoad = setTimeout(() => {
@@ -173,7 +178,7 @@ function App() {
       clearTimeout(initialLoad)
       clearInterval(interval)
     }
-  }, [eventsUrl])
+  }, [loadData])
 
   function severityClass(value) {
     return `severity-badge severity-${value.toLowerCase()}`
@@ -344,7 +349,10 @@ function App() {
           </p>
         ) : (
           <div className="timeline-chart">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
+            >
               <LineChart data={timeline}>
                 <CartesianGrid
                   strokeDasharray="3 3"
@@ -471,8 +479,13 @@ function App() {
                   className="list-row"
                   key={item.event_type}
                 >
-                  <span>{item.event_type}</span>
-                  <strong>{item.total}</strong>
+                  <span>
+                    {item.event_type}
+                  </span>
+
+                  <strong>
+                    {item.total}
+                  </strong>
                 </div>
               ))}
             </div>
@@ -641,10 +654,21 @@ function App() {
               value={pageSize}
               onChange={handlePageSizeChange}
             >
-              <option value="5">5</option>
-              <option value="10">10</option>
-              <option value="20">20</option>
-              <option value="50">50</option>
+              <option value="5">
+                5
+              </option>
+
+              <option value="10">
+                10
+              </option>
+
+              <option value="20">
+                20
+              </option>
+
+              <option value="50">
+                50
+              </option>
             </select>
           </label>
 
@@ -741,7 +765,10 @@ function App() {
           <span className="pagination-summary">
             {eventsTotal === 0
               ? 'No matching events'
-              : `Page ${page} of ${totalPages} · ${eventsTotal} matching events`}
+              : (
+                `Page ${page} of ${totalPages} · ` +
+                `${eventsTotal} matching events`
+              )}
           </span>
 
           <div className="pagination-actions">
