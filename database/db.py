@@ -1,0 +1,181 @@
+import sqlite3
+from pathlib import Path
+
+
+DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
+
+
+def get_connection(db_path=DB_PATH):
+    return sqlite3.connect(db_path)
+
+
+def initialize_database(db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                source_ip TEXT NOT NULL,
+                username TEXT,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                message TEXT NOT NULL,
+                event_count INTEGER NOT NULL
+            )
+            """
+        )
+        connection.commit()
+
+
+def save_event(
+    timestamp: str,
+    source_ip: str,
+    username: str | None,
+    event_type: str,
+    severity: str,
+    message: str,
+    event_count: int,
+    db_path=DB_PATH,
+):
+    with get_connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO events (
+                timestamp,
+                source_ip,
+                username,
+                event_type,
+                severity,
+                message,
+                event_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp,
+                source_ip,
+                username,
+                event_type,
+                severity,
+                message,
+                event_count,
+            ),
+        )
+        connection.commit()
+
+
+def get_recent_events(limit: int = 20, db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                timestamp,
+                source_ip,
+                username,
+                event_type,
+                severity,
+                message,
+                event_count
+            FROM events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_alerts(limit: int = 20, db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                timestamp,
+                source_ip,
+                username,
+                event_type,
+                severity,
+                message,
+                event_count
+            FROM events
+            WHERE severity = 'ALERT'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_event_count(db_path=DB_PATH) -> int:
+    with get_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM events"
+        ).fetchone()
+
+    return row[0]
+
+
+def get_top_source_ips(limit: int = 10, db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                source_ip,
+                COUNT(*) AS event_total
+            FROM events
+            GROUP BY source_ip
+            ORDER BY event_total DESC, source_ip ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_severity_counts(db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                severity,
+                COUNT(*) AS total
+            FROM events
+            GROUP BY severity
+            ORDER BY severity ASC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_event_type_counts(db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                event_type,
+                COUNT(*) AS total
+            FROM events
+            GROUP BY event_type
+            ORDER BY total DESC, event_type ASC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
