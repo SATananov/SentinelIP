@@ -2,6 +2,11 @@ from collections.abc import Mapping
 
 from database import services as services_db
 from database.db import DB_PATH
+from services.change_detection import (
+    persist_changes,
+    port_observation_changes,
+    service_observation_changes,
+)
 from services.scan_models import normalize_ipv4
 from services.service_fingerprint import has_service_evidence
 from services.service_models import (
@@ -107,14 +112,14 @@ class ServiceInventoryService:
 
         for port in result.ports:
             observed_at = port.observed_at.isoformat(timespec="seconds")
-            record = services_db.find_port(
+            previous = services_db.find_port(
                 device_id=device_id,
                 port_number=port.port,
                 transport=port.transport,
                 db_path=self.db_path,
             )
 
-            if record is None:
+            if previous is None:
                 record = services_db.create_port(
                     device_id=device_id,
                     port_number=port.port,
@@ -125,10 +130,35 @@ class ServiceInventoryService:
                     db_path=self.db_path,
                 )
             else:
+                current = {
+                    **previous,
+                    "state": port.state.upper(),
+                    "last_seen": observed_at,
+                }
+                persist_changes(
+                    port_observation_changes(
+                        previous=previous,
+                        current=current,
+                        network_id=network_id,
+                        observed_at=port.observed_at,
+                    ),
+                    db_path=self.db_path,
+                )
                 record = services_db.update_port(
-                    port_id=record["id"],
+                    port_id=previous["id"],
                     last_seen=observed_at,
                     state=port.state,
+                    db_path=self.db_path,
+                )
+
+            if previous is None:
+                persist_changes(
+                    port_observation_changes(
+                        previous=None,
+                        current=record,
+                        network_id=network_id,
+                        observed_at=port.observed_at,
+                    ),
                     db_path=self.db_path,
                 )
 
@@ -156,12 +186,12 @@ class ServiceInventoryService:
 
             port_record = port_records[(service.port, service.transport)]
             observed_at = service.observed_at.isoformat(timespec="seconds")
-            record = services_db.find_service_by_port(
+            previous = services_db.find_service_by_port(
                 port_id=port_record["id"],
                 db_path=self.db_path,
             )
 
-            if record is None:
+            if previous is None:
                 record = services_db.create_service(
                     device_id=device_id,
                     port_id=port_record["id"],
@@ -175,14 +205,43 @@ class ServiceInventoryService:
                     db_path=self.db_path,
                 )
             else:
+                current = {
+                    **previous,
+                    "service_name": service.service_name or previous["service_name"],
+                    "product": service.product or previous["product"],
+                    "version": service.version or previous["version"],
+                    "extra_info": service.extra_info or previous["extra_info"],
+                    "confidence": service.confidence,
+                    "last_seen": observed_at,
+                }
+                persist_changes(
+                    service_observation_changes(
+                        previous=previous,
+                        current=current,
+                        network_id=network_id,
+                        observed_at=service.observed_at,
+                    ),
+                    db_path=self.db_path,
+                )
                 record = services_db.update_service(
-                    service_id=record["id"],
+                    service_id=previous["id"],
                     service_name=service.service_name,
                     product=service.product,
                     version=service.version,
                     extra_info=service.extra_info,
                     confidence=service.confidence,
                     last_seen=observed_at,
+                    db_path=self.db_path,
+                )
+
+            if previous is None:
+                persist_changes(
+                    service_observation_changes(
+                        previous=None,
+                        current=record,
+                        network_id=network_id,
+                        observed_at=service.observed_at,
+                    ),
                     db_path=self.db_path,
                 )
 

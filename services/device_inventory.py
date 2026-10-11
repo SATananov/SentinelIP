@@ -3,6 +3,11 @@ from dataclasses import dataclass
 
 from database import inventory as inventory_db
 from database.db import DB_PATH
+from services.change_detection import (
+    device_disappearance_change,
+    device_observation_changes,
+    persist_changes,
+)
 from services.scan_models import HostDiscoveryResult, ScanResult
 from services.target_policy import validate_cidr
 
@@ -104,12 +109,12 @@ class DeviceInventoryService:
 
             identity = resolve_device_identity(network_id, host)
             observed_at = inventory_db.timestamp_text(host.discovered_at)
-            device = inventory_db.find_device_by_stable_key(
+            previous = inventory_db.find_device_by_stable_key(
                 identity.stable_key,
                 db_path=self.db_path,
             )
 
-            if device is None:
+            if previous is None:
                 device = inventory_db.create_device(
                     stable_key=identity.stable_key,
                     network_id=network_id,
@@ -123,9 +128,36 @@ class DeviceInventoryService:
                     identity_confidence=identity.confidence,
                     db_path=self.db_path,
                 )
+                persist_changes(
+                    device_observation_changes(
+                        previous=None,
+                        current=device,
+                        network_id=network_id,
+                        observed_at=host.discovered_at,
+                    ),
+                    db_path=self.db_path,
+                )
             else:
+                current = {
+                    **previous,
+                    "status": "ONLINE",
+                    "last_seen": observed_at,
+                    "last_ip_address": host.ip_address,
+                    "mac_address": host.mac_address or previous["mac_address"],
+                    "hostname": host.hostname or previous["hostname"],
+                    "vendor": host.vendor or previous["vendor"],
+                }
+                persist_changes(
+                    device_observation_changes(
+                        previous=previous,
+                        current=current,
+                        network_id=network_id,
+                        observed_at=host.discovered_at,
+                    ),
+                    db_path=self.db_path,
+                )
                 device = inventory_db.update_device_state(
-                    device["id"],
+                    previous["id"],
                     last_seen=observed_at,
                     last_ip_address=host.ip_address,
                     status="ONLINE",
@@ -149,6 +181,25 @@ class DeviceInventoryService:
             )
             observed_device_ids.add(device["id"])
             devices.append(device)
+
+        for previous in inventory_db.list_devices(
+            network_id=network_id,
+            db_path=self.db_path,
+        ):
+            if (
+                previous["status"] == "ONLINE"
+                and previous["id"] not in observed_device_ids
+            ):
+                persist_changes(
+                    [
+                        device_disappearance_change(
+                            device=previous,
+                            network_id=network_id,
+                            observed_at=scan_result.completed_at,
+                        )
+                    ],
+                    db_path=self.db_path,
+                )
 
         inventory_db.mark_devices_offline(
             network_id=network_id,

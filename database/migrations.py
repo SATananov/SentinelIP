@@ -199,6 +199,58 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        10,
+        """
+        CREATE TABLE IF NOT EXISTS changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            device_id INTEGER NOT NULL,
+            network_id INTEGER NOT NULL,
+            port_id INTEGER,
+            service_id INTEGER,
+            observed_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            previous_value TEXT,
+            current_value TEXT,
+            evidence_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            correlation_key TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (network_id) REFERENCES networks(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id),
+            FOREIGN KEY (service_id) REFERENCES services(id)
+        )
+        """,
+    ),
+    (
+        11,
+        (
+            """
+            CREATE INDEX IF NOT EXISTS idx_changes_device_observed
+                ON changes(device_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_changes_network_observed
+                ON changes(network_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_changes_type_observed
+                ON changes(change_type, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_changes_port
+                ON changes(port_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_changes_service
+                ON changes(service_id)
+            """,
+        ),
+    ),
 )
 
 
