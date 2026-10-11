@@ -246,6 +246,12 @@ function App() {
     )
   }
 
+  function exportPdf() {
+    window.location.href = (
+      `${API_BASE}/export/report.pdf?${exportParams}`
+    )
+  }
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
@@ -671,6 +677,13 @@ function App() {
               onClick={exportJson}
             >
               Export JSON
+            </button>
+
+            <button
+              type="button"
+              onClick={exportPdf}
+            >
+              Export PDF
             </button>
           </div>
         </div>

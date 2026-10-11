@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from database.db import (
     get_alerts,
@@ -18,11 +18,12 @@ from database.db import (
     get_source_ips,
     get_top_source_ips,
 )
+from services.pdf_report import build_security_report
 
 
 app = FastAPI(
     title="SentinelIP API",
-    version="2.3.0",
+    version="2.4.0",
 )
 
 app.add_middleware(
@@ -107,8 +108,16 @@ def source_ips():
 
 
 @app.get("/alerts")
-def alerts(limit: int = Query(default=20, ge=1, le=100)):
-    alert_list = get_alerts(limit=limit)
+def alerts(
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+    )
+):
+    alert_list = get_alerts(
+        limit=limit,
+    )
 
     return {
         "count": len(alert_list),
@@ -131,16 +140,32 @@ def event_type_stats():
 
 
 @app.get("/stats/top-ips")
-def top_ip_stats(limit: int = Query(default=10, ge=1, le=100)):
+def top_ip_stats(
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+    )
+):
     return {
-        "items": get_top_source_ips(limit=limit),
+        "items": get_top_source_ips(
+            limit=limit,
+        ),
     }
 
 
 @app.get("/stats/timeline")
-def timeline_stats(limit: int = Query(default=30, ge=1, le=120)):
+def timeline_stats(
+    limit: int = Query(
+        default=30,
+        ge=1,
+        le=120,
+    )
+):
     return {
-        "items": get_events_over_time(limit=limit),
+        "items": get_events_over_time(
+            limit=limit,
+        ),
     }
 
 
@@ -226,4 +251,41 @@ def export_events_csv(
         iter([output.getvalue()]),
         media_type="text/csv",
         headers=headers,
+    )
+
+
+@app.get("/export/report.pdf")
+def export_security_report(
+    severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
+    source_ip: str | None = None,
+    time_range: Literal["15m", "1h", "24h", "all"] = "all",
+):
+    since = resolve_since(time_range)
+
+    event_list = get_filtered_events(
+        severity=severity,
+        source_ip=source_ip,
+        since=since,
+    )
+
+    pdf_bytes = build_security_report(
+        events=event_list,
+        severity=severity,
+        source_ip=source_ip,
+        time_range=time_range,
+    )
+
+    filename = (
+        "sentinelip-security-report-"
+        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"'
+            )
+        },
     )
