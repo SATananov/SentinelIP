@@ -1,0 +1,15 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+  color: #17202a;
+  background: #f4f6f8;
+}
+
+body { margin: 0; padding: 32px; }
+main { max-width: 620px; margin: 0 auto; background: white; padding: 28px; border: 1px solid #d8dee4; border-radius: 8px; }
+form { display: grid; gap: 16px; }
+label { display: grid; gap: 6px; font-weight: 600; }
+input, select, button { font: inherit; padding: 9px 10px; }
+button { cursor: pointer; }
+.toggle { display: flex; grid-template-columns: auto 1fr; align-items: center; }
+#status { min-height: 1.5em; }

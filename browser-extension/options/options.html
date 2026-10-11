@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SentinelIP Browser Sensor</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>SentinelIP Browser Sensor</h1>
+      <p>Safe browser activity telemetry. This sensor does not classify or block websites.</p>
+      <form id="settings-form">
+        <label>API base URL <input id="api-base-url" required value="http://127.0.0.1:8000"></label>
+        <label>Sensor ID <input id="sensor-id" required></label>
+        <label>Sensor token <input id="sensor-token" type="password" autocomplete="off" required></label>
+        <label>Privacy mode
+          <select id="privacy-mode">
+            <option value="DOMAIN_ONLY">Domain only</option>
+            <option value="STANDARD">Standard</option>
+          </select>
+        </label>
+        <label class="toggle"><input id="enabled" type="checkbox"> Enable sensor</label>
+        <button type="submit">Save configuration</button>
+      </form>
+      <p id="status" role="status"></p>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
