@@ -565,3 +565,60 @@ h2 {
     flex: 1;
   }
 }
+
+
+.export-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 13px 14px;
+  border: 1px solid #292f39;
+  border-radius: 10px;
+  background: #14171d;
+}
+
+.export-label {
+  margin: 0;
+  color: #7f8798;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.export-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.export-actions button {
+  padding: 9px 13px;
+  border: 1px solid #343b48;
+  border-radius: 8px;
+  background: #20242d;
+  color: #d8dce5;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.export-actions button:hover {
+  border-color: #4e586a;
+  background: #292e39;
+}
+
+@media (max-width: 620px) {
+  .export-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .export-actions {
+    width: 100%;
+  }
+
+  .export-actions button {
+    flex: 1;
+  }
+}

@@ -93,7 +93,9 @@ def test_overview():
 
 
 def test_events_pagination_metadata():
-    response = client.get("/events?limit=5&offset=0")
+    response = client.get(
+        "/events?limit=5&offset=0"
+    )
 
     assert response.status_code == 200
 
@@ -111,7 +113,9 @@ def test_events_pagination_metadata():
 
 
 def test_events_rejects_negative_offset():
-    response = client.get("/events?offset=-1")
+    response = client.get(
+        "/events?offset=-1"
+    )
 
     assert response.status_code == 422
 
@@ -157,3 +161,65 @@ def test_source_ips():
 
     assert response.status_code == 200
     assert "items" in response.json()
+
+
+def test_export_events_json():
+    response = client.get(
+        "/export/events.json?time_range=all"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert "generated_at" in data
+    assert "count" in data
+    assert "filters" in data
+    assert "events" in data
+
+    assert data["count"] == len(data["events"])
+
+
+def test_export_events_json_accepts_filter():
+    response = client.get(
+        "/export/events.json"
+        "?severity=ALERT"
+        "&time_range=all"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["filters"]["severity"] == "ALERT"
+
+    for event in data["events"]:
+        assert event["severity"] == "ALERT"
+
+
+def test_export_events_csv():
+    response = client.get(
+        "/export/events.csv?time_range=all"
+    )
+
+    assert response.status_code == 200
+
+    assert response.headers[
+        "content-type"
+    ].startswith("text/csv")
+
+    assert "attachment;" in response.headers[
+        "content-disposition"
+    ]
+
+    assert "timestamp" in response.text
+    assert "source_ip" in response.text
+    assert "severity" in response.text
+
+
+def test_export_rejects_invalid_severity():
+    response = client.get(
+        "/export/events.json?severity=CRITICAL"
+    )
+
+    assert response.status_code == 422

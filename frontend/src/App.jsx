@@ -76,6 +76,26 @@ function App() {
     ipFilter,
   ])
 
+  const exportParams = useMemo(() => {
+    const params = new URLSearchParams({
+      time_range: timeRange,
+    })
+
+    if (severityFilter !== 'ALL') {
+      params.set('severity', severityFilter)
+    }
+
+    if (ipFilter !== 'ALL') {
+      params.set('source_ip', ipFilter)
+    }
+
+    return params.toString()
+  }, [
+    severityFilter,
+    ipFilter,
+    timeRange,
+  ])
+
   async function loadData() {
     try {
       setIsRefreshing(true)
@@ -212,11 +232,28 @@ function App() {
     )
   }
 
+  function exportCsv() {
+    window.location.href = (
+      `${API_BASE}/export/events.csv?${exportParams}`
+    )
+  }
+
+  function exportJson() {
+    window.open(
+      `${API_BASE}/export/events.json?${exportParams}`,
+      '_blank',
+      'noopener,noreferrer',
+    )
+  }
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
         <div>
-          <p className="eyebrow">Security Monitoring</p>
+          <p className="eyebrow">
+            Security Monitoring
+          </p>
+
           <h1>SentinelIP</h1>
 
           <p className="subtitle">
@@ -287,7 +324,10 @@ function App() {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="panel-kicker">Analytics</p>
+            <p className="panel-kicker">
+              Analytics
+            </p>
+
             <h2>Events over time</h2>
           </div>
         </div>
@@ -374,6 +414,7 @@ function App() {
               <p className="panel-kicker">
                 Network Activity
               </p>
+
               <h2>Top Source IPs</h2>
             </div>
           </div>
@@ -408,6 +449,7 @@ function App() {
               <p className="panel-kicker">
                 Event Analytics
               </p>
+
               <h2>Event Types</h2>
             </div>
           </div>
@@ -435,7 +477,10 @@ function App() {
       <section className="panel">
         <div className="panel-heading">
           <div>
-            <p className="panel-kicker">Detection</p>
+            <p className="panel-kicker">
+              Detection
+            </p>
+
             <h2>Recent Alerts</h2>
           </div>
 
@@ -521,10 +566,15 @@ function App() {
               <option value="ALL">
                 All severities
               </option>
-              <option value="INFO">INFO</option>
+
+              <option value="INFO">
+                INFO
+              </option>
+
               <option value="WARNING">
                 WARNING
               </option>
+
               <option value="ALERT">
                 ALERT
               </option>
@@ -563,12 +613,15 @@ function App() {
               <option value="15m">
                 Last 15 minutes
               </option>
+
               <option value="1h">
                 Last 1 hour
               </option>
+
               <option value="24h">
                 Last 24 hours
               </option>
+
               <option value="all">
                 All time
               </option>
@@ -596,6 +649,30 @@ function App() {
           >
             Clear filters
           </button>
+        </div>
+
+        <div className="export-toolbar">
+          <div>
+            <p className="export-label">
+              Export current filtered dataset
+            </p>
+          </div>
+
+          <div className="export-actions">
+            <button
+              type="button"
+              onClick={exportCsv}
+            >
+              Export CSV
+            </button>
+
+            <button
+              type="button"
+              onClick={exportJson}
+            >
+              Export JSON
+            </button>
+          </div>
         </div>
 
         {events.length === 0 ? (
