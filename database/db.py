@@ -8,7 +8,9 @@ DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
 
 
 def get_connection(db_path=DB_PATH):
-    return sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
 
 
 def initialize_database(db_path=DB_PATH):

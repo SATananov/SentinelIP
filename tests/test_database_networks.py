@@ -23,7 +23,7 @@ def test_migration_is_idempotent(tmp_path):
             "SELECT version FROM schema_migrations"
         ).fetchall()
 
-    assert versions == [(1,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
 
 
 def test_networks_table_exists(tmp_path):
