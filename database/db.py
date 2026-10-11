@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+from database.migrations import apply_migrations
+
 
 DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
 
@@ -26,6 +28,7 @@ def initialize_database(db_path=DB_PATH):
             """
         )
         connection.commit()
+        apply_migrations(connection)
 
 
 def save_event(

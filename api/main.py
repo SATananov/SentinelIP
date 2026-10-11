@@ -1,9 +1,10 @@
 import csv
 import io
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
@@ -17,8 +18,18 @@ from database.db import (
     get_severity_counts,
     get_source_ips,
     get_top_source_ips,
+    initialize_database,
 )
+from database.networks import (
+    create_network,
+    delete_network,
+    get_network,
+    list_networks,
+    update_network,
+)
+from api.schemas import NetworkCreate, NetworkResponse, NetworkUpdate
 from services.pdf_report import build_security_report
+from services.target_policy import TargetPolicyError
 
 
 app = FastAPI(
@@ -33,7 +44,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -63,6 +74,68 @@ def health():
         "status": "ok",
         "service": "SentinelIP",
     }
+
+
+@app.get("/networks", response_model=list[NetworkResponse])
+def networks():
+    initialize_database()
+    return list_networks()
+
+
+@app.post("/networks", response_model=NetworkResponse, status_code=201)
+def create_authorized_network(payload: NetworkCreate):
+    try:
+        return create_network(
+            cidr=payload.cidr,
+            name=payload.name,
+            description=payload.description,
+            authorized=payload.authorized,
+            enabled=payload.enabled,
+        )
+    except TargetPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A network with this CIDR already exists.",
+        ) from exc
+
+
+@app.get("/networks/{network_id}", response_model=NetworkResponse)
+def get_authorized_network(network_id: int):
+    network = get_network(network_id)
+
+    if network is None:
+        raise HTTPException(status_code=404, detail="Network not found.")
+
+    return network
+
+
+@app.patch("/networks/{network_id}", response_model=NetworkResponse)
+def update_authorized_network(
+    network_id: int,
+    payload: NetworkUpdate,
+):
+    if get_network(network_id) is None:
+        raise HTTPException(status_code=404, detail="Network not found.")
+
+    updates = payload.model_dump(exclude_unset=True)
+
+    if any(value is None for value in updates.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="Network update values cannot be null.",
+        )
+
+    return update_network(network_id, **updates)
+
+
+@app.delete("/networks/{network_id}", status_code=204)
+def delete_authorized_network(network_id: int):
+    if not delete_network(network_id):
+        raise HTTPException(status_code=404, detail="Network not found.")
 
 
 @app.get("/overview")
