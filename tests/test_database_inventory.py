@@ -58,7 +58,17 @@ def test_inventory_migration_is_idempotent_and_tables_exist(tmp_path):
         ).fetchall()
 
     assert {"events", "networks", "devices", "device_observations"} <= tables
-    assert versions == [(1,), (2,), (3,), (4,)]
+    assert versions == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (5,),
+        (6,),
+        (7,),
+        (8,),
+        (9,),
+    ]
 
 
 def test_inventory_indexes_exist(tmp_path):

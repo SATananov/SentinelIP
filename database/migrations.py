@@ -88,6 +88,117 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS ports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL,
+            port_number INTEGER NOT NULL,
+            transport TEXT NOT NULL,
+            state TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (device_id, port_number, transport),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        )
+        """,
+    ),
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS port_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL,
+            port_id INTEGER NOT NULL,
+            ip_address TEXT NOT NULL,
+            port_number INTEGER NOT NULL,
+            transport TEXT NOT NULL,
+            state TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id)
+        )
+        """,
+    ),
+    (
+        7,
+        """
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL,
+            port_id INTEGER NOT NULL UNIQUE,
+            service_name TEXT,
+            product TEXT,
+            version TEXT,
+            extra_info TEXT,
+            confidence TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id)
+        )
+        """,
+    ),
+    (
+        8,
+        """
+        CREATE TABLE IF NOT EXISTS service_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER,
+            device_id INTEGER NOT NULL,
+            port_id INTEGER NOT NULL,
+            service_name TEXT,
+            product TEXT,
+            version TEXT,
+            extra_info TEXT,
+            confidence TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            FOREIGN KEY (service_id) REFERENCES services(id),
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id)
+        )
+        """
+    ),
+    (
+        9,
+        (
+            """
+            CREATE INDEX IF NOT EXISTS idx_ports_device
+                ON ports(device_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_ports_lookup
+                ON ports(device_id, port_number, transport)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_port_observations_port_observed
+                ON port_observations(port_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_services_device
+                ON services(device_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_services_port
+                ON services(port_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_service_observations_service_observed
+                ON service_observations(service_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_service_observations_device_observed
+                ON service_observations(device_id, observed_at)
+            """,
+        ),
+    ),
 )
 
 
