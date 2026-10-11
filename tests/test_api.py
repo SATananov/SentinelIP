@@ -73,3 +73,20 @@ def test_top_ips():
     assert response.status_code == 200
     assert "items" in response.json()
     assert len(response.json()["items"]) <= 5
+
+
+def test_overview():
+    response = client.get("/overview")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert "total_events" in data
+    assert "severity" in data
+    assert "top_ips" in data
+    assert "event_types" in data
+
+    assert "INFO" in data["severity"]
+    assert "WARNING" in data["severity"]
+    assert "ALERT" in data["severity"]

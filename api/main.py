@@ -5,6 +5,7 @@ from database.db import (
     get_alerts,
     get_event_type_counts,
     get_events_over_time,
+    get_overview,
     get_recent_events,
     get_severity_counts,
     get_top_source_ips,
@@ -13,7 +14,7 @@ from database.db import (
 
 app = FastAPI(
     title="SentinelIP API",
-    version="1.9.0",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -34,6 +35,11 @@ def health():
         "status": "ok",
         "service": "SentinelIP",
     }
+
+
+@app.get("/overview")
+def overview():
+    return get_overview()
 
 
 @app.get("/events")

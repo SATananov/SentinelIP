@@ -16,8 +16,17 @@ const API_BASE = 'http://127.0.0.1:8000'
 
 function App() {
   const [health, setHealth] = useState(null)
-  const [severity, setSeverity] = useState([])
-  const [topIps, setTopIps] = useState([])
+  const [overview, setOverview] = useState({
+    total_events: 0,
+    severity: {
+      INFO: 0,
+      WARNING: 0,
+      ALERT: 0,
+    },
+    top_ips: [],
+    event_types: [],
+  })
+
   const [alerts, setAlerts] = useState([])
   const [events, setEvents] = useState([])
   const [timeline, setTimeline] = useState([])
@@ -36,15 +45,13 @@ function App() {
 
       const [
         healthResponse,
-        severityResponse,
-        topIpsResponse,
+        overviewResponse,
         alertsResponse,
         eventsResponse,
         timelineResponse,
       ] = await Promise.all([
         fetch(`${API_BASE}/health`),
-        fetch(`${API_BASE}/stats/severity`),
-        fetch(`${API_BASE}/stats/top-ips?limit=5`),
+        fetch(`${API_BASE}/overview`),
         fetch(`${API_BASE}/alerts?limit=5`),
         fetch(`${API_BASE}/events?limit=100`),
         fetch(`${API_BASE}/stats/timeline?limit=30`),
@@ -52,8 +59,7 @@ function App() {
 
       if (
         !healthResponse.ok ||
-        !severityResponse.ok ||
-        !topIpsResponse.ok ||
+        !overviewResponse.ok ||
         !alertsResponse.ok ||
         !eventsResponse.ok ||
         !timelineResponse.ok
@@ -63,23 +69,20 @@ function App() {
 
       const [
         healthData,
-        severityData,
-        topIpsData,
+        overviewData,
         alertsData,
         eventsData,
         timelineData,
       ] = await Promise.all([
         healthResponse.json(),
-        severityResponse.json(),
-        topIpsResponse.json(),
+        overviewResponse.json(),
         alertsResponse.json(),
         eventsResponse.json(),
         timelineResponse.json(),
       ])
 
       setHealth(healthData)
-      setSeverity(severityData.items)
-      setTopIps(topIpsData.items)
+      setOverview(overviewData)
       setAlerts(alertsData.alerts)
       setEvents(eventsData.events)
       setTimeline(timelineData.items)
@@ -106,30 +109,6 @@ function App() {
       clearInterval(interval)
     }
   }, [])
-
-  const severitySummary = useMemo(() => {
-    const summary = {
-      INFO: 0,
-      WARNING: 0,
-      ALERT: 0,
-    }
-
-    for (const item of severity) {
-      if (item.severity in summary) {
-        summary[item.severity] = item.total
-      }
-    }
-
-    return summary
-  }, [severity])
-
-  const totalEvents = useMemo(
-    () =>
-      severitySummary.INFO +
-      severitySummary.WARNING +
-      severitySummary.ALERT,
-    [severitySummary],
-  )
 
   const sourceIps = useMemo(() => {
     return [...new Set(events.map((event) => event.source_ip))].sort()
@@ -175,6 +154,7 @@ function App() {
         <div>
           <p className="eyebrow">Security Monitoring</p>
           <h1>SentinelIP</h1>
+
           <p className="subtitle">
             Live SSH security events and detection overview
           </p>
@@ -187,6 +167,7 @@ function App() {
             }`}
           >
             <span className="status-dot" />
+
             {health?.status === 'ok'
               ? 'API Online'
               : 'API Offline'}
@@ -216,22 +197,22 @@ function App() {
       <section className="cards">
         <article className="card total-card">
           <span>Total Events</span>
-          <strong>{totalEvents}</strong>
+          <strong>{overview.total_events}</strong>
         </article>
 
         <article className="card info-card">
           <span>INFO</span>
-          <strong>{severitySummary.INFO}</strong>
+          <strong>{overview.severity.INFO}</strong>
         </article>
 
         <article className="card warning-card">
           <span>WARNING</span>
-          <strong>{severitySummary.WARNING}</strong>
+          <strong>{overview.severity.WARNING}</strong>
         </article>
 
         <article className="card alert-card">
           <span>ALERT</span>
-          <strong>{severitySummary.ALERT}</strong>
+          <strong>{overview.severity.ALERT}</strong>
         </article>
       </section>
 
@@ -318,36 +299,70 @@ function App() {
         )}
       </section>
 
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <p className="panel-kicker">Network Activity</p>
-            <h2>Top Source IPs</h2>
+      <section className="analytics-grid">
+        <article className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="panel-kicker">Network Activity</p>
+              <h2>Top Source IPs</h2>
+            </div>
           </div>
-        </div>
 
-        {topIps.length === 0 ? (
-          <p className="empty-state">
-            No source IP data.
-          </p>
-        ) : (
-          <div className="simple-list">
-            {topIps.map((item) => (
-              <div
-                className="list-row"
-                key={item.source_ip}
-              >
-                <span className="mono">
-                  {item.source_ip}
-                </span>
+          {overview.top_ips.length === 0 ? (
+            <p className="empty-state">
+              No source IP data.
+            </p>
+          ) : (
+            <div className="simple-list">
+              {overview.top_ips.map((item) => (
+                <div
+                  className="list-row"
+                  key={item.source_ip}
+                >
+                  <span className="mono">
+                    {item.source_ip}
+                  </span>
 
-                <strong>
-                  {item.event_total} events
-                </strong>
-              </div>
-            ))}
+                  <strong>
+                    {item.event_total} events
+                  </strong>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="panel-kicker">Event Analytics</p>
+              <h2>Event Types</h2>
+            </div>
           </div>
-        )}
+
+          {overview.event_types.length === 0 ? (
+            <p className="empty-state">
+              No event type data.
+            </p>
+          ) : (
+            <div className="simple-list">
+              {overview.event_types.map((item) => (
+                <div
+                  className="list-row"
+                  key={item.event_type}
+                >
+                  <span>
+                    {item.event_type}
+                  </span>
+
+                  <strong>
+                    {item.total}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
       </section>
 
       <section className="panel">
@@ -385,7 +400,9 @@ function App() {
                   </span>
                 </div>
 
-                <strong>{alert.message}</strong>
+                <strong>
+                  {alert.message}
+                </strong>
 
                 <div className="alert-meta">
                   <span>
@@ -450,7 +467,10 @@ function App() {
               <option value="ALL">All source IPs</option>
 
               {sourceIps.map((ip) => (
-                <option key={ip} value={ip}>
+                <option
+                  key={ip}
+                  value={ip}
+                >
                   {ip}
                 </option>
               ))}
@@ -504,7 +524,9 @@ function App() {
                   {event.source_ip}
                 </span>
 
-                <span>{event.event_type}</span>
+                <span>
+                  {event.event_type}
+                </span>
 
                 <span className="event-count">
                   {event.event_count}

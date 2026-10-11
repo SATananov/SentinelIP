@@ -220,3 +220,31 @@ def get_events_over_time(limit: int = 30, db_path=DB_PATH):
         ).fetchall()
 
     return [dict(row) for row in reversed(rows)]
+
+
+def get_overview(db_path=DB_PATH):
+    severity_counts = get_severity_counts(db_path=db_path)
+
+    severity_map = {
+        "INFO": 0,
+        "WARNING": 0,
+        "ALERT": 0,
+    }
+
+    for item in severity_counts:
+        severity = item["severity"]
+
+        if severity in severity_map:
+            severity_map[severity] = item["total"]
+
+    return {
+        "total_events": get_event_count(db_path=db_path),
+        "severity": severity_map,
+        "top_ips": get_top_source_ips(
+            limit=5,
+            db_path=db_path,
+        ),
+        "event_types": get_event_type_counts(
+            db_path=db_path,
+        ),
+    }

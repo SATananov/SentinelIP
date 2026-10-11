@@ -490,3 +490,20 @@ h2 {
   height: 320px;
   padding: 12px 0 4px;
 }
+
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+
+.analytics-grid .panel {
+  margin-bottom: 22px;
+}
+
+@media (max-width: 800px) {
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+}
