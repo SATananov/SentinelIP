@@ -1,4 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+
 import './App.css'
 
 const API_BASE = 'http://127.0.0.1:8000'
@@ -9,6 +20,7 @@ function App() {
   const [topIps, setTopIps] = useState([])
   const [alerts, setAlerts] = useState([])
   const [events, setEvents] = useState([])
+  const [timeline, setTimeline] = useState([])
   const [error, setError] = useState(null)
 
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -28,12 +40,14 @@ function App() {
         topIpsResponse,
         alertsResponse,
         eventsResponse,
+        timelineResponse,
       ] = await Promise.all([
         fetch(`${API_BASE}/health`),
         fetch(`${API_BASE}/stats/severity`),
         fetch(`${API_BASE}/stats/top-ips?limit=5`),
         fetch(`${API_BASE}/alerts?limit=5`),
         fetch(`${API_BASE}/events?limit=100`),
+        fetch(`${API_BASE}/stats/timeline?limit=30`),
       ])
 
       if (
@@ -41,7 +55,8 @@ function App() {
         !severityResponse.ok ||
         !topIpsResponse.ok ||
         !alertsResponse.ok ||
-        !eventsResponse.ok
+        !eventsResponse.ok ||
+        !timelineResponse.ok
       ) {
         throw new Error('API request failed')
       }
@@ -52,12 +67,14 @@ function App() {
         topIpsData,
         alertsData,
         eventsData,
+        timelineData,
       ] = await Promise.all([
         healthResponse.json(),
         severityResponse.json(),
         topIpsResponse.json(),
         alertsResponse.json(),
         eventsResponse.json(),
+        timelineResponse.json(),
       ])
 
       setHealth(healthData)
@@ -65,6 +82,7 @@ function App() {
       setTopIps(topIpsData.items)
       setAlerts(alertsData.alerts)
       setEvents(eventsData.events)
+      setTimeline(timelineData.items)
       setLastUpdated(new Date())
     } catch (err) {
       setError(err.message)
@@ -143,6 +161,14 @@ function App() {
     return value.toLocaleTimeString()
   }
 
+  function formatTimelineLabel(value) {
+    if (!value) {
+      return ''
+    }
+
+    return value.slice(11)
+  }
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
@@ -212,6 +238,89 @@ function App() {
       <section className="panel">
         <div className="panel-heading">
           <div>
+            <p className="panel-kicker">Analytics</p>
+            <h2>Events over time</h2>
+          </div>
+        </div>
+
+        {timeline.length === 0 ? (
+          <p className="empty-state">
+            No timeline data.
+          </p>
+        ) : (
+          <div className="timeline-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={timeline}>
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#2b303a"
+                />
+
+                <XAxis
+                  dataKey="minute"
+                  tickFormatter={formatTimelineLabel}
+                  stroke="#7f8798"
+                />
+
+                <YAxis
+                  allowDecimals={false}
+                  stroke="#7f8798"
+                />
+
+                <Tooltip
+                  contentStyle={{
+                    background: '#15181f',
+                    border: '1px solid #343a46',
+                    borderRadius: '8px',
+                  }}
+                />
+
+                <Legend />
+
+                <Line
+                  type="monotone"
+                  dataKey="total"
+                  name="Total"
+                  stroke="#d7dbe4"
+                  strokeWidth={2}
+                  dot={false}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="info"
+                  name="INFO"
+                  stroke="#5d8eff"
+                  strokeWidth={2}
+                  dot={false}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="warning"
+                  name="WARNING"
+                  stroke="#e9ad46"
+                  strokeWidth={2}
+                  dot={false}
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="alert"
+                  name="ALERT"
+                  stroke="#e45865"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
             <p className="panel-kicker">Network Activity</p>
             <h2>Top Source IPs</h2>
           </div>
@@ -266,9 +375,7 @@ function App() {
               >
                 <div className="alert-item-top">
                   <span
-                    className={severityClass(
-                      alert.severity,
-                    )}
+                    className={severityClass(alert.severity)}
                   >
                     {alert.severity}
                   </span>
@@ -387,9 +494,7 @@ function App() {
 
                 <span>
                   <span
-                    className={severityClass(
-                      event.severity,
-                    )}
+                    className={severityClass(event.severity)}
                   >
                     {event.severity}
                   </span>

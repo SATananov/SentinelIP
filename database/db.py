@@ -179,3 +179,44 @@ def get_event_type_counts(db_path=DB_PATH):
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+
+def get_events_over_time(limit: int = 30, db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            """
+            SELECT
+                substr(timestamp, 1, 16) AS minute,
+                COUNT(*) AS total,
+                SUM(
+                    CASE
+                        WHEN severity = 'INFO'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS info,
+                SUM(
+                    CASE
+                        WHEN severity = 'WARNING'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS warning,
+                SUM(
+                    CASE
+                        WHEN severity = 'ALERT'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS alert
+            FROM events
+            GROUP BY substr(timestamp, 1, 16)
+            ORDER BY minute DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    return [dict(row) for row in reversed(rows)]

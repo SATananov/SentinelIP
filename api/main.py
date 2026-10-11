@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database.db import (
     get_alerts,
     get_event_type_counts,
+    get_events_over_time,
     get_recent_events,
     get_severity_counts,
     get_top_source_ips,
@@ -12,7 +13,7 @@ from database.db import (
 
 app = FastAPI(
     title="SentinelIP API",
-    version="1.7.0",
+    version="1.9.0",
 )
 
 app.add_middleware(
@@ -73,4 +74,11 @@ def event_type_stats():
 def top_ip_stats(limit: int = Query(default=10, ge=1, le=100)):
     return {
         "items": get_top_source_ips(limit=limit),
+    }
+
+
+@app.get("/stats/timeline")
+def timeline_stats(limit: int = Query(default=30, ge=1, le=120)):
+    return {
+        "items": get_events_over_time(limit=limit),
     }
