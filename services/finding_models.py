@@ -9,6 +9,7 @@ class FindingModelError(ValueError):
 
 
 class FindingType(str, Enum):
+    CVE_REVIEW = "CVE_REVIEW"
     PLAINTEXT_SERVICE = "PLAINTEXT_SERVICE"
     LEGACY_PROTOCOL = "LEGACY_PROTOCOL"
     EXPOSED_REMOTE_ADMIN = "EXPOSED_REMOTE_ADMIN"

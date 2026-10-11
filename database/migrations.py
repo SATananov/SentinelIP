@@ -324,6 +324,85 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        14,
+        """
+        CREATE TABLE IF NOT EXISTS cve_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_reference TEXT,
+            product TEXT NOT NULL,
+            vendor TEXT,
+            version_expression TEXT NOT NULL,
+            description TEXT,
+            severity TEXT,
+            cvss_score REAL,
+            published_at TEXT,
+            modified_at TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (source, cve_id, product, version_expression)
+        )
+        """,
+    ),
+    (
+        15,
+        """
+        CREATE TABLE IF NOT EXISTS cve_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_record_id INTEGER NOT NULL,
+            device_id INTEGER NOT NULL,
+            port_id INTEGER,
+            service_id INTEGER NOT NULL,
+            finding_id INTEGER,
+            status TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            observed_product TEXT,
+            observed_version TEXT,
+            evidence_source TEXT NOT NULL,
+            evidence_observed_at TEXT NOT NULL,
+            match_reason TEXT NOT NULL,
+            stable_key TEXT NOT NULL UNIQUE,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (cve_record_id) REFERENCES cve_records(id),
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id),
+            FOREIGN KEY (service_id) REFERENCES services(id),
+            FOREIGN KEY (finding_id) REFERENCES findings(id)
+        )
+        """,
+    ),
+    (
+        16,
+        (
+            """
+            CREATE INDEX IF NOT EXISTS idx_cve_records_product
+                ON cve_records(product)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_cve_matches_device
+                ON cve_matches(device_id, last_seen)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_cve_matches_service
+                ON cve_matches(service_id, last_seen)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_cve_matches_status
+                ON cve_matches(status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_cve_matches_cve_record
+                ON cve_matches(cve_record_id)
+            """,
+        ),
+    ),
 )
 
 
