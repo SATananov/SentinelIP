@@ -1,0 +1,1 @@
+"""Scanner adapters for normalized SentinelIP discovery contracts."""
