@@ -6,6 +6,12 @@ from services.scan_models import (
     HostDiscoveryResult,
     ScanModelError,
     ScanResult,
+    normalize_ipv4,
+)
+from services.service_models import (
+    PortObservation,
+    ServiceDiscoveryResult,
+    ServiceObservation,
 )
 from services.target_policy import validate_cidr
 
@@ -24,6 +30,57 @@ class ScannerExecutionError(RuntimeError):
 
 class ScannerParseError(RuntimeError):
     """Raised when scanner XML cannot be normalized safely."""
+
+
+CONSERVATIVE_TCP_PORTS = (
+    22,
+    23,
+    25,
+    53,
+    80,
+    110,
+    139,
+    143,
+    443,
+    445,
+    587,
+    993,
+    995,
+    1433,
+    3306,
+    3389,
+    5432,
+    5900,
+    6379,
+    8080,
+    8443,
+)
+
+
+def _check_output_size(stdout: str, stderr: str, max_output_bytes: int):
+    stdout_size = len(stdout.encode("utf-8")) if stdout else 0
+    stderr_size = len(stderr.encode("utf-8")) if stderr else 0
+
+    if stdout_size + stderr_size > max_output_bytes:
+        raise ScannerExecutionError("Nmap output exceeded the size limit.")
+
+
+def _service_confidence(
+    service_name: str | None,
+    product: str | None,
+    version: str | None,
+    extra_info: str | None,
+) -> str:
+    if product is not None and version is not None:
+        return "HIGH"
+
+    if any(value is not None for value in (service_name, product, version, extra_info)):
+        if service_name is not None and product is None and version is None:
+            return "LOW"
+
+        return "MEDIUM"
+
+    return "LOW"
 
 
 class NmapHostDiscoveryScanner:
@@ -157,3 +214,225 @@ class NmapHostDiscoveryScanner:
                 ) from exc
 
         return hosts
+
+
+class NmapServiceDiscoveryScanner:
+    """Conservative single-device TCP port and service discovery."""
+
+    def __init__(
+        self,
+        executable: str = "nmap",
+        timeout_seconds: int = 45,
+        max_output_bytes: int = 1_048_576,
+    ):
+        self.executable = executable
+        self.timeout_seconds = timeout_seconds
+        self.max_output_bytes = max_output_bytes
+
+    def discover_services(self, ip_address: str) -> ServiceDiscoveryResult:
+        normalized_ip = self._validate_target(ip_address)
+        started_at = datetime.now()
+        port_list = ",".join(str(port) for port in CONSERVATIVE_TCP_PORTS)
+        command = [
+            self.executable,
+            "-sT",
+            "-sV",
+            "--version-light",
+            "--open",
+            "-p",
+            port_list,
+            "--max-retries",
+            "2",
+            "--host-timeout",
+            "30s",
+            "-oX",
+            "-",
+            normalized_ip,
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                shell=False,
+                timeout=self.timeout_seconds,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise ScannerUnavailableError(
+                "Nmap executable is not available."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ScannerTimeoutError(
+                "Nmap service discovery timed out."
+            ) from exc
+        except OSError as exc:
+            raise ScannerExecutionError(
+                "Nmap service discovery could not be started."
+            ) from exc
+
+        _check_output_size(
+            completed.stdout,
+            completed.stderr,
+            self.max_output_bytes,
+        )
+
+        if completed.returncode != 0:
+            raise ScannerExecutionError(
+                f"Nmap service discovery failed with exit code {completed.returncode}."
+            )
+
+        completed_at = datetime.now()
+        ports, services = self._parse_services(
+            completed.stdout,
+            normalized_ip,
+            completed_at,
+        )
+
+        return ServiceDiscoveryResult(
+            target_ip=normalized_ip,
+            scanner="nmap",
+            started_at=started_at,
+            completed_at=completed_at,
+            ports=tuple(ports),
+            services=tuple(services),
+        )
+
+    @staticmethod
+    def _validate_target(ip_address: str) -> str:
+        try:
+            normalized_ip = normalize_ipv4(ip_address)
+        except ScanModelError as exc:
+            raise ScannerParseError(
+                "Nmap service discovery requires one valid IPv4 target."
+            ) from exc
+
+        import ipaddress
+
+        address = ipaddress.ip_address(normalized_ip)
+
+        if not address.is_private:
+            raise ScannerParseError(
+                "Nmap service discovery requires a private IPv4 target."
+            )
+
+        return normalized_ip
+
+    def _parse_services(
+        self,
+        xml_output: str,
+        target_ip: str,
+        observed_at: datetime,
+    ) -> tuple[list[PortObservation], list[ServiceObservation]]:
+        if not isinstance(xml_output, str):
+            raise ScannerParseError("Nmap returned invalid XML output.")
+
+        try:
+            root = ElementTree.fromstring(xml_output.lstrip())
+        except ElementTree.ParseError as exc:
+            raise ScannerParseError("Nmap returned malformed XML.") from exc
+
+        ports = []
+        services = []
+
+        for host_element in root.findall("host"):
+            host_address = None
+
+            for address_element in host_element.findall("address"):
+                if address_element.get("addrtype") == "ipv4":
+                    host_address = address_element.get("addr")
+                    break
+
+            if host_address is not None:
+                try:
+                    normalized_host_address = normalize_ipv4(host_address)
+                except ScanModelError as exc:
+                    raise ScannerParseError(
+                        "Nmap returned an invalid IPv4 target."
+                    ) from exc
+
+                if normalized_host_address != target_ip:
+                    raise ScannerParseError(
+                        "Nmap XML target does not match the requested device."
+                    )
+
+            status_element = host_element.find("status")
+
+            if (
+                status_element is not None
+                and status_element.get("state") != "up"
+            ):
+                continue
+
+            ports_element = host_element.find("ports")
+
+            if ports_element is None:
+                continue
+
+            for port_element in ports_element.findall("port"):
+                if port_element.get("protocol") != "tcp":
+                    continue
+
+                state_element = port_element.find("state")
+
+                if (
+                    state_element is None
+                    or state_element.get("state") != "open"
+                ):
+                    continue
+
+                port_value = port_element.get("portid")
+
+                try:
+                    port_number = int(port_value)
+                    port = PortObservation(
+                        ip_address=target_ip,
+                        port=port_number,
+                        transport="tcp",
+                        state="open",
+                        observed_at=observed_at,
+                        source="nmap",
+                    )
+                except (TypeError, ValueError, ScanModelError) as exc:
+                    raise ScannerParseError(
+                        "Nmap returned invalid port evidence."
+                    ) from exc
+
+                ports.append(port)
+                service_element = port_element.find("service")
+
+                if service_element is None:
+                    continue
+
+                service_name = service_element.get("name")
+                product = service_element.get("product")
+                version = service_element.get("version")
+                extra_info = service_element.get("extrainfo")
+
+                if not any(
+                    value is not None
+                    for value in (service_name, product, version, extra_info)
+                ):
+                    continue
+
+                service = ServiceObservation(
+                    ip_address=target_ip,
+                    port=port.port,
+                    transport="tcp",
+                    service_name=service_name,
+                    product=product,
+                    version=version,
+                    extra_info=extra_info,
+                    confidence=_service_confidence(
+                        service_name,
+                        product,
+                        version,
+                        extra_info,
+                    ),
+                    observed_at=observed_at,
+                    source="nmap",
+                )
+                services.append(service)
+
+        return ports, services
