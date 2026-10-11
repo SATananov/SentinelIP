@@ -145,6 +145,19 @@ def get_top_source_ips(limit: int = 10, db_path=DB_PATH):
     return [dict(row) for row in rows]
 
 
+def get_source_ips(db_path=DB_PATH):
+    with get_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT source_ip
+            FROM events
+            ORDER BY source_ip ASC
+            """
+        ).fetchall()
+
+    return [row[0] for row in rows]
+
+
 def get_severity_counts(db_path=DB_PATH):
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
@@ -247,4 +260,70 @@ def get_overview(db_path=DB_PATH):
         "event_types": get_event_type_counts(
             db_path=db_path,
         ),
+    }
+
+
+def get_paginated_events(
+    limit: int = 20,
+    offset: int = 0,
+    severity: str | None = None,
+    source_ip: str | None = None,
+    since: str | None = None,
+    db_path=DB_PATH,
+):
+    conditions = []
+    parameters = []
+
+    if severity is not None:
+        conditions.append("severity = ?")
+        parameters.append(severity)
+
+    if source_ip is not None:
+        conditions.append("source_ip = ?")
+        parameters.append(source_ip)
+
+    if since is not None:
+        conditions.append("timestamp >= ?")
+        parameters.append(since)
+
+    where_clause = ""
+
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute(
+            f"""
+            SELECT
+                id,
+                timestamp,
+                source_ip,
+                username,
+                event_type,
+                severity,
+                message,
+                event_count
+            FROM events
+            {where_clause}
+            ORDER BY id DESC
+            LIMIT ?
+            OFFSET ?
+            """,
+            (*parameters, limit, offset),
+        ).fetchall()
+
+        total = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM events
+            {where_clause}
+            """,
+            parameters,
+        ).fetchone()[0]
+
+    return {
+        "total": total,
+        "items": [dict(row) for row in rows],
     }

@@ -16,6 +16,7 @@ const API_BASE = 'http://127.0.0.1:8000'
 
 function App() {
   const [health, setHealth] = useState(null)
+
   const [overview, setOverview] = useState({
     total_events: 0,
     severity: {
@@ -29,14 +30,51 @@ function App() {
 
   const [alerts, setAlerts] = useState([])
   const [events, setEvents] = useState([])
+  const [eventsTotal, setEventsTotal] = useState(0)
   const [timeline, setTimeline] = useState([])
-  const [error, setError] = useState(null)
+  const [sourceIps, setSourceIps] = useState([])
 
+  const [error, setError] = useState(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
 
   const [severityFilter, setSeverityFilter] = useState('ALL')
   const [ipFilter, setIpFilter] = useState('ALL')
+  const [timeRange, setTimeRange] = useState('all')
+
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(5)
+
+  const offset = (page - 1) * pageSize
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(eventsTotal / pageSize),
+  )
+
+  const eventsUrl = useMemo(() => {
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+      time_range: timeRange,
+    })
+
+    if (severityFilter !== 'ALL') {
+      params.set('severity', severityFilter)
+    }
+
+    if (ipFilter !== 'ALL') {
+      params.set('source_ip', ipFilter)
+    }
+
+    return `${API_BASE}/events?${params.toString()}`
+  }, [
+    pageSize,
+    offset,
+    timeRange,
+    severityFilter,
+    ipFilter,
+  ])
 
   async function loadData() {
     try {
@@ -49,12 +87,14 @@ function App() {
         alertsResponse,
         eventsResponse,
         timelineResponse,
+        sourceIpsResponse,
       ] = await Promise.all([
         fetch(`${API_BASE}/health`),
         fetch(`${API_BASE}/overview`),
         fetch(`${API_BASE}/alerts?limit=5`),
-        fetch(`${API_BASE}/events?limit=100`),
+        fetch(eventsUrl),
         fetch(`${API_BASE}/stats/timeline?limit=30`),
+        fetch(`${API_BASE}/source-ips`),
       ])
 
       if (
@@ -62,7 +102,8 @@ function App() {
         !overviewResponse.ok ||
         !alertsResponse.ok ||
         !eventsResponse.ok ||
-        !timelineResponse.ok
+        !timelineResponse.ok ||
+        !sourceIpsResponse.ok
       ) {
         throw new Error('API request failed')
       }
@@ -73,19 +114,23 @@ function App() {
         alertsData,
         eventsData,
         timelineData,
+        sourceIpsData,
       ] = await Promise.all([
         healthResponse.json(),
         overviewResponse.json(),
         alertsResponse.json(),
         eventsResponse.json(),
         timelineResponse.json(),
+        sourceIpsResponse.json(),
       ])
 
       setHealth(healthData)
       setOverview(overviewData)
       setAlerts(alertsData.alerts)
       setEvents(eventsData.events)
+      setEventsTotal(eventsData.total)
       setTimeline(timelineData.items)
+      setSourceIps(sourceIpsData.items)
       setLastUpdated(new Date())
     } catch (err) {
       setError(err.message)
@@ -108,25 +153,7 @@ function App() {
       clearTimeout(initialLoad)
       clearInterval(interval)
     }
-  }, [])
-
-  const sourceIps = useMemo(() => {
-    return [...new Set(events.map((event) => event.source_ip))].sort()
-  }, [events])
-
-  const filteredEvents = useMemo(() => {
-    return events.filter((event) => {
-      const matchesSeverity =
-        severityFilter === 'ALL' ||
-        event.severity === severityFilter
-
-      const matchesIp =
-        ipFilter === 'ALL' ||
-        event.source_ip === ipFilter
-
-      return matchesSeverity && matchesIp
-    })
-  }, [events, severityFilter, ipFilter])
+  }, [eventsUrl])
 
   function severityClass(value) {
     return `severity-badge severity-${value.toLowerCase()}`
@@ -148,6 +175,43 @@ function App() {
     return value.slice(11)
   }
 
+  function handlePageSizeChange(event) {
+    setPageSize(Number(event.target.value))
+    setPage(1)
+  }
+
+  function handleSeverityChange(event) {
+    setSeverityFilter(event.target.value)
+    setPage(1)
+  }
+
+  function handleIpChange(event) {
+    setIpFilter(event.target.value)
+    setPage(1)
+  }
+
+  function handleTimeRangeChange(event) {
+    setTimeRange(event.target.value)
+    setPage(1)
+  }
+
+  function clearFilters() {
+    setSeverityFilter('ALL')
+    setIpFilter('ALL')
+    setTimeRange('all')
+    setPage(1)
+  }
+
+  function previousPage() {
+    setPage((current) => Math.max(1, current - 1))
+  }
+
+  function nextPage() {
+    setPage((current) =>
+      Math.min(totalPages, current + 1),
+    )
+  }
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
@@ -163,7 +227,9 @@ function App() {
         <div className="header-actions">
           <div
             className={`status ${
-              health?.status === 'ok' ? 'online' : 'offline'
+              health?.status === 'ok'
+                ? 'online'
+                : 'offline'
             }`}
           >
             <span className="status-dot" />
@@ -179,7 +245,9 @@ function App() {
             onClick={loadData}
             disabled={isRefreshing}
           >
-            {isRefreshing ? 'Refreshing...' : 'Refresh now'}
+            {isRefreshing
+              ? 'Refreshing...'
+              : 'Refresh now'}
           </button>
 
           <span className="last-updated">
@@ -303,7 +371,9 @@ function App() {
         <article className="panel">
           <div className="panel-heading">
             <div>
-              <p className="panel-kicker">Network Activity</p>
+              <p className="panel-kicker">
+                Network Activity
+              </p>
               <h2>Top Source IPs</h2>
             </div>
           </div>
@@ -335,7 +405,9 @@ function App() {
         <article className="panel">
           <div className="panel-heading">
             <div>
-              <p className="panel-kicker">Event Analytics</p>
+              <p className="panel-kicker">
+                Event Analytics
+              </p>
               <h2>Event Types</h2>
             </div>
           </div>
@@ -351,13 +423,8 @@ function App() {
                   className="list-row"
                   key={item.event_type}
                 >
-                  <span>
-                    {item.event_type}
-                  </span>
-
-                  <strong>
-                    {item.total}
-                  </strong>
+                  <span>{item.event_type}</span>
+                  <strong>{item.total}</strong>
                 </div>
               ))}
             </div>
@@ -390,7 +457,9 @@ function App() {
               >
                 <div className="alert-item-top">
                   <span
-                    className={severityClass(alert.severity)}
+                    className={severityClass(
+                      alert.severity,
+                    )}
                   >
                     {alert.severity}
                   </span>
@@ -429,12 +498,15 @@ function App() {
       <section className="panel">
         <div className="panel-heading events-heading">
           <div>
-            <p className="panel-kicker">Live History</p>
+            <p className="panel-kicker">
+              Live History
+            </p>
+
             <h2>Recent Events</h2>
           </div>
 
           <span className="panel-count">
-            {filteredEvents.length}/{events.length}
+            {eventsTotal}
           </span>
         </div>
 
@@ -444,14 +516,18 @@ function App() {
 
             <select
               value={severityFilter}
-              onChange={(event) =>
-                setSeverityFilter(event.target.value)
-              }
+              onChange={handleSeverityChange}
             >
-              <option value="ALL">All severities</option>
+              <option value="ALL">
+                All severities
+              </option>
               <option value="INFO">INFO</option>
-              <option value="WARNING">WARNING</option>
-              <option value="ALERT">ALERT</option>
+              <option value="WARNING">
+                WARNING
+              </option>
+              <option value="ALERT">
+                ALERT
+              </option>
             </select>
           </label>
 
@@ -460,11 +536,11 @@ function App() {
 
             <select
               value={ipFilter}
-              onChange={(event) =>
-                setIpFilter(event.target.value)
-              }
+              onChange={handleIpChange}
             >
-              <option value="ALL">All source IPs</option>
+              <option value="ALL">
+                All source IPs
+              </option>
 
               {sourceIps.map((ip) => (
                 <option
@@ -477,19 +553,52 @@ function App() {
             </select>
           </label>
 
+          <label>
+            <span>Time range</span>
+
+            <select
+              value={timeRange}
+              onChange={handleTimeRangeChange}
+            >
+              <option value="15m">
+                Last 15 minutes
+              </option>
+              <option value="1h">
+                Last 1 hour
+              </option>
+              <option value="24h">
+                Last 24 hours
+              </option>
+              <option value="all">
+                All time
+              </option>
+            </select>
+          </label>
+
+          <label>
+            <span>Page size</span>
+
+            <select
+              value={pageSize}
+              onChange={handlePageSizeChange}
+            >
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+          </label>
+
           <button
             className="clear-filters"
             type="button"
-            onClick={() => {
-              setSeverityFilter('ALL')
-              setIpFilter('ALL')
-            }}
+            onClick={clearFilters}
           >
             Clear filters
           </button>
         </div>
 
-        {filteredEvents.length === 0 ? (
+        {events.length === 0 ? (
           <p className="empty-state">
             No events match the selected filters.
           </p>
@@ -503,7 +612,7 @@ function App() {
               <span>Count</span>
             </div>
 
-            {filteredEvents.map((event) => (
+            {events.map((event) => (
               <div
                 className="event-row"
                 key={event.id}
@@ -514,7 +623,9 @@ function App() {
 
                 <span>
                   <span
-                    className={severityClass(event.severity)}
+                    className={severityClass(
+                      event.severity,
+                    )}
                   >
                     {event.severity}
                   </span>
@@ -535,6 +646,32 @@ function App() {
             ))}
           </div>
         )}
+
+        <div className="pagination">
+          <span className="pagination-summary">
+            {eventsTotal === 0
+              ? 'No matching events'
+              : `Page ${page} of ${totalPages} · ${eventsTotal} matching events`}
+          </span>
+
+          <div className="pagination-actions">
+            <button
+              type="button"
+              onClick={previousPage}
+              disabled={page === 1}
+            >
+              Previous
+            </button>
+
+            <button
+              type="button"
+              onClick={nextPage}
+              disabled={page >= totalPages}
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </section>
 
       <footer className="dashboard-footer">

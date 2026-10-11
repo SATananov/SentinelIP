@@ -90,3 +90,70 @@ def test_overview():
     assert "INFO" in data["severity"]
     assert "WARNING" in data["severity"]
     assert "ALERT" in data["severity"]
+
+
+def test_events_pagination_metadata():
+    response = client.get("/events?limit=5&offset=0")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert "total" in data
+    assert "count" in data
+    assert "limit" in data
+    assert "offset" in data
+    assert "events" in data
+
+    assert data["limit"] == 5
+    assert data["offset"] == 0
+    assert data["count"] == len(data["events"])
+
+
+def test_events_rejects_negative_offset():
+    response = client.get("/events?offset=-1")
+
+    assert response.status_code == 422
+
+
+def test_events_accepts_server_side_filters():
+    response = client.get(
+        "/events"
+        "?limit=5"
+        "&offset=0"
+        "&severity=ALERT"
+        "&time_range=all"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["severity"] == "ALERT"
+    assert data["time_range"] == "all"
+
+    for event in data["events"]:
+        assert event["severity"] == "ALERT"
+
+
+def test_events_rejects_invalid_severity():
+    response = client.get(
+        "/events?severity=CRITICAL"
+    )
+
+    assert response.status_code == 422
+
+
+def test_events_rejects_invalid_time_range():
+    response = client.get(
+        "/events?time_range=7d"
+    )
+
+    assert response.status_code == 422
+
+
+def test_source_ips():
+    response = client.get("/source-ips")
+
+    assert response.status_code == 200
+    assert "items" in response.json()

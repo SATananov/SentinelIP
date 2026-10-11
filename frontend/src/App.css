@@ -507,3 +507,61 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 18px;
+  border-top: 1px solid #292e38;
+}
+
+.pagination-summary {
+  color: #7f8798;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pagination-actions button {
+  padding: 9px 14px;
+  border: 1px solid #343b48;
+  border-radius: 8px;
+  background: #20242d;
+  color: #d8dce5;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination-actions button:hover:not(:disabled) {
+  border-color: #4e586a;
+  background: #292e39;
+}
+
+.pagination-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+@media (max-width: 620px) {
+  .pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pagination-actions {
+    width: 100%;
+  }
+
+  .pagination-actions button {
+    flex: 1;
+  }
+}

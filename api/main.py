@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+from typing import Literal
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,15 +9,16 @@ from database.db import (
     get_event_type_counts,
     get_events_over_time,
     get_overview,
-    get_recent_events,
+    get_paginated_events,
     get_severity_counts,
+    get_source_ips,
     get_top_source_ips,
 )
 
 
 app = FastAPI(
     title="SentinelIP API",
-    version="2.0.0",
+    version="2.2.0",
 )
 
 app.add_middleware(
@@ -43,12 +47,54 @@ def overview():
 
 
 @app.get("/events")
-def events(limit: int = Query(default=20, ge=1, le=100)):
-    event_list = get_recent_events(limit=limit)
+def events(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
+    source_ip: str | None = None,
+    time_range: Literal["15m", "1h", "24h", "all"] = "all",
+):
+    since = None
+
+    if time_range == "15m":
+        since = (
+            datetime.now() - timedelta(minutes=15)
+        ).isoformat(timespec="seconds")
+
+    elif time_range == "1h":
+        since = (
+            datetime.now() - timedelta(hours=1)
+        ).isoformat(timespec="seconds")
+
+    elif time_range == "24h":
+        since = (
+            datetime.now() - timedelta(hours=24)
+        ).isoformat(timespec="seconds")
+
+    result = get_paginated_events(
+        limit=limit,
+        offset=offset,
+        severity=severity,
+        source_ip=source_ip,
+        since=since,
+    )
 
     return {
-        "count": len(event_list),
-        "events": event_list,
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "severity": severity,
+        "source_ip": source_ip,
+        "time_range": time_range,
+        "events": result["items"],
+    }
+
+
+@app.get("/source-ips")
+def source_ips():
+    return {
+        "items": get_source_ips(),
     }
 
 
