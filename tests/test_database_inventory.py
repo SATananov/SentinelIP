@@ -75,6 +75,10 @@ def test_inventory_migration_is_idempotent_and_tables_exist(tmp_path):
         (14,),
         (15,),
         (16,),
+        (17,),
+        (18,),
+        (19,),
+        (20,),
     ]
 
 

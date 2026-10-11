@@ -403,6 +403,119 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        17,
+        """
+        CREATE TABLE IF NOT EXISTS telemetry_sensors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sensor_key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            sensor_type TEXT NOT NULL,
+            device_id INTEGER,
+            token_salt BLOB NOT NULL,
+            token_hash TEXT NOT NULL,
+            token_iterations INTEGER NOT NULL,
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            privacy_mode TEXT NOT NULL,
+            retention_days INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        )
+        """,
+    ),
+    (
+        18,
+        """
+        CREATE TABLE IF NOT EXISTS web_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sensor_id INTEGER NOT NULL,
+            external_event_id TEXT NOT NULL,
+            device_id INTEGER,
+            observed_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            scheme TEXT,
+            hostname TEXT NOT NULL,
+            path TEXT,
+            referrer_domain TEXT,
+            redirect_from_domain TEXT,
+            redirect_to_domain TEXT,
+            has_login_form INTEGER NOT NULL CHECK (has_login_form IN (0, 1)),
+            has_password_form INTEGER NOT NULL CHECK (has_password_form IN (0, 1)),
+            download_detected INTEGER NOT NULL CHECK (download_detected IN (0, 1)),
+            source TEXT NOT NULL,
+            retention_until TEXT NOT NULL,
+            metadata_json TEXT,
+            UNIQUE (sensor_id, external_event_id),
+            FOREIGN KEY (sensor_id) REFERENCES telemetry_sensors(id),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        )
+        """,
+    ),
+    (
+        19,
+        """
+        CREATE TABLE IF NOT EXISTS dns_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sensor_id INTEGER NOT NULL,
+            external_event_id TEXT NOT NULL,
+            device_id INTEGER,
+            observed_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            queried_domain TEXT NOT NULL,
+            query_type TEXT NOT NULL,
+            response_status TEXT NOT NULL,
+            resolved_addresses_json TEXT NOT NULL,
+            resolver TEXT,
+            ttl INTEGER,
+            source TEXT NOT NULL,
+            retention_until TEXT NOT NULL,
+            metadata_json TEXT,
+            UNIQUE (sensor_id, external_event_id),
+            FOREIGN KEY (sensor_id) REFERENCES telemetry_sensors(id),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        )
+        """,
+    ),
+    (
+        20,
+        (
+            """
+            CREATE INDEX IF NOT EXISTS idx_telemetry_sensors_key
+                ON telemetry_sensors(sensor_key)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_telemetry_sensors_device
+                ON telemetry_sensors(device_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_web_observations_sensor_time
+                ON web_observations(sensor_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_web_observations_device_time
+                ON web_observations(device_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_web_observations_hostname_time
+                ON web_observations(hostname, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_dns_observations_sensor_time
+                ON dns_observations(sensor_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_dns_observations_device_time
+                ON dns_observations(device_id, observed_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_dns_observations_domain_time
+                ON dns_observations(queried_domain, observed_at)
+            """,
+        ),
+    ),
 )
 
 

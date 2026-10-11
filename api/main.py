@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
@@ -20,6 +20,7 @@ from database.db import (
     get_top_source_ips,
     initialize_database,
 )
+from database.db import DB_PATH
 from database.networks import (
     create_network,
     delete_network,
@@ -28,7 +29,9 @@ from database.networks import (
     update_network,
 )
 from api.schemas import NetworkCreate, NetworkResponse, NetworkUpdate
+from api.schemas import DnsTelemetryCreate, WebTelemetryCreate
 from services.pdf_report import build_security_report
+from services.telemetry_ingestion import TelemetryIngestionError, ingest_dns, ingest_web
 from services.target_policy import TargetPolicyError
 
 
@@ -74,6 +77,48 @@ def health():
         "status": "ok",
         "service": "SentinelIP",
     }
+
+
+def _telemetry_error(exc: TelemetryIngestionError):
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/telemetry/web", status_code=202)
+def ingest_web_telemetry(
+    payload: WebTelemetryCreate,
+    sensor_id: int | None = Header(default=None, alias="X-SentinelIP-Sensor-ID"),
+    sensor_token: str | None = Header(default=None, alias="X-SentinelIP-Sensor-Token"),
+):
+    if sensor_id is None:
+        raise HTTPException(status_code=401, detail="Telemetry authentication failed.")
+    try:
+        return ingest_web(
+            sensor_id,
+            sensor_token,
+            payload.model_dump(),
+            db_path=DB_PATH,
+        )
+    except TelemetryIngestionError as exc:
+        _telemetry_error(exc)
+
+
+@app.post("/telemetry/dns", status_code=202)
+def ingest_dns_telemetry(
+    payload: DnsTelemetryCreate,
+    sensor_id: int | None = Header(default=None, alias="X-SentinelIP-Sensor-ID"),
+    sensor_token: str | None = Header(default=None, alias="X-SentinelIP-Sensor-Token"),
+):
+    if sensor_id is None:
+        raise HTTPException(status_code=401, detail="Telemetry authentication failed.")
+    try:
+        return ingest_dns(
+            sensor_id,
+            sensor_token,
+            payload.model_dump(),
+            db_path=DB_PATH,
+        )
+    except TelemetryIngestionError as exc:
+        _telemetry_error(exc)
 
 
 @app.get("/networks", response_model=list[NetworkResponse])
