@@ -251,6 +251,79 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        12,
+        """
+        CREATE TABLE IF NOT EXISTS findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_type TEXT NOT NULL,
+            device_id INTEGER NOT NULL,
+            network_id INTEGER NOT NULL,
+            port_id INTEGER,
+            service_id INTEGER,
+            change_id INTEGER,
+            severity TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            rule_version TEXT NOT NULL,
+            stable_key TEXT NOT NULL UNIQUE,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            resolved_at TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (network_id) REFERENCES networks(id),
+            FOREIGN KEY (port_id) REFERENCES ports(id),
+            FOREIGN KEY (service_id) REFERENCES services(id),
+            FOREIGN KEY (change_id) REFERENCES changes(id)
+        )
+        """,
+    ),
+    (
+        13,
+        (
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_device_status
+                ON findings(device_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_network_status
+                ON findings(network_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_type
+                ON findings(finding_type)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_severity
+                ON findings(severity)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_status
+                ON findings(status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_last_seen
+                ON findings(last_seen)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_port
+                ON findings(port_id)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_service
+                ON findings(service_id)
+            """,
+        ),
+    ),
 )
 
 
