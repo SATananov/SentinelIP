@@ -622,3 +622,345 @@ h2 {
     flex: 1;
   }
 }
+
+/* Incremental Dashboard Expansion 01 */
+.security-layer {
+  margin-bottom: 22px;
+}
+
+.security-layer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.security-layer-copy {
+  max-width: 760px;
+  margin: 7px 0 0;
+  color: #8d95a5;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.read-only-chip {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid #354151;
+  border-radius: 999px;
+  background: #18202a;
+  color: #91a5bd;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.security-summary-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 112px;
+  padding: 18px;
+  border: 1px solid #2a2f3a;
+  border-radius: 13px;
+  background: rgba(24, 27, 35, 0.94);
+}
+
+.security-summary-card::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  content: "";
+}
+
+.security-summary-card > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #9098a9;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-summary-card strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 30px;
+}
+
+.security-summary-card small {
+  color: #747e91;
+  font-size: 11px;
+}
+
+.security-summary-threat::after { background: #e9ad46; }
+.security-summary-correlation::after { background: #7f8fc7; }
+.security-summary-incident::after { background: #66b39a; }
+
+.security-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.security-column.panel {
+  min-width: 0;
+  margin-bottom: 0;
+  padding: 18px;
+}
+
+.security-column h3,
+.security-detail-heading h3 {
+  margin: 0;
+  color: #f1f3f7;
+  font-size: 16px;
+}
+
+.security-record-list {
+  display: grid;
+  gap: 8px;
+}
+
+.security-record {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 11px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #2d3440;
+  border-radius: 9px;
+  background: #151920;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease,
+    transform 120ms ease;
+}
+
+.security-record:hover {
+  border-color: #465266;
+  background: #1b2029;
+  transform: translateY(-1px);
+}
+
+.security-record-id {
+  color: #69758a;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.security-record-main {
+  min-width: 0;
+}
+
+.security-record-main strong,
+.security-record-main small {
+  display: block;
+}
+
+.security-record-main strong {
+  overflow: hidden;
+  color: #dce1e9;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.security-record-main small {
+  margin-top: 4px;
+  color: #727c8f;
+  font-size: 10px;
+}
+
+.security-record-badges {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.security-badge {
+  display: inline-flex;
+  padding: 4px 7px;
+  border: 1px solid #394250;
+  border-radius: 999px;
+  background: #202630;
+  color: #a8b1c0;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+}
+
+.security-badge-high,
+.security-badge-suspected {
+  border-color: #71404a;
+  background: #3d2228;
+  color: #ff9da8;
+}
+
+.security-badge-medium,
+.security-badge-pattern,
+.security-badge-chain-review {
+  border-color: #725b31;
+  background: #382f1d;
+  color: #eac578;
+}
+
+.security-badge-low,
+.security-badge-anomalous,
+.security-badge-open {
+  border-color: #315a63;
+  background: #183139;
+  color: #82ced6;
+}
+
+.security-empty {
+  margin: 0;
+  padding: 16px 0 4px;
+  color: #747e90;
+  font-size: 12px;
+}
+
+.security-load-error,
+.security-detail-error {
+  padding: 12px 14px;
+  border: 1px solid #71343d;
+  border-radius: 9px;
+  background: #351d22;
+  color: #ffadb6;
+  font-size: 12px;
+}
+
+.security-load-error {
+  margin-bottom: 14px;
+}
+
+.security-detail-shell {
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid #374150;
+  border-radius: 12px;
+  background: #12161c;
+}
+
+.security-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.security-detail-close {
+  padding: 7px 10px;
+  border: 1px solid #3b4554;
+  border-radius: 8px;
+  background: #1d232c;
+  color: #cbd1dc;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.security-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.security-detail-field,
+.security-detail-copy,
+.security-json-block {
+  border: 1px solid #29313c;
+  border-radius: 8px;
+  background: #171b22;
+}
+
+.security-detail-field {
+  min-width: 0;
+  padding: 10px;
+}
+
+.security-detail-field span,
+.security-detail-copy > span,
+.security-json-block > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #717c8f;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.security-detail-field strong {
+  display: block;
+  overflow: hidden;
+  color: #d7dce5;
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.security-detail-copy,
+.security-json-block {
+  margin-top: 9px;
+  padding: 12px;
+}
+
+.security-detail-copy strong,
+.security-detail-copy p {
+  color: #cbd1dc;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.security-json-block pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  color: #adb7c7;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 1000px) {
+  .security-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .security-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .security-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .security-layer-heading {
+    flex-direction: column;
+  }
+
+  .security-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}

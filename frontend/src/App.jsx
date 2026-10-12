@@ -15,6 +15,8 @@ import {
   YAxis,
 } from 'recharts'
 
+import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
+
 import './App.css'
 
 const API_BASE = 'http://127.0.0.1:8000'
@@ -268,7 +270,7 @@ function App() {
           <h1>SentinelIP</h1>
 
           <p className="subtitle">
-            Live SSH security events and detection overview
+            Network visibility, monitoring, threat detection, correlation, and incident review
           </p>
         </div>
 
@@ -331,6 +333,10 @@ function App() {
           <strong>{overview.severity.ALERT}</strong>
         </article>
       </section>
+
+      <SecurityReviewPanel
+        refreshSignal={lastUpdated}
+      />
 
       <section className="panel">
         <div className="panel-heading">
