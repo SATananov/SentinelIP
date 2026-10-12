@@ -1015,6 +1015,99 @@ h2 {
   color: #e59ca5;
 }
 
+.public-target-panel {
+  margin-top: 12px;
+  border-color: #3b4a62;
+}
+
+.public-target-badge {
+  border-color: #4b5d79;
+  color: #a9c2e8;
+}
+
+.public-target-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0 18px;
+}
+
+.public-target-form > label {
+  display: grid;
+  gap: 6px;
+  color: #8e96a6;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.public-target-form input:not([type="checkbox"]) {
+  min-width: 0;
+  border: 1px solid #353b47;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #101319;
+  color: #e4e7ed;
+}
+
+.public-target-description,
+.public-target-confirmation,
+.public-target-form > button {
+  grid-column: 1 / -1;
+}
+
+.public-target-form > .public-target-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: #c7ceda;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.public-target-confirmation input {
+  margin: 2px 0 0;
+  accent-color: #88a9d8;
+}
+
+.public-target-list {
+  display: grid;
+  gap: 8px;
+}
+
+.public-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #344258;
+  border-radius: 9px;
+  padding: 12px;
+  background: #121720;
+}
+
+.public-target-row.is-selected {
+  border-color: #6381ac;
+  background: #182232;
+}
+
+.public-target-row > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.public-target-row span,
+.public-target-row small {
+  color: #929daf;
+  overflow-wrap: anywhere;
+}
+
+.public-target-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .network-candidate-note {
   margin: -4px 0 12px;
   color: #929aaa;
@@ -1378,6 +1471,15 @@ h2 {
   .network-device-summary {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .public-target-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .public-target-actions {
+    flex-wrap: wrap;
   }
 
   .network-candidate-row {

@@ -54,7 +54,7 @@ def serialize_finding_metadata(value) -> str | None:
 class FindingRecord:
     finding_type: FindingType | str
     device_id: int
-    network_id: int
+    network_id: int | None
     severity: FindingSeverity | str
     confidence: FindingConfidence | str
     status: FindingStatus | str
@@ -68,6 +68,7 @@ class FindingRecord:
     stable_key: str
     first_seen: datetime
     last_seen: datetime
+    scope_id: int | None = None
     port_id: int | None = None
     service_id: int | None = None
     change_id: int | None = None
@@ -109,12 +110,15 @@ class FindingRecord:
         except ValueError as exc:
             raise FindingModelError("Finding type, severity, confidence, or status is invalid.") from exc
 
-        for field_name, value in (
-            ("device_id", self.device_id),
-            ("network_id", self.network_id),
-        ):
+        for field_name, value in (("device_id", self.device_id),):
             if type(value) is not int or value <= 0:
                 raise FindingModelError(f"{field_name} must be positive.")
+
+        for field_name, value in (("network_id", self.network_id), ("scope_id", self.scope_id)):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise FindingModelError(f"{field_name} must be positive when supplied.")
+        if (self.network_id is None) == (self.scope_id is None):
+            raise FindingModelError("Exactly one network or scope context is required.")
 
         for field_name, value in (
             ("port_id", self.port_id),

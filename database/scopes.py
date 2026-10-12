@@ -3,6 +3,7 @@ from datetime import datetime
 
 from database.db import DB_PATH, get_connection, initialize_database
 from services.scope_models import ScopeError, ScopeType
+from services.public_target_policy import normalize_public_ipv4
 from services.target_policy import normalize_cidr
 
 
@@ -32,6 +33,8 @@ def _normalize_target(scope_type: str, canonical_target: str) -> str:
     target = canonical_target.strip()
     if scope_type == ScopeType.PRIVATE_NETWORK.value:
         return normalize_cidr(target)
+    if scope_type == ScopeType.PUBLIC_IPV4.value:
+        return normalize_public_ipv4(target)
     return target
 
 

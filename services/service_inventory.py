@@ -14,11 +14,28 @@ from services.service_models import (
     ServiceDiscoveryResult,
     ServiceObservation,
 )
+from services.scope_authorization import ScopeAuthorizationError, require_public_ipv4_scope
 from services.target_policy import validate_cidr
 
 
 class ServiceInventoryError(ValueError):
     """Raised when service observations cannot be persisted safely."""
+
+
+def _public_context(scope: Mapping[str, object], device: Mapping[str, object]):
+    if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
+        raise ServiceInventoryError("A stored public scope and device are required.")
+    try:
+        target_ip = require_public_ipv4_scope(scope)
+    except ScopeAuthorizationError as exc:
+        raise ServiceInventoryError(str(exc)) from exc
+    if device.get("network_id") is not None or device.get("scope_id") != scope.get("id"):
+        raise ServiceInventoryError("The device does not belong to the public scope.")
+    if device.get("last_ip_address") != target_ip:
+        raise ServiceInventoryError("The device target does not match the scope.")
+    if type(device.get("id")) is not int:
+        raise ServiceInventoryError("Device ID is invalid.")
+    return None, device["id"], target_ip
 
 
 def _context(
@@ -68,7 +85,23 @@ class ServiceInventoryService:
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
     ) -> dict[str, list[dict]]:
-        network_id, device_id, target_ip = _context(network, device)
+        return self._process_result(*_context(network, device), result)
+
+    def process_public_result(
+        self,
+        scope: Mapping[str, object],
+        device: Mapping[str, object],
+        result: ServiceDiscoveryResult,
+    ) -> dict[str, list[dict]]:
+        return self._process_result(*_public_context(scope, device), result)
+
+    def _process_result(
+        self,
+        network_id: int | None,
+        device_id: int,
+        target_ip: str,
+        result: ServiceDiscoveryResult,
+    ) -> dict[str, list[dict]]:
 
         if not isinstance(result, ServiceDiscoveryResult):
             raise ServiceInventoryError("A normalized service result is required.")
@@ -135,15 +168,16 @@ class ServiceInventoryService:
                     "state": port.state.upper(),
                     "last_seen": observed_at,
                 }
-                persist_changes(
-                    port_observation_changes(
-                        previous=previous,
-                        current=current,
-                        network_id=network_id,
-                        observed_at=port.observed_at,
-                    ),
-                    db_path=self.db_path,
-                )
+                if network_id is not None:
+                    persist_changes(
+                        port_observation_changes(
+                            previous=previous,
+                            current=current,
+                            network_id=network_id,
+                            observed_at=port.observed_at,
+                        ),
+                        db_path=self.db_path,
+                    )
                 record = services_db.update_port(
                     port_id=previous["id"],
                     last_seen=observed_at,
@@ -152,15 +186,16 @@ class ServiceInventoryService:
                 )
 
             if previous is None:
-                persist_changes(
-                    port_observation_changes(
-                        previous=None,
-                        current=record,
-                        network_id=network_id,
-                        observed_at=port.observed_at,
-                    ),
-                    db_path=self.db_path,
-                )
+                if network_id is not None:
+                    persist_changes(
+                        port_observation_changes(
+                            previous=None,
+                            current=record,
+                            network_id=network_id,
+                            observed_at=port.observed_at,
+                        ),
+                        db_path=self.db_path,
+                    )
 
             services_db.save_port_observation(
                 device_id=device_id,
@@ -214,15 +249,16 @@ class ServiceInventoryService:
                     "confidence": service.confidence,
                     "last_seen": observed_at,
                 }
-                persist_changes(
-                    service_observation_changes(
-                        previous=previous,
-                        current=current,
-                        network_id=network_id,
-                        observed_at=service.observed_at,
-                    ),
-                    db_path=self.db_path,
-                )
+                if network_id is not None:
+                    persist_changes(
+                        service_observation_changes(
+                            previous=previous,
+                            current=current,
+                            network_id=network_id,
+                            observed_at=service.observed_at,
+                        ),
+                        db_path=self.db_path,
+                    )
                 record = services_db.update_service(
                     service_id=previous["id"],
                     service_name=service.service_name,
@@ -235,15 +271,16 @@ class ServiceInventoryService:
                 )
 
             if previous is None:
-                persist_changes(
-                    service_observation_changes(
-                        previous=None,
-                        current=record,
-                        network_id=network_id,
-                        observed_at=service.observed_at,
-                    ),
-                    db_path=self.db_path,
-                )
+                if network_id is not None:
+                    persist_changes(
+                        service_observation_changes(
+                            previous=None,
+                            current=record,
+                            network_id=network_id,
+                            observed_at=service.observed_at,
+                        ),
+                        db_path=self.db_path,
+                    )
 
             services_db.save_service_observation(
                 service_id=record["id"],

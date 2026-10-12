@@ -57,12 +57,21 @@ from services.pdf_report import build_security_report
 from services.telemetry_ingestion import TelemetryIngestionError, ingest_dns, ingest_web
 from services.target_policy import TargetPolicyError
 from database.scopes import get_scope as get_authorized_scope
-from database.scopes import get_scope_for_network, list_scopes
+from database.scopes import create_scope, get_scope_for_network, list_scopes
 from services.scope_authorization import (
     ScopeAuthorizationError,
     require_private_network_scope,
+    require_public_ipv4_scope,
 )
-from api.schemas import AuthorizedScopeResponse
+from api.schemas import AuthorizedScopeResponse, PublicIPv4ScopeCreate
+from database.inventory import list_scope_devices
+from services.public_target_policy import (
+    PUBLIC_IPV4_CONFIRMATION_VERSION,
+    PublicTargetPolicyError,
+    normalize_public_ipv4,
+)
+from services.public_scope_discovery import PublicScopeDiscoveryError, scan_public_scope
+from services.risk_engine import RiskEngine
 from services.local_network_discovery import (
     LocalNetworkDiscoveryError,
     discover_local_networks,
@@ -231,6 +240,125 @@ def authorized_scope_detail(scope_id: int):
     if scope is None:
         raise HTTPException(status_code=404, detail="Scope not found.")
     return scope
+
+
+@app.post(
+    "/scopes/public-ipv4",
+    response_model=AuthorizedScopeResponse,
+    status_code=201,
+)
+def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
+    if payload.authorization_confirmed is not True:
+        raise HTTPException(
+            status_code=422,
+            detail="Explicit authorization confirmation is required.",
+        )
+    if payload.authorization_confirmation_version != PUBLIC_IPV4_CONFIRMATION_VERSION:
+        raise HTTPException(
+            status_code=422,
+            detail="Authorization confirmation version is unsupported.",
+        )
+    try:
+        target = normalize_public_ipv4(payload.target)
+    except PublicTargetPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        return create_scope(
+            scope_type="PUBLIC_IPV4",
+            canonical_target=target,
+            name=payload.name,
+            description=payload.description,
+            authorized=True,
+            enabled=True,
+            authorization_confirmed_at=datetime.now().isoformat(timespec="seconds"),
+            authorization_confirmation_version=payload.authorization_confirmation_version,
+            authorization_source="api_explicit_authorization_confirmation",
+            db_path=DB_PATH,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A scope for this public IPv4 target already exists.",
+        ) from exc
+
+
+@app.get("/scopes/{scope_id}/devices")
+def list_scope_inventory_devices(scope_id: int):
+    scope = get_authorized_scope(scope_id, db_path=DB_PATH)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Scope not found.")
+    return list_scope_devices(scope_id, db_path=DB_PATH)
+
+
+@app.post("/scopes/{scope_id}/discover")
+def discover_public_scope(scope_id: int):
+    scope = get_authorized_scope(scope_id, db_path=DB_PATH)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Scope not found.")
+    try:
+        require_public_ipv4_scope(scope)
+        result = scan_public_scope(
+            scope,
+            NmapHostDiscoveryScanner(),
+            NmapServiceDiscoveryScanner(),
+            db_path=DB_PATH,
+        )
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except PublicScopeDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ScannerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ScannerTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (ScannerExecutionError, ScannerParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return result
+
+
+@app.post("/scopes/{scope_id}/devices/{device_id}/discover-services")
+def discover_public_scope_device_services(scope_id: int, device_id: int):
+    scope = get_authorized_scope(scope_id, db_path=DB_PATH)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Scope not found.")
+    device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
+    if device is None or device.get("scope_id") != scope_id or device.get("network_id") is not None:
+        raise HTTPException(status_code=404, detail="Scope device not found.")
+    try:
+        target = require_public_ipv4_scope(scope)
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if device.get("last_ip_address") != target:
+        raise HTTPException(status_code=403, detail="Device target does not match scope.")
+    try:
+        service_scanner = NmapServiceDiscoveryScanner()
+        result = service_scanner.discover_public_services(target)
+        inventory = ServiceInventoryService(db_path=DB_PATH).process_public_result(
+            scope, device, result
+        )
+        current_device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
+        findings = RiskEngine(db_path=DB_PATH).evaluate_scope_device(
+            current_device, scope_id
+        )
+        matches = workspace_cves_db.list_device_cve_matches(device_id, db_path=DB_PATH)
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ServiceDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ScannerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ScannerTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (ScannerExecutionError, ScannerParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "scope_id": scope_id,
+        "device_id": device_id,
+        "target": target,
+        **inventory,
+        "findings": findings,
+        "cve_matches": matches,
+    }
 
 
 @app.get("/network-candidates")

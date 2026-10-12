@@ -29,6 +29,28 @@ export function loadScopes(signal) {
   return requestJson('/scopes', { signal })
 }
 
+export function createPublicIPv4Scope(payload) {
+  return requestJson('/scopes/public-ipv4', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function loadScopeDevices(scopeId, signal) {
+  return requestJson(`/scopes/${scopeId}/devices`, { signal })
+}
+
+export function discoverPublicScope(scopeId) {
+  return requestJson(`/scopes/${scopeId}/discover`, { method: 'POST' })
+}
+
+export function discoverScopeDeviceServices(scopeId, deviceId) {
+  return requestJson(`/scopes/${scopeId}/devices/${deviceId}/discover-services`, {
+    method: 'POST',
+  })
+}
+
 export function discoverNetworkCandidates(signal) {
   return requestJson('/network-candidates', { signal })
 }

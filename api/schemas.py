@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 
 class NetworkCreate(BaseModel):
@@ -50,6 +50,16 @@ class AuthorizedScopeResponse(BaseModel):
     created_at: str
     updated_at: str
     network_id: int | None = None
+
+
+class PublicIPv4ScopeCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=500)
+    authorization_confirmed: StrictBool
+    authorization_confirmation_version: str = Field(min_length=1, max_length=80)
 
 
 class WebTelemetryCreate(BaseModel):

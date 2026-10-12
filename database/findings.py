@@ -39,18 +39,19 @@ def create_finding(finding: FindingRecord, db_path=DB_PATH):
         cursor = connection.execute(
             """
             INSERT INTO findings (
-                finding_type, device_id, network_id, port_id, service_id,
+                finding_type, device_id, network_id, scope_id, port_id, service_id,
                 change_id, severity, confidence, status, title, reason,
                 recommendation, evidence_type, source, rule_id, rule_version,
                 stable_key, first_seen, last_seen, resolved_at, metadata_json,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 finding.finding_type.value,
                 finding.device_id,
                 finding.network_id,
+                finding.scope_id,
                 finding.port_id,
                 finding.service_id,
                 finding.change_id,

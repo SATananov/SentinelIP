@@ -3,6 +3,7 @@ import pytest
 from services.scope_authorization import (
     ScopeAuthorizationError,
     require_private_network_scope,
+    require_public_ipv4_scope,
 )
 
 
@@ -67,3 +68,41 @@ def test_invalid_private_network_policy_is_rejected(authorized_records):
 
     with pytest.raises(ScopeAuthorizationError):
         require_private_network_scope(network, scope)
+
+
+@pytest.fixture
+def public_scope():
+    return {
+        "id": 3,
+        "scope_type": "PUBLIC_IPV4",
+        "canonical_target": "8.8.8.8",
+        "authorized": True,
+        "enabled": True,
+        "authorization_confirmed_at": "2026-10-12T10:00:00",
+        "authorization_confirmation_version": "public_ipv4_authorization_v1",
+        "authorization_source": "api_explicit_authorization_confirmation",
+    }
+
+
+def test_confirmed_enabled_public_ipv4_scope_is_accepted(public_scope):
+    assert require_public_ipv4_scope(public_scope) == "8.8.8.8"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scope_type", "PRIVATE_NETWORK"),
+        ("authorized", False),
+        ("enabled", False),
+        ("authorization_confirmed_at", None),
+        ("authorization_confirmation_version", None),
+        ("authorization_source", None),
+        ("canonical_target", "192.168.1.1"),
+        ("canonical_target", "8.8.8.8/32"),
+        ("id", None),
+    ],
+)
+def test_invalid_public_scope_is_rejected(public_scope, field, value):
+    public_scope[field] = value
+    with pytest.raises(ScopeAuthorizationError):
+        require_public_ipv4_scope(public_scope)

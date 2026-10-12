@@ -787,7 +787,187 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        27,
+        (
+            """
+            CREATE TABLE devices_v27 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                network_id INTEGER,
+                scope_id INTEGER,
+                mac_address TEXT,
+                hostname TEXT,
+                vendor TEXT,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                last_ip_address TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ONLINE', 'OFFLINE')),
+                identity_confidence TEXT NOT NULL CHECK (
+                    identity_confidence IN ('HIGH', 'MEDIUM', 'LOW')
+                ),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (network_id IS NOT NULL AND scope_id IS NULL)
+                    OR (network_id IS NULL AND scope_id IS NOT NULL)
+                ),
+                FOREIGN KEY (network_id) REFERENCES networks(id),
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id)
+            )
+            """,
+            """
+            INSERT INTO devices_v27 (
+                id, stable_key, network_id, scope_id, mac_address, hostname,
+                vendor, first_seen, last_seen, last_ip_address, status,
+                identity_confidence, created_at, updated_at
+            )
+            SELECT id, stable_key, network_id, NULL, mac_address, hostname,
+                   vendor, first_seen, last_seen, last_ip_address, status,
+                   identity_confidence, created_at, updated_at
+            FROM devices
+            """,
+            "DROP TABLE devices",
+            "ALTER TABLE devices_v27 RENAME TO devices",
+            "CREATE INDEX idx_devices_network_id ON devices(network_id)",
+            "CREATE INDEX idx_devices_scope_id ON devices(scope_id)",
+            "CREATE INDEX idx_devices_mac_address ON devices(mac_address)",
+            "CREATE INDEX idx_devices_last_ip_address ON devices(last_ip_address)",
+            "CREATE INDEX idx_devices_last_seen ON devices(last_seen)",
+            """
+            CREATE TRIGGER devices_scope_target_insert
+            BEFORE INSERT ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes
+                WHERE id = NEW.scope_id
+                  AND scope_type = 'PUBLIC_IPV4'
+                  AND canonical_target = NEW.last_ip_address
+                  AND authorized = 1 AND enabled = 1
+                  AND authorization_confirmed_at IS NOT NULL
+                  AND authorization_confirmation_version IS NOT NULL
+                  AND authorization_source IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END
+            """,
+            """
+            CREATE TRIGGER devices_scope_target_update
+            BEFORE UPDATE OF scope_id, last_ip_address ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes
+                WHERE id = NEW.scope_id
+                  AND scope_type = 'PUBLIC_IPV4'
+                  AND canonical_target = NEW.last_ip_address
+                  AND authorized = 1 AND enabled = 1
+                  AND authorization_confirmed_at IS NOT NULL
+                  AND authorization_confirmation_version IS NOT NULL
+                  AND authorization_source IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END
+            """,
+            """
+            CREATE TABLE scope_device_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
+                ip_address TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ONLINE', 'OFFLINE')),
+                observed_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id),
+                FOREIGN KEY (device_id) REFERENCES devices(id)
+            )
+            """,
+            """
+            CREATE INDEX idx_scope_device_observations_scope_time
+                ON scope_device_observations(scope_id, observed_at)
+            """,
+            """
+            CREATE TRIGGER scope_device_observation_owner_insert
+            BEFORE INSERT ON scope_device_observations
+            WHEN NOT EXISTS (
+                SELECT 1 FROM devices
+                WHERE id = NEW.device_id AND scope_id = NEW.scope_id
+                  AND network_id IS NULL AND last_ip_address = NEW.ip_address
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope observation device mismatch');
+            END
+            """,
+            """
+            CREATE TABLE findings_v27 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_type TEXT NOT NULL,
+                device_id INTEGER NOT NULL,
+                network_id INTEGER,
+                scope_id INTEGER,
+                port_id INTEGER,
+                service_id INTEGER,
+                change_id INTEGER,
+                severity TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
+                evidence_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                stable_key TEXT NOT NULL UNIQUE,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                resolved_at TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (
+                    (network_id IS NOT NULL AND scope_id IS NULL)
+                    OR (network_id IS NULL AND scope_id IS NOT NULL)
+                ),
+                FOREIGN KEY (device_id) REFERENCES devices(id),
+                FOREIGN KEY (network_id) REFERENCES networks(id),
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id),
+                FOREIGN KEY (port_id) REFERENCES ports(id),
+                FOREIGN KEY (service_id) REFERENCES services(id),
+                FOREIGN KEY (change_id) REFERENCES changes(id)
+            )
+            """,
+            """
+            INSERT INTO findings_v27 (
+                id, finding_type, device_id, network_id, scope_id, port_id,
+                service_id, change_id, severity, confidence, status, title,
+                reason, recommendation, evidence_type, source, rule_id,
+                rule_version, stable_key, first_seen, last_seen, resolved_at,
+                metadata_json, created_at, updated_at
+            )
+            SELECT id, finding_type, device_id, network_id, NULL, port_id,
+                   service_id, change_id, severity, confidence, status, title,
+                   reason, recommendation, evidence_type, source, rule_id,
+                   rule_version, stable_key, first_seen, last_seen, resolved_at,
+                   metadata_json, created_at, updated_at
+            FROM findings
+            """,
+            "DROP TABLE findings",
+            "ALTER TABLE findings_v27 RENAME TO findings",
+            "CREATE INDEX idx_findings_device_status ON findings(device_id, status)",
+            "CREATE INDEX idx_findings_network_status ON findings(network_id, status)",
+            "CREATE INDEX idx_findings_scope_status ON findings(scope_id, status)",
+            "CREATE INDEX idx_findings_type ON findings(finding_type)",
+            "CREATE INDEX idx_findings_severity ON findings(severity)",
+            "CREATE INDEX idx_findings_status ON findings(status)",
+            "CREATE INDEX idx_findings_last_seen ON findings(last_seen)",
+            "CREATE INDEX idx_findings_port ON findings(port_id)",
+            "CREATE INDEX idx_findings_service ON findings(service_id)",
+        ),
+    ),
 )
+
+
+MIGRATIONS_REQUIRING_FOREIGN_KEYS_DISABLED = frozenset({27})
 
 
 def apply_migrations(connection: sqlite3.Connection):
@@ -810,6 +990,13 @@ def apply_migrations(connection: sqlite3.Connection):
         if row is not None:
             continue
 
+        disable_foreign_keys = version in MIGRATIONS_REQUIRING_FOREIGN_KEYS_DISABLED
+        prior_foreign_key_violations = set()
+        if disable_foreign_keys:
+            prior_foreign_key_violations = set(
+                connection.execute("PRAGMA foreign_key_check").fetchall()
+            )
+            connection.execute("PRAGMA foreign_keys = OFF")
         try:
             connection.execute("BEGIN")
             statements = (
@@ -828,7 +1015,17 @@ def apply_migrations(connection: sqlite3.Connection):
                 """,
                 (version,),
             )
+            if disable_foreign_keys:
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                new_violations = set(violations) - prior_foreign_key_violations
+                if new_violations:
+                    raise sqlite3.IntegrityError(
+                        "Migration would introduce foreign-key violations."
+                    )
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+        finally:
+            if disable_foreign_keys:
+                connection.execute("PRAGMA foreign_keys = ON")

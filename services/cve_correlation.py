@@ -111,10 +111,12 @@ class CveCorrelationService:
         )
         confidence = FindingConfidence(match.confidence.value)
         now = match.last_seen
+        network_id, scope_id = self._context_for_match(match)
         finding = FindingRecord(
             finding_type="CVE_REVIEW",
             device_id=match.device_id,
-            network_id=self._network_id_for_match(match),
+            network_id=network_id,
+            scope_id=scope_id,
             port_id=match.port_id,
             service_id=match.service_id,
             severity=severity,
@@ -148,10 +150,14 @@ class CveCorrelationService:
                 self.db_path,
             )
 
-    def _network_id_for_match(self, match: CveMatch) -> int:
+    def _context_for_match(self, match: CveMatch) -> tuple[int | None, int | None]:
         from database.inventory import get_device
 
         device = get_device(match.device_id, self.db_path)
         if device is None:
             raise CveCorrelationError("Matched device no longer exists.")
-        return device["network_id"]
+        network_id = device.get("network_id")
+        scope_id = device.get("scope_id")
+        if (network_id is None) == (scope_id is None):
+            raise CveCorrelationError("Matched device has invalid scope context.")
+        return network_id, scope_id

@@ -18,6 +18,20 @@ class RiskEngine:
         self.rules = rules
 
     def evaluate_device(self, device: dict, network_id: int) -> list[dict]:
+        return self._evaluate_device(device, network_id, None)
+
+    def evaluate_scope_device(self, device: dict, scope_id: int) -> list[dict]:
+        if type(scope_id) is not int or scope_id <= 0:
+            raise RiskEngineError("Scope ID must be positive.")
+        if not isinstance(device, dict):
+            raise RiskEngineError("A persisted device is required.")
+        if device.get("network_id") is not None or device.get("scope_id") != scope_id:
+            raise RiskEngineError("Device does not belong to the public scope.")
+        return self._evaluate_device(device, None, scope_id)
+
+    def _evaluate_device(
+        self, device: dict, network_id: int | None, scope_id: int | None
+    ) -> list[dict]:
         if not isinstance(device, dict) or type(device.get("id")) is not int:
             raise RiskEngineError("A persisted device is required.")
 
@@ -31,6 +45,7 @@ class RiskEngine:
             context = RiskContext(
                 device=device,
                 network_id=network_id,
+                scope_id=scope_id,
                 port=port,
                 service=service_by_port.get(port["id"]),
                 change=None,
@@ -53,6 +68,7 @@ class RiskEngine:
             context = RiskContext(
                 device=device,
                 network_id=network_id,
+                scope_id=scope_id,
                 port=port,
                 service=service,
                 change=change,
@@ -87,6 +103,7 @@ class RiskEngine:
             finding_type=candidate.finding_type,
             device_id=candidate.device_id,
             network_id=candidate.network_id,
+            scope_id=candidate.scope_id,
             port_id=candidate.port_id,
             service_id=candidate.service_id,
             change_id=candidate.change_id,

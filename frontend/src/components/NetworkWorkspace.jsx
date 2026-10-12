@@ -5,14 +5,27 @@ import {
 } from 'react'
 
 import {
+  createPublicIPv4Scope,
   discoverDeviceServices,
   discoverNetworkCandidates,
   discoverNetwork,
+  discoverPublicScope,
+  discoverScopeDeviceServices,
   loadDeviceReview,
   loadNetworkDevices,
   loadNetworks,
+  loadScopeDevices,
   loadScopes,
 } from '../services/networkApi.js'
+
+const PUBLIC_AUTHORIZATION_VERSION = 'public_ipv4_authorization_v1'
+
+function isIPv4Address(value) {
+  const parts = value.trim().split('.')
+  return parts.length === 4 && parts.every((part) => (
+    /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255
+  ))
+}
 
 function DeviceStatus({ value }) {
   const normalized = String(value ?? 'UNKNOWN').toLowerCase()
@@ -27,6 +40,11 @@ function DeviceStatus({ value }) {
 function NetworkWorkspace() {
   const [networks, setNetworks] = useState([])
   const [scopes, setScopes] = useState([])
+  const [selectedPublicScopeId, setSelectedPublicScopeId] = useState(null)
+  const [publicTarget, setPublicTarget] = useState('')
+  const [publicTargetName, setPublicTargetName] = useState('')
+  const [publicTargetDescription, setPublicTargetDescription] = useState('')
+  const [publicAuthorizationConfirmed, setPublicAuthorizationConfirmed] = useState(false)
   const [networkCandidates, setNetworkCandidates] = useState([])
   const [selectedNetworkId, setSelectedNetworkId] = useState(null)
   const [devices, setDevices] = useState([])
@@ -41,6 +59,8 @@ function NetworkWorkspace() {
   const [deviceError, setDeviceError] = useState(null)
   const [candidateLoading, setCandidateLoading] = useState(false)
   const [candidateError, setCandidateError] = useState(null)
+  const [publicScopeLoading, setPublicScopeLoading] = useState(false)
+  const [publicScopeError, setPublicScopeError] = useState(null)
 
   const loadWorkspace = useCallback(async (signal) => {
     setLoading(true)
@@ -89,6 +109,7 @@ function NetworkWorkspace() {
   async function selectNetwork(event) {
     const networkId = Number(event.target.value)
 
+    setSelectedPublicScopeId(null)
     setSelectedNetworkId(networkId)
     setDevices([])
     setSelectedDeviceId(null)
@@ -158,7 +179,11 @@ function NetworkWorkspace() {
     setDeviceError(null)
 
     try {
-      await discoverDeviceServices(selectedDeviceId)
+      if (selectedPublicScopeId) {
+        await discoverScopeDeviceServices(selectedPublicScopeId, selectedDeviceId)
+      } else {
+        await discoverDeviceServices(selectedDeviceId)
+      }
       const result = await loadDeviceReview(selectedDeviceId)
       setDeviceReview(result)
     } catch (err) {
@@ -182,11 +207,87 @@ function NetworkWorkspace() {
     }
   }
 
+  async function addPublicTarget(event) {
+    event.preventDefault()
+    if (!isIPv4Address(publicTarget) || !publicAuthorizationConfirmed) return
+
+    setPublicScopeLoading(true)
+    setPublicScopeError(null)
+    try {
+      const scope = await createPublicIPv4Scope({
+        target: publicTarget.trim(),
+        name: publicTargetName.trim(),
+        description: publicTargetDescription.trim(),
+        authorization_confirmed: true,
+        authorization_confirmation_version: PUBLIC_AUTHORIZATION_VERSION,
+      })
+      setScopes((current) => [...current, scope])
+      setPublicTarget('')
+      setPublicTargetName('')
+      setPublicTargetDescription('')
+      setPublicAuthorizationConfirmed(false)
+      setSelectedPublicScopeId(scope.id)
+      setSelectedNetworkId(null)
+      setDevices([])
+      setSelectedDeviceId(null)
+      setDeviceReview(null)
+    } catch (err) {
+      setPublicScopeError(err.message)
+    } finally {
+      setPublicScopeLoading(false)
+    }
+  }
+
+  async function selectPublicTarget(scopeId) {
+    setSelectedPublicScopeId(scopeId)
+    setSelectedNetworkId(null)
+    setDevices([])
+    setSelectedDeviceId(null)
+    setDeviceReview(null)
+    setLoading(true)
+    setError(null)
+    try {
+      setDevices(await loadScopeDevices(scopeId))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function scanPublicTarget(scopeId) {
+    setSelectedPublicScopeId(scopeId)
+    setSelectedNetworkId(null)
+    setScanLoading(true)
+    setError(null)
+    setDeviceError(null)
+    setSelectedDeviceId(null)
+    setDeviceReview(null)
+    try {
+      const result = await discoverPublicScope(scopeId)
+      const nextDevices = result.device ? [result.device] : []
+      setDevices(nextDevices)
+      if (nextDevices.length > 0) {
+        const review = await loadDeviceReview(nextDevices[0].id)
+        setSelectedDeviceId(nextDevices[0].id)
+        setDeviceReview(review)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScanLoading(false)
+    }
+  }
+
   const selectedNetwork = networks.find(
     (network) => network.id === selectedNetworkId,
   )
   const selectedScope = scopes.find(
     (scope) => scope.network_id === selectedNetworkId,
+  )
+  const publicTargets = scopes.filter((scope) => scope.scope_type === 'PUBLIC_IPV4')
+  const selectedPublicScope = publicTargets.find(
+    (scope) => scope.id === selectedPublicScopeId,
   )
   const scopeAllowsScan = Boolean(
     selectedNetwork?.authorized === true &&
@@ -199,6 +300,15 @@ function NetworkWorkspace() {
     selectedScope?.authorization_confirmation_version &&
     selectedScope?.authorization_source,
   )
+  const publicScopeAllowsScan = Boolean(
+    selectedPublicScope?.scope_type === 'PUBLIC_IPV4' &&
+    selectedPublicScope?.authorized === true &&
+    selectedPublicScope?.enabled === true &&
+    selectedPublicScope?.authorization_confirmed_at &&
+    selectedPublicScope?.authorization_confirmation_version &&
+    selectedPublicScope?.authorization_source &&
+    isIPv4Address(selectedPublicScope?.canonical_target ?? '')
+  )
   const busy = loading || scanLoading || deviceLoading || serviceScanLoading
 
   return (
@@ -208,13 +318,13 @@ function NetworkWorkspace() {
           <p className="panel-kicker">Network Visibility</p>
           <h2>Network Workspace</h2>
           <p className="network-workspace-copy">
-            Discover authorized private networks, review devices, and inspect
+            Discover authorized private networks and public targets, review devices, and inspect
             persisted ports, services, findings, and CVE matches.
           </p>
         </div>
 
         <span className="network-boundary">
-          AUTHORIZED NETWORKS ONLY
+          AUTHORIZED TARGETS ONLY
         </span>
       </div>
 
@@ -301,6 +411,108 @@ function NetworkWorkspace() {
         </article>
       )}
 
+      <article className="panel public-target-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="panel-kicker">Explicit Authorization</p>
+            <h3>Public Targets</h3>
+          </div>
+          <span className="network-candidate-state public-target-badge">
+            Single IPv4 only
+          </span>
+        </div>
+        <p className="network-candidate-note">
+          Add only a public IPv4 address you own or are authorized to assess.
+          Hostnames and ranges are not accepted.
+        </p>
+        <form className="public-target-form" onSubmit={addPublicTarget}>
+          <label>
+            <span>IPv4 address</span>
+            <input
+              value={publicTarget}
+              onChange={(event) => setPublicTarget(event.target.value)}
+              inputMode="decimal"
+              autoComplete="off"
+              aria-label="Public IPv4 address"
+            />
+          </label>
+          <label>
+            <span>Name (optional)</span>
+            <input
+              value={publicTargetName}
+              onChange={(event) => setPublicTargetName(event.target.value)}
+              maxLength={120}
+            />
+          </label>
+          <label className="public-target-description">
+            <span>Description (optional)</span>
+            <input
+              value={publicTargetDescription}
+              onChange={(event) => setPublicTargetDescription(event.target.value)}
+              maxLength={500}
+            />
+          </label>
+          <label className="public-target-confirmation">
+            <input
+              type="checkbox"
+              checked={publicAuthorizationConfirmed}
+              onChange={(event) => setPublicAuthorizationConfirmed(event.target.checked)}
+            />
+            <span>I confirm that I own this target or have authorization to assess it.</span>
+          </label>
+          <button
+            className="network-primary-action"
+            type="submit"
+            disabled={publicScopeLoading || !isIPv4Address(publicTarget) || !publicAuthorizationConfirmed}
+          >
+            {publicScopeLoading ? 'Saving…' : 'Add Public Target'}
+          </button>
+        </form>
+        {publicScopeError && (
+          <div className="network-error" role="alert">{publicScopeError}</div>
+        )}
+        {publicTargets.length === 0 ? (
+          <p className="network-mini-empty">No public targets are authorized.</p>
+        ) : (
+          <div className="public-target-list">
+            {publicTargets.map((scope) => {
+              const canScan = scope.authorized && scope.enabled &&
+                scope.authorization_confirmed_at &&
+                scope.authorization_confirmation_version && scope.authorization_source
+              const isSelected = scope.id === selectedPublicScopeId
+              return (
+                <div className={isSelected ? 'public-target-row is-selected' : 'public-target-row'} key={scope.id}>
+                  <div>
+                    <strong>{scope.name || 'Public IPv4 Target'}</strong>
+                    <small>Type: Public IPv4</small>
+                    <span className="mono">{scope.canonical_target}</span>
+                    <small>Authorization: {canScan ? 'Confirmed' : 'Not confirmed'} · State: {scope.enabled ? 'Enabled' : 'Disabled'}</small>
+                  </div>
+                  <div className="public-target-actions">
+                    <button
+                      className="network-secondary-action"
+                      type="button"
+                      onClick={() => selectPublicTarget(scope.id)}
+                      disabled={loading || scanLoading}
+                    >
+                      {isSelected ? 'Selected' : 'Review Target'}
+                    </button>
+                    <button
+                      className="network-primary-action"
+                      type="button"
+                      onClick={() => scanPublicTarget(scope.id)}
+                      disabled={!canScan || busy || publicScopeLoading}
+                    >
+                      {scanLoading && isSelected ? 'Scanning…' : 'Scan Target'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </article>
+
       <article className="panel network-candidate-panel">
         <div className="panel-heading">
           <div>
@@ -375,7 +587,9 @@ function NetworkWorkspace() {
             <p className="empty-state">Loading device inventory…</p>
           ) : devices.length === 0 ? (
             <p className="empty-state">
-              No devices are currently persisted for this network.
+              {selectedPublicScope
+                ? 'No device evidence is currently persisted for this target.'
+                : 'No devices are currently persisted for this network.'}
             </p>
           ) : (
             <div className="network-device-list">
@@ -420,7 +634,7 @@ function NetworkWorkspace() {
               className="network-secondary-action"
               type="button"
               onClick={scanServices}
-              disabled={!selectedDeviceId || !scopeAllowsScan || busy}
+              disabled={!selectedDeviceId || !(scopeAllowsScan || publicScopeAllowsScan) || busy}
             >
               {serviceScanLoading
                 ? 'Scanning services…'

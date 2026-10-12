@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime
 
 from database.db import DB_PATH, get_connection, initialize_database
+from services.public_target_policy import PublicTargetPolicyError, normalize_public_ipv4
 
 
 def _as_device(row):
@@ -68,6 +69,122 @@ def create_device(
         ).fetchone()
 
     return _as_device(row)
+
+
+def create_scope_device(
+    scope_id: int,
+    *,
+    first_seen: str,
+    last_seen: str,
+    status: str,
+    db_path=DB_PATH,
+):
+    """Create or refresh the one inventory device belonging to a public scope."""
+    if type(scope_id) is not int or scope_id <= 0:
+        raise ValueError("Scope ID must be positive.")
+    if status not in {"ONLINE", "OFFLINE"}:
+        raise ValueError("Device status is invalid.")
+    initialize_database(db_path)
+
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        scope = connection.execute(
+            "SELECT * FROM authorized_scopes WHERE id = ?", (scope_id,)
+        ).fetchone()
+        if (
+            scope is None
+            or scope["scope_type"] != "PUBLIC_IPV4"
+            or scope["authorized"] != 1
+            or scope["enabled"] != 1
+            or not all(
+                scope[field]
+                for field in (
+                    "authorization_confirmed_at",
+                    "authorization_confirmation_version",
+                    "authorization_source",
+                )
+            )
+        ):
+            raise ValueError("An enabled, confirmed public IPv4 scope is required.")
+        try:
+            address = normalize_public_ipv4(scope["canonical_target"])
+        except PublicTargetPolicyError as exc:
+            raise ValueError("The public scope target is invalid.") from exc
+        stable_key = f"scope:{scope_id}:ipv4:{address}"
+        existing = connection.execute(
+            "SELECT id FROM devices WHERE stable_key = ?", (stable_key,)
+        ).fetchone()
+        if existing is None:
+            cursor = connection.execute(
+                """INSERT INTO devices (
+                    stable_key, network_id, scope_id, mac_address, hostname, vendor,
+                    first_seen, last_seen, last_ip_address, status,
+                    identity_confidence, created_at, updated_at
+                ) VALUES (?, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, 'LOW', ?, ?)""",
+                (
+                    stable_key,
+                    scope_id,
+                    first_seen,
+                    last_seen,
+                    address,
+                    status,
+                    first_seen,
+                    last_seen,
+                ),
+            )
+            device_id = cursor.lastrowid
+        else:
+            device_id = existing["id"]
+            connection.execute(
+                """UPDATE devices
+                   SET last_seen = ?, last_ip_address = ?, status = ?, updated_at = ?
+                   WHERE id = ? AND scope_id = ? AND network_id IS NULL""",
+                (last_seen, address, status, last_seen, device_id, scope_id),
+            )
+        row = connection.execute(
+            "SELECT * FROM devices WHERE id = ?", (device_id,)
+        ).fetchone()
+    return _as_device(row)
+
+
+def list_scope_devices(scope_id: int, db_path=DB_PATH):
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT * FROM devices WHERE scope_id = ? ORDER BY id ASC",
+            (scope_id,),
+        ).fetchall()
+    return [_as_device(row) for row in rows]
+
+
+def save_scope_device_observation(
+    *, scope_id: int, device_id: int, ip_address: str, status: str,
+    observed_at: str, source: str, db_path=DB_PATH,
+):
+    address = normalize_public_ipv4(ip_address)
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        owned_device = connection.execute(
+            """SELECT 1 FROM devices
+               WHERE id = ? AND scope_id = ? AND network_id IS NULL
+                 AND last_ip_address = ?""",
+            (device_id, scope_id, address),
+        ).fetchone()
+        if owned_device is None:
+            raise ValueError("Device does not belong to the public target scope.")
+        cursor = connection.execute(
+            """INSERT INTO scope_device_observations (
+                scope_id, device_id, ip_address, status, observed_at, source
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (scope_id, device_id, address, status, observed_at, source),
+        )
+        row = connection.execute(
+            "SELECT * FROM scope_device_observations WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    return dict(row)
 
 
 def get_device(device_id: int, db_path=DB_PATH):

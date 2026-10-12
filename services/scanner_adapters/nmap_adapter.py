@@ -14,6 +14,7 @@ from services.service_models import (
     ServiceObservation,
 )
 from services.target_policy import validate_cidr
+from services.public_target_policy import normalize_public_ipv4
 
 
 class ScannerUnavailableError(RuntimeError):
@@ -96,12 +97,26 @@ class NmapHostDiscoveryScanner:
 
     def discover_hosts(self, network_cidr: str) -> ScanResult:
         validated_network = validate_cidr(network_cidr)
-        normalized_cidr = validated_network.cidr
+        return self._discover_target(validated_network.cidr, resolve_names=True)
+
+    def discover_public_host(self, target: str) -> ScanResult:
+        """Run the existing bounded -sn discovery against one approved IPv4."""
+        normalized_target = normalize_public_ipv4(target)
+        result = self._discover_target(normalized_target, resolve_names=False)
+        if any(host.ip_address != normalized_target for host in result.hosts):
+            raise ScannerParseError(
+                "Nmap returned a host outside the authorized public target."
+            )
+        return result
+
+    def _discover_target(self, normalized_target: str, *, resolve_names: bool) -> ScanResult:
         started_at = datetime.now()
+        name_resolution_args = [] if resolve_names else ["-n"]
         command = [
             self.executable,
             "-sn",
-            normalized_cidr,
+            *name_resolution_args,
+            normalized_target,
             "-oX",
             "-",
         ]
@@ -139,7 +154,7 @@ class NmapHostDiscoveryScanner:
         hosts = self._parse_hosts(completed.stdout, completed_at)
 
         return ScanResult(
-            target_network=normalized_cidr,
+            target_network=normalized_target,
             scanner="nmap",
             started_at=started_at,
             completed_at=completed_at,
@@ -231,10 +246,23 @@ class NmapServiceDiscoveryScanner:
 
     def discover_services(self, ip_address: str) -> ServiceDiscoveryResult:
         normalized_ip = self._validate_target(ip_address)
+        return self._discover_target_services(normalized_ip, resolve_names=True)
+
+    def discover_public_services(self, ip_address: str) -> ServiceDiscoveryResult:
+        """Use the same conservative TCP profile for one authorized public IPv4."""
+        return self._discover_target_services(
+            normalize_public_ipv4(ip_address), resolve_names=False
+        )
+
+    def _discover_target_services(
+        self, normalized_ip: str, *, resolve_names: bool
+    ) -> ServiceDiscoveryResult:
         started_at = datetime.now()
+        name_resolution_args = [] if resolve_names else ["-n"]
         port_list = ",".join(str(port) for port in CONSERVATIVE_TCP_PORTS)
         command = [
             self.executable,
+            *name_resolution_args,
             "-sT",
             "-sV",
             "--version-light",

@@ -11,7 +11,8 @@ from services.finding_models import (
 @dataclass(frozen=True)
 class RiskContext:
     device: dict
-    network_id: int
+    network_id: int | None
+    scope_id: int | None = None
     port: dict | None = None
     service: dict | None = None
     change: dict | None = None
@@ -21,7 +22,7 @@ class RiskContext:
 class FindingCandidate:
     finding_type: FindingType
     device_id: int
-    network_id: int
+    network_id: int | None
     severity: FindingSeverity
     confidence: FindingConfidence
     title: str
@@ -35,6 +36,7 @@ class FindingCandidate:
     port_id: int | None = None
     service_id: int | None = None
     change_id: int | None = None
+    scope_id: int | None = None
     metadata: dict | None = None
 
 
@@ -75,7 +77,11 @@ def _candidate(
     port_id = context.port.get("id") if context.port else None
     service_id = context.service.get("id") if context.service else None
     change_id = context.change.get("id") if context.change else None
-    scope = f"device:{context.device['id']}"
+    scope = (
+        f"scope:{context.scope_id}:device:{context.device['id']}"
+        if context.scope_id is not None
+        else f"device:{context.device['id']}"
+    )
 
     if port_id is not None:
         scope += f":port:{port_id}"
@@ -84,6 +90,7 @@ def _candidate(
         finding_type=finding_type,
         device_id=context.device["id"],
         network_id=context.network_id,
+        scope_id=context.scope_id,
         severity=severity,
         confidence=confidence,
         title=title,

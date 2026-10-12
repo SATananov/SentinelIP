@@ -1,6 +1,10 @@
 from collections.abc import Mapping
 
 from services.scope_models import ScopeType
+from services.public_target_policy import (
+    PublicTargetPolicyError,
+    normalize_public_ipv4,
+)
 from services.target_policy import TargetPolicyError, validate_cidr
 
 
@@ -58,3 +62,36 @@ def require_private_network_scope(network, scope) -> None:
         raise ScopeAuthorizationError(
             "The scope target does not match the network CIDR."
         )
+
+
+def require_public_ipv4_scope(scope) -> str:
+    if not isinstance(scope, Mapping):
+        raise ScopeAuthorizationError("A persisted public scope is required.")
+    if scope.get("scope_type") != ScopeType.PUBLIC_IPV4.value:
+        raise ScopeAuthorizationError("The scope is not a public IPv4 target.")
+    if scope.get("authorized") is not True:
+        raise ScopeAuthorizationError("The scope is not authorized.")
+    if scope.get("enabled") is not True:
+        raise ScopeAuthorizationError("The scope is disabled.")
+    if not all(
+        isinstance(scope.get(field), str) and scope[field].strip()
+        for field in (
+            "authorization_confirmed_at",
+            "authorization_confirmation_version",
+            "authorization_source",
+        )
+    ):
+        raise ScopeAuthorizationError(
+            "The scope has no persisted authorization confirmation."
+        )
+    try:
+        canonical_target = normalize_public_ipv4(scope.get("canonical_target"))
+    except PublicTargetPolicyError as exc:
+        raise ScopeAuthorizationError("The stored public target is invalid.") from exc
+    if canonical_target != scope.get("canonical_target"):
+        raise ScopeAuthorizationError(
+            "The stored public target is not canonical."
+        )
+    if type(scope.get("id")) is not int or scope["id"] <= 0:
+        raise ScopeAuthorizationError("The public scope ID is invalid.")
+    return canonical_target
