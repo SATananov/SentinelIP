@@ -661,6 +661,43 @@ MIGRATIONS = (
                WHERE evidence_type = 'SSH_EVENT'""",
         ),
     ),
+
+    (
+        25,
+        (
+            """CREATE TABLE incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                incident_type TEXT NOT NULL CHECK (incident_type IN (
+                    'AUTHENTICATION_REVIEW', 'WEB_ACTIVITY_REVIEW', 'MULTI_SIGNAL_REVIEW')),
+                status TEXT NOT NULL CHECK (status = 'OPEN'),
+                priority TEXT NOT NULL CHECK (priority = 'MEDIUM'),
+                primary_correlation_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE incident_correlations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL REFERENCES incidents(id),
+                source_correlation_id INTEGER NOT NULL,
+                correlation_id INTEGER REFERENCES correlations(id) ON DELETE SET NULL,
+                snapshot TEXT NOT NULL,
+                CHECK (correlation_id IS NULL OR correlation_id = source_correlation_id),
+                UNIQUE (incident_id, source_correlation_id)
+            )""",
+            """CREATE INDEX idx_incidents_type_time ON incidents(incident_type, opened_at)""",
+            """CREATE INDEX idx_incidents_status_time ON incidents(status, opened_at)""",
+            """CREATE INDEX idx_incident_correlations_live ON incident_correlations(correlation_id)""",
+        ),
+    ),
 )
 
 
