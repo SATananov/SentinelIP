@@ -698,6 +698,95 @@ MIGRATIONS = (
             """CREATE INDEX idx_incident_correlations_live ON incident_correlations(correlation_id)""",
         ),
     ),
+    (
+        26,
+        (
+            """
+            CREATE TABLE IF NOT EXISTS authorized_scopes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_type TEXT NOT NULL CHECK (
+                    scope_type IN (
+                        'PRIVATE_NETWORK',
+                        'PUBLIC_IPV4',
+                        'PUBLIC_CIDR',
+                        'HOSTNAME'
+                    )
+                ),
+                canonical_target TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                authorized INTEGER NOT NULL CHECK (authorized IN (0, 1)),
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                authorization_confirmed_at TEXT,
+                authorization_confirmation_version TEXT,
+                authorization_source TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (scope_type, canonical_target),
+                CHECK (
+                    authorized = 0
+                    OR (
+                        authorization_confirmed_at IS NOT NULL
+                        AND authorization_confirmation_version IS NOT NULL
+                        AND authorization_source IS NOT NULL
+                    )
+                )
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS network_scope_links (
+                network_id INTEGER PRIMARY KEY,
+                scope_id INTEGER NOT NULL UNIQUE,
+                FOREIGN KEY (network_id) REFERENCES networks(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT OR IGNORE INTO authorized_scopes (
+                scope_type,
+                canonical_target,
+                name,
+                description,
+                authorized,
+                enabled,
+                authorization_confirmed_at,
+                authorization_confirmation_version,
+                authorization_source,
+                created_at,
+                updated_at
+            )
+            SELECT
+                'PRIVATE_NETWORK',
+                cidr,
+                name,
+                description,
+                authorized,
+                enabled,
+                CASE WHEN authorized = 1 THEN created_at ELSE NULL END,
+                CASE WHEN authorized = 1
+                    THEN 'legacy_network_authorization_v1' ELSE NULL END,
+                CASE WHEN authorized = 1
+                    THEN 'legacy_network_record_migration_26' ELSE NULL END,
+                created_at,
+                updated_at
+            FROM networks
+            """,
+            """
+            INSERT OR IGNORE INTO network_scope_links (network_id, scope_id)
+            SELECT networks.id, authorized_scopes.id
+            FROM networks
+            JOIN authorized_scopes
+              ON authorized_scopes.scope_type = 'PRIVATE_NETWORK'
+             AND authorized_scopes.canonical_target = networks.cidr
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_authorized_scopes_type_enabled
+                ON authorized_scopes(scope_type, enabled)
+            """,
+        ),
+    ),
 )
 
 

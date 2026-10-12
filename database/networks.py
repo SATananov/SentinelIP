@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime
 
 from database.db import DB_PATH, get_connection, initialize_database
+from database.scopes import create_private_scope_for_network
 from services.target_policy import normalize_cidr
 
 
@@ -66,6 +67,7 @@ def create_network(
             "SELECT * FROM networks WHERE id = ?",
             (cursor.lastrowid,),
         ).fetchone()
+        create_private_scope_for_network(connection, dict(row))
 
     return _as_network(row)
 
@@ -131,6 +133,26 @@ def update_network(
                 f"UPDATE networks SET {', '.join(updates)} WHERE id = ?",
                 parameters,
             )
+            scope_updates = []
+            scope_parameters = []
+            for field, value in (("name", name), ("description", description)):
+                if value is not _UNSET:
+                    scope_updates.append(f"{field} = ?")
+                    scope_parameters.append(value)
+            if scope_updates:
+                scope_updates.append("updated_at = ?")
+                scope_parameters.append(timestamp)
+                connection.execute(
+                    f"""
+                    UPDATE authorized_scopes
+                    SET {', '.join(scope_updates)}
+                    WHERE id = (
+                        SELECT scope_id FROM network_scope_links
+                        WHERE network_id = ?
+                    )
+                    """,
+                    (*scope_parameters, network_id),
+                )
 
         connection.row_factory = sqlite3.Row
         row = connection.execute(
@@ -145,9 +167,18 @@ def delete_network(network_id: int, db_path=DB_PATH) -> bool:
     initialize_database(db_path)
 
     with get_connection(db_path) as connection:
+        scope_row = connection.execute(
+            "SELECT scope_id FROM network_scope_links WHERE network_id = ?",
+            (network_id,),
+        ).fetchone()
         cursor = connection.execute(
             "DELETE FROM networks WHERE id = ?",
             (network_id,),
         )
+        if cursor.rowcount and scope_row is not None:
+            connection.execute(
+                "DELETE FROM authorized_scopes WHERE id = ?",
+                (scope_row[0],),
+            )
 
     return cursor.rowcount > 0

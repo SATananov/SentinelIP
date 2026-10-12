@@ -25,6 +25,10 @@ export function loadNetworks(signal) {
   return requestJson('/networks', { signal })
 }
 
+export function loadScopes(signal) {
+  return requestJson('/scopes', { signal })
+}
+
 export function discoverNetworkCandidates(signal) {
   return requestJson('/network-candidates', { signal })
 }

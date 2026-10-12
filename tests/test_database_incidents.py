@@ -24,7 +24,9 @@ def test_migration_25_is_additive_and_idempotent(tmp_path):
     path = tmp_path / "test.db"
     initialize_database(path); initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 25
+        assert connection.execute(
+            "SELECT 1 FROM schema_migrations WHERE version=25"
+        ).fetchone() == (1,)
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='incidents'").fetchone()
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='incident_correlations'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

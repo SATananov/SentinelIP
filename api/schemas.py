@@ -34,6 +34,24 @@ class NetworkResponse(BaseModel):
     updated_at: str
 
 
+class AuthorizedScopeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    scope_type: str
+    canonical_target: str
+    name: str
+    description: str
+    authorized: bool
+    enabled: bool
+    authorization_confirmed_at: str | None
+    authorization_confirmation_version: str | None
+    authorization_source: str | None
+    created_at: str
+    updated_at: str
+    network_id: int | None = None
+
+
 class WebTelemetryCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

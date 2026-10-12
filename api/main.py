@@ -56,6 +56,13 @@ from api.schemas import DnsTelemetryCreate, WebTelemetryCreate
 from services.pdf_report import build_security_report
 from services.telemetry_ingestion import TelemetryIngestionError, ingest_dns, ingest_web
 from services.target_policy import TargetPolicyError
+from database.scopes import get_scope as get_authorized_scope
+from database.scopes import get_scope_for_network, list_scopes
+from services.scope_authorization import (
+    ScopeAuthorizationError,
+    require_private_network_scope,
+)
+from api.schemas import AuthorizedScopeResponse
 from services.local_network_discovery import (
     LocalNetworkDiscoveryError,
     discover_local_networks,
@@ -209,6 +216,21 @@ def update_authorized_network(
 def delete_authorized_network(network_id: int):
     if not delete_network(network_id, db_path=DB_PATH):
         raise HTTPException(status_code=404, detail="Network not found.")
+
+
+@app.get("/scopes", response_model=list[AuthorizedScopeResponse])
+def authorized_scopes():
+    return list_scopes(db_path=DB_PATH)
+
+
+@app.get("/scopes/{scope_id}", response_model=AuthorizedScopeResponse)
+def authorized_scope_detail(scope_id: int):
+    if scope_id <= 0:
+        raise HTTPException(status_code=422, detail="Scope ID must be positive.")
+    scope = get_authorized_scope(scope_id, db_path=DB_PATH)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Scope not found.")
+    return scope
 
 
 @app.get("/network-candidates")
@@ -630,6 +652,12 @@ def _workspace_network_or_404(network_id: int):
     return network
 
 
+def _workspace_require_network_scope(network: dict):
+    scope = get_scope_for_network(network["id"], db_path=DB_PATH)
+    require_private_network_scope(network, scope)
+    return scope
+
+
 def _workspace_discover(network: dict):
     scanner = NmapHostDiscoveryScanner()
     scan_result = workspace_discover_hosts(network, scanner)
@@ -653,7 +681,10 @@ def discover_network_devices(network_id: int):
     network = _workspace_network_or_404(network_id)
 
     try:
+        _workspace_require_network_scope(network)
         devices = _workspace_discover(network)
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HostDiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ScannerUnavailableError as exc:
@@ -701,7 +732,10 @@ def discover_device_services(device_id: int):
     network = _workspace_network_or_404(device["network_id"])
 
     try:
+        _workspace_require_network_scope(network)
         persisted = _workspace_discover_services(network, device)
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ServiceDiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ScannerUnavailableError as exc:

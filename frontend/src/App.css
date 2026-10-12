@@ -975,6 +975,46 @@ h2 {
   margin-top: 16px;
 }
 
+.network-scope-panel {
+  margin-top: 12px;
+}
+
+.network-scope-details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.network-scope-details > div {
+  min-width: 0;
+}
+
+.network-scope-details dt {
+  margin-bottom: 4px;
+  color: #7f8798;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.network-scope-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #dfe4ec;
+  font-weight: 650;
+}
+
+.network-scope-confirmed {
+  border-color: #37654f;
+  color: #83d7ad;
+}
+
+.network-scope-unconfirmed {
+  border-color: #6b4147;
+  color: #e59ca5;
+}
+
 .network-candidate-note {
   margin: -4px 0 12px;
   color: #929aaa;
@@ -1355,5 +1395,9 @@ h2 {
 
   .network-review-grid {
     grid-template-columns: 1fr;
+  }
+
+  .network-scope-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

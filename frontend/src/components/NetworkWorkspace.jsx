@@ -11,6 +11,7 @@ import {
   loadDeviceReview,
   loadNetworkDevices,
   loadNetworks,
+  loadScopes,
 } from '../services/networkApi.js'
 
 function DeviceStatus({ value }) {
@@ -25,6 +26,7 @@ function DeviceStatus({ value }) {
 
 function NetworkWorkspace() {
   const [networks, setNetworks] = useState([])
+  const [scopes, setScopes] = useState([])
   const [networkCandidates, setNetworkCandidates] = useState([])
   const [selectedNetworkId, setSelectedNetworkId] = useState(null)
   const [devices, setDevices] = useState([])
@@ -45,8 +47,12 @@ function NetworkWorkspace() {
     setError(null)
 
     try {
-      const networkData = await loadNetworks(signal)
+      const [networkData, scopeData] = await Promise.all([
+        loadNetworks(signal),
+        loadScopes(signal),
+      ])
       setNetworks(networkData)
+      setScopes(scopeData)
 
       if (networkData.length === 0) {
         setSelectedNetworkId(null)
@@ -179,6 +185,20 @@ function NetworkWorkspace() {
   const selectedNetwork = networks.find(
     (network) => network.id === selectedNetworkId,
   )
+  const selectedScope = scopes.find(
+    (scope) => scope.network_id === selectedNetworkId,
+  )
+  const scopeAllowsScan = Boolean(
+    selectedNetwork?.authorized === true &&
+    selectedNetwork?.enabled === true &&
+    selectedScope?.scope_type === 'PRIVATE_NETWORK' &&
+    selectedScope?.canonical_target === selectedNetwork?.cidr &&
+    selectedScope?.authorized === true &&
+    selectedScope?.enabled === true &&
+    selectedScope?.authorization_confirmed_at &&
+    selectedScope?.authorization_confirmation_version &&
+    selectedScope?.authorization_source,
+  )
   const busy = loading || scanLoading || deviceLoading || serviceScanLoading
 
   return (
@@ -230,7 +250,7 @@ function NetworkWorkspace() {
           className="network-primary-action"
           type="button"
           onClick={scanNetwork}
-          disabled={!selectedNetworkId || busy}
+          disabled={!selectedNetworkId || !scopeAllowsScan || busy}
         >
           {scanLoading ? 'Scanning network…' : 'Scan Network'}
         </button>
@@ -242,15 +262,43 @@ function NetworkWorkspace() {
       </div>
 
       {selectedNetwork && (
-        <div className="network-summary">
-          <span className="mono">{selectedNetwork.cidr}</span>
-          <span>
-            {selectedNetwork.authorized ? 'Authorized' : 'Not authorized'}
-          </span>
-          <span>
-            {selectedNetwork.enabled ? 'Enabled' : 'Disabled'}
-          </span>
-        </div>
+        <article className="panel network-scope-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="panel-kicker">Authorized Scope</p>
+              <h3>{selectedScope?.name || 'Selected Network Scope'}</h3>
+            </div>
+            <span className={
+              scopeAllowsScan
+                ? 'network-candidate-state network-scope-confirmed'
+                : 'network-candidate-state network-scope-unconfirmed'
+            }>
+              {scopeAllowsScan ? 'Confirmed' : 'Not confirmed'}
+            </span>
+          </div>
+          <dl className="network-scope-details">
+            <div>
+              <dt>Type</dt>
+              <dd>{selectedScope?.scope_type === 'PRIVATE_NETWORK'
+                ? 'Private Network'
+                : 'Unavailable'}</dd>
+            </div>
+            <div>
+              <dt>Target</dt>
+              <dd className="mono">
+                {selectedScope?.canonical_target ?? selectedNetwork.cidr}
+              </dd>
+            </div>
+            <div>
+              <dt>Authorization</dt>
+              <dd>{scopeAllowsScan ? 'Confirmed' : 'Not confirmed'}</dd>
+            </div>
+            <div>
+              <dt>State</dt>
+              <dd>{selectedScope?.enabled ? 'Enabled' : 'Disabled'}</dd>
+            </div>
+          </dl>
+        </article>
       )}
 
       <article className="panel network-candidate-panel">
@@ -372,7 +420,7 @@ function NetworkWorkspace() {
               className="network-secondary-action"
               type="button"
               onClick={scanServices}
-              disabled={!selectedDeviceId || busy}
+              disabled={!selectedDeviceId || !scopeAllowsScan || busy}
             >
               {serviceScanLoading
                 ? 'Scanning services…'
