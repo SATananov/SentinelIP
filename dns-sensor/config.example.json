@@ -1,0 +1,6 @@
+{
+  "api_base_url": "http://127.0.0.1:8000",
+  "sensor_id": 1,
+  "sensor_token": "REPLACE_WITH_PROVISIONED_TOKEN",
+  "enabled": false
+}

@@ -13,3 +13,12 @@ frontend/dist/
 
 sentinelip-security-report-*.pdf
 sentinelip-events-*.csv
+
+# Local DNS sensor credentials and evidence
+dns-sensor/config.local.json
+dns-sensor/*.jsonl
+
+# Python generated cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
