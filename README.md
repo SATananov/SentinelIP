@@ -159,6 +159,53 @@ persisted data.
 Generated reports and local runtime databases are development/runtime artifacts,
 not source-of-truth project code.
 
+## Quick Start
+
+The verified development baseline uses Python 3.14 and Node.js for the frontend
+and browser sensor.
+
+Create and activate a Python virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Install runtime dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+For development and test work, install the test dependency set instead:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Start the FastAPI backend from the repository root:
+
+```bash
+python -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+The dashboard expects the API at `http://127.0.0.1:8000`.
+
+In another terminal, start the React frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite development server is allowed by the local API CORS configuration at
+`http://127.0.0.1:5173` and `http://localhost:5173`.
+
+Browser and DNS telemetry require explicitly provisioned local sensor
+credentials. Follow `browser-extension/README.md` and `dns-sensor/README.md`
+rather than placing sensor tokens in tracked files.
+
 ## Tests
 
 Run the backend suite from the repository root:
