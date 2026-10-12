@@ -43,7 +43,7 @@ def test_migration_upgrade_idempotent_and_preserves_old_rows(tmp_path):
     initialize_database(path)
     with get_connection(path) as connection:
         assert connection.execute("SELECT browser_session_id, tab_id FROM web_observations").fetchone() == (None, None)
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 22
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 23
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='idx_web_detections_sensor_time'").fetchone()
 
 
@@ -103,13 +103,13 @@ def test_migration_failure_rolls_back_its_statements(tmp_path, monkeypatch):
     import database.migrations as migrations
     path = tmp_path / "web.db"
     initialize_database(path)
-    monkeypatch.setattr(migrations, "MIGRATIONS", (*MIGRATIONS, (23, (
+    monkeypatch.setattr(migrations, "MIGRATIONS", (*MIGRATIONS, (24, (
         "ALTER TABLE web_detections ADD COLUMN rollback_probe TEXT", "INVALID SQL"))))
     with pytest.raises(sqlite3.OperationalError), get_connection(path) as connection:
         apply_migrations(connection)
     with get_connection(path) as connection:
         assert "rollback_probe" not in {r[1] for r in connection.execute("PRAGMA table_info(web_detections)")}
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=23").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=24").fetchone()[0] == 0
 
 
 def test_concurrent_equivalent_evaluation_has_one_record(tmp_path):
