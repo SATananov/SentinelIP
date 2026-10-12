@@ -150,9 +150,9 @@ def create_web_observation(observation: WebObservation, db_path=DB_PATH):
                 event_type, scheme, hostname, path, referrer_domain,
                 redirect_from_domain, redirect_to_domain, has_login_form,
                 has_password_form, download_detected, source, retention_until,
-                metadata_json
+                metadata_json, browser_session_id, tab_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(observation.sensor_id),
@@ -173,6 +173,8 @@ def create_web_observation(observation: WebObservation, db_path=DB_PATH):
                 "browser",
                 observation.retention_until.isoformat(timespec="seconds"),
                 _metadata(observation.metadata),
+                observation.browser_session_id,
+                observation.tab_id,
             ),
         )
         row = connection.execute("SELECT * FROM web_observations WHERE id = ?", (cursor.lastrowid,)).fetchone()

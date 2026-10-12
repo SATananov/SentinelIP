@@ -516,6 +516,54 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        21,
+        (
+            "ALTER TABLE web_observations ADD COLUMN browser_session_id TEXT",
+            "ALTER TABLE web_observations ADD COLUMN tab_id TEXT",
+            """CREATE INDEX idx_web_observations_context_time
+               ON web_observations(sensor_id, browser_session_id, tab_id, julianday(observed_at), id)""",
+        ),
+    ),
+    (
+        22,
+        (
+            """CREATE TABLE web_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                detection_type TEXT NOT NULL CHECK (detection_type IN (
+                    'CROSS_DOMAIN_LOGIN_REDIRECT', 'LOGIN_DOMAIN_REVIEW',
+                    'REDIRECT_CHAIN_REVIEW', 'SUSPICIOUS_DOWNLOAD_FLOW')),
+                severity TEXT NOT NULL CHECK (severity IN ('LOW', 'MEDIUM')),
+                confidence TEXT NOT NULL CHECK (confidence = 'MEDIUM'),
+                state TEXT NOT NULL CHECK (state = 'REVIEW'),
+                sensor_id INTEGER NOT NULL REFERENCES telemetry_sensors(id),
+                device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                primary_observation_id INTEGER REFERENCES web_observations(id) ON DELETE SET NULL,
+                hostname TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                structured_evidence TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE web_detection_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detection_id INTEGER NOT NULL REFERENCES web_detections(id),
+                observation_id INTEGER REFERENCES web_observations(id) ON DELETE SET NULL,
+                UNIQUE (detection_id, observation_id)
+            )""",
+            """CREATE INDEX idx_web_detections_sensor_time
+               ON web_detections(sensor_id, last_seen)""",
+            """CREATE INDEX idx_web_detections_device_time
+               ON web_detections(device_id, last_seen)""",
+            """CREATE INDEX idx_web_detection_observations_observation
+               ON web_detection_observations(observation_id)""",
+        ),
+    ),
 )
 
 
