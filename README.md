@@ -31,6 +31,13 @@ Each layer remains distinct. A finding, threat, correlation, or incident review
 is not automatically proof of compromise, malware, phishing, exploitation, or
 attacker identity.
 
+## Project documentation
+
+- [Frontend dashboard](frontend/README.md)
+- [Browser telemetry sensor](browser-extension/README.md)
+- [DNS telemetry sensor](dns-sensor/README.md)
+- [Security policy](SECURITY.md)
+
 ## Architecture
 
 The main backend areas are:
