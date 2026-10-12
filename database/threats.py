@@ -85,3 +85,60 @@ def list_threats(db_path=DB_PATH):
         connection.row_factory = sqlite3.Row
         ids = connection.execute("SELECT id FROM threat_detections ORDER BY id").fetchall()
         return [_read(connection, row[0]) for row in ids]
+
+
+def query_threats(
+    *,
+    limit=20,
+    offset=0,
+    threat_type=None,
+    state=None,
+    severity=None,
+    confidence=None,
+    source_ip=None,
+    device_id=None,
+    sensor_id=None,
+    db_path=DB_PATH,
+):
+    """Bounded read-only threat query for API presentation."""
+    initialize_database(db_path)
+
+    clauses = []
+    params = []
+
+    for column, value in (
+        ("threat_type", threat_type),
+        ("state", state),
+        ("severity", severity),
+        ("confidence", confidence),
+        ("source_ip", source_ip),
+        ("device_id", device_id),
+        ("sensor_id", sensor_id),
+    ):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM threat_detections{where}",
+            tuple(params),
+        ).fetchone()[0]
+
+        rows = connection.execute(
+            f"""SELECT id
+                FROM threat_detections
+                {where}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        ).fetchall()
+
+        return {
+            "total": total,
+            "items": [_read(connection, row["id"]) for row in rows],
+        }

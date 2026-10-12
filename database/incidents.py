@@ -76,3 +76,52 @@ def list_incidents(db_path=DB_PATH):
         connection.row_factory = sqlite3.Row
         ids = connection.execute("SELECT id FROM incidents ORDER BY id").fetchall()
         return [_read(connection, row[0]) for row in ids]
+
+
+def query_incidents(
+    *,
+    limit=20,
+    offset=0,
+    incident_type=None,
+    status=None,
+    priority=None,
+    db_path=DB_PATH,
+):
+    """Bounded read-only incident query for API presentation."""
+    initialize_database(db_path)
+
+    clauses = []
+    params = []
+
+    for column, value in (
+        ("incident_type", incident_type),
+        ("status", status),
+        ("priority", priority),
+    ):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM incidents{where}",
+            tuple(params),
+        ).fetchone()[0]
+
+        rows = connection.execute(
+            f"""SELECT id
+                FROM incidents
+                {where}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        ).fetchall()
+
+        return {
+            "total": total,
+            "items": [_read(connection, row["id"]) for row in rows],
+        }

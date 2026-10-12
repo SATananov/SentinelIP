@@ -21,6 +21,9 @@ from database.db import (
     initialize_database,
 )
 from database.db import DB_PATH
+from database.threats import get_threat, query_threats
+from database.correlations import get_correlation, query_correlations
+from database.incidents import get_incident, query_incidents
 from database.networks import (
     create_network,
     delete_network,
@@ -37,7 +40,7 @@ from services.target_policy import TargetPolicyError
 
 app = FastAPI(
     title="SentinelIP API",
-    version="2.4.0",
+    version="2.5.0",
 )
 
 app.add_middleware(
@@ -407,3 +410,173 @@ def export_security_report(
             )
         },
     )
+
+# ---------------------------------------------------------------------------
+# Deterministic security read API
+# ---------------------------------------------------------------------------
+
+@app.get("/threats")
+def threats(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    threat_type: Literal[
+        "SSH_BRUTE_FORCE_THREAT",
+        "SUSPICIOUS_AUTH_ACTIVITY",
+        "WEB_CREDENTIAL_FLOW_THREAT",
+    ] | None = None,
+    state: Literal["ANOMALOUS", "SUSPECTED"] | None = None,
+    severity: Literal["LOW", "MEDIUM", "HIGH"] | None = None,
+    confidence: Literal["LOW", "MEDIUM", "HIGH"] | None = None,
+    source_ip: str | None = None,
+    device_id: int | None = Query(default=None, ge=1),
+    sensor_id: int | None = Query(default=None, ge=1),
+):
+    result = query_threats(
+        limit=limit,
+        offset=offset,
+        threat_type=threat_type,
+        state=state,
+        severity=severity,
+        confidence=confidence,
+        source_ip=source_ip,
+        device_id=device_id,
+        sensor_id=sensor_id,
+        db_path=DB_PATH,
+    )
+
+    return {
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "threat_type": threat_type,
+            "state": state,
+            "severity": severity,
+            "confidence": confidence,
+            "source_ip": source_ip,
+            "device_id": device_id,
+            "sensor_id": sensor_id,
+        },
+        "threats": result["items"],
+    }
+
+
+@app.get("/threats/{threat_id}")
+def threat_detail(threat_id: int):
+    if threat_id <= 0:
+        raise HTTPException(status_code=422, detail="Threat ID must be positive.")
+
+    item = get_threat(threat_id, db_path=DB_PATH)
+
+    if item is None:
+        raise HTTPException(status_code=404, detail="Threat not found.")
+
+    return item
+
+
+@app.get("/correlations")
+def correlations(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    correlation_type: Literal[
+        "SSH_AUTH_ACTIVITY_PATTERN",
+        "WEB_CREDENTIAL_ACTIVITY_CHAIN",
+    ] | None = None,
+    state: Literal["RELATED", "PATTERN", "CHAIN_REVIEW"] | None = None,
+    severity: Literal["MEDIUM"] | None = None,
+    confidence: Literal["MEDIUM", "HIGH"] | None = None,
+    source_ip: str | None = None,
+    device_id: int | None = Query(default=None, ge=1),
+    sensor_id: int | None = Query(default=None, ge=1),
+):
+    result = query_correlations(
+        limit=limit,
+        offset=offset,
+        correlation_type=correlation_type,
+        state=state,
+        severity=severity,
+        confidence=confidence,
+        source_ip=source_ip,
+        device_id=device_id,
+        sensor_id=sensor_id,
+        db_path=DB_PATH,
+    )
+
+    return {
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "correlation_type": correlation_type,
+            "state": state,
+            "severity": severity,
+            "confidence": confidence,
+            "source_ip": source_ip,
+            "device_id": device_id,
+            "sensor_id": sensor_id,
+        },
+        "correlations": result["items"],
+    }
+
+
+@app.get("/correlations/{correlation_id}")
+def correlation_detail(correlation_id: int):
+    if correlation_id <= 0:
+        raise HTTPException(status_code=422, detail="Correlation ID must be positive.")
+
+    item = get_correlation(correlation_id, db_path=DB_PATH)
+
+    if item is None:
+        raise HTTPException(status_code=404, detail="Correlation not found.")
+
+    return item
+
+
+@app.get("/incidents")
+def incidents(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    incident_type: Literal[
+        "AUTHENTICATION_REVIEW",
+        "WEB_ACTIVITY_REVIEW",
+        "MULTI_SIGNAL_REVIEW",
+    ] | None = None,
+    status: Literal["OPEN"] | None = None,
+    priority: Literal["MEDIUM"] | None = None,
+):
+    result = query_incidents(
+        limit=limit,
+        offset=offset,
+        incident_type=incident_type,
+        status=status,
+        priority=priority,
+        db_path=DB_PATH,
+    )
+
+    return {
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "incident_type": incident_type,
+            "status": status,
+            "priority": priority,
+        },
+        "incidents": result["items"],
+    }
+
+
+@app.get("/incidents/{incident_id}")
+def incident_detail(incident_id: int):
+    if incident_id <= 0:
+        raise HTTPException(status_code=422, detail="Incident ID must be positive.")
+
+    item = get_incident(incident_id, db_path=DB_PATH)
+
+    if item is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    return item
