@@ -252,6 +252,13 @@ At the Release Readiness 01 checkpoint, the verified baseline was:
 - frontend lint passing
 - frontend production build passing
 
+## Releases
+
+Current verified release baseline: **v0.1.0**.
+
+See [CHANGELOG.md](CHANGELOG.md) for the verified release summary and known
+watchpoints.
+
 ## Development status
 
 SentinelIP is under active development.
