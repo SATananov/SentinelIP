@@ -6,6 +6,8 @@ deserves review.
 
 > See what is there. Understand what is happening. Know what needs attention.
 
+![SentinelIP dashboard](docs/images/sentinelip-dashboard.png)
+
 The project is built around a deterministic, auditable security core. Optional
 runtime coordination layers can read established SentinelIP state, but they do
 not replace the underlying detection, assessment, correlation, or incident
