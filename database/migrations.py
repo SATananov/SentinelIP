@@ -612,6 +612,55 @@ MIGRATIONS = (
                ON web_detections(sensor_id, device_id, primary_observation_id, detection_type)""",
         ),
     ),
+    (
+        24,
+        (
+            """CREATE TABLE correlations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                correlation_type TEXT NOT NULL CHECK (correlation_type IN (
+                    'SSH_AUTH_ACTIVITY_PATTERN', 'WEB_CREDENTIAL_ACTIVITY_CHAIN')),
+                state TEXT NOT NULL CHECK (state IN ('RELATED', 'PATTERN', 'CHAIN_REVIEW')),
+                severity TEXT NOT NULL CHECK (severity = 'MEDIUM'),
+                confidence TEXT NOT NULL CHECK (confidence IN ('MEDIUM', 'HIGH')),
+                device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                sensor_id INTEGER REFERENCES telemetry_sensors(id) ON DELETE SET NULL,
+                source_ip TEXT,
+                hostname TEXT,
+                primary_entity_type TEXT NOT NULL CHECK (primary_entity_type = 'THREAT'),
+                primary_entity_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE correlation_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                correlation_id INTEGER NOT NULL REFERENCES correlations(id),
+                entity_type TEXT NOT NULL CHECK (entity_type IN ('THREAT', 'WEB_DETECTION')),
+                entity_id INTEGER NOT NULL,
+                threat_id INTEGER REFERENCES threat_detections(id) ON DELETE SET NULL,
+                web_detection_id INTEGER REFERENCES web_detections(id) ON DELETE SET NULL,
+                entity_timestamp TEXT NOT NULL,
+                snapshot TEXT NOT NULL,
+                CHECK ((entity_type = 'THREAT' AND web_detection_id IS NULL)
+                    OR (entity_type = 'WEB_DETECTION' AND threat_id IS NULL)),
+                CHECK (threat_id IS NULL OR threat_id = entity_id),
+                CHECK (web_detection_id IS NULL OR web_detection_id = entity_id),
+                UNIQUE (correlation_id, entity_type, entity_id)
+            )""",
+            """CREATE INDEX idx_correlations_source ON correlations(source_ip, last_seen)""",
+            """CREATE INDEX idx_correlations_sensor ON correlations(sensor_id, last_seen)""",
+            """CREATE INDEX idx_correlation_entities_threat ON correlation_entities(threat_id)""",
+            """CREATE INDEX idx_correlation_entities_web ON correlation_entities(web_detection_id)""",
+            """CREATE INDEX idx_threat_evidence_correlation_time
+               ON threat_evidence(julianday(json_extract(evidence_snapshot, '$.timestamp')), threat_id, evidence_id)
+               WHERE evidence_type = 'SSH_EVENT'""",
+        ),
+    ),
 )
 
 
