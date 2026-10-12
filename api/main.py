@@ -7,6 +7,14 @@ from typing import Literal
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from database import inventory as workspace_inventory_db
+from database import cves as workspace_cves_db
+from database import findings as workspace_findings_db
+from database import services as workspace_services_db
+from services.service_discovery import (
+    ServiceDiscoveryError,
+    discover_services as workspace_discover_services,
+)
+from services.service_inventory import ServiceInventoryService
 from database import networks as workspace_networks_db
 from services.device_inventory import DeviceInventoryService
 from services.host_discovery import HostDiscoveryError, discover_hosts as workspace_discover_hosts
@@ -137,8 +145,8 @@ def ingest_dns_telemetry(
 
 @app.get("/networks", response_model=list[NetworkResponse])
 def networks():
-    initialize_database()
-    return list_networks()
+    initialize_database(DB_PATH)
+    return list_networks(db_path=DB_PATH)
 
 
 @app.post("/networks", response_model=NetworkResponse, status_code=201)
@@ -150,6 +158,7 @@ def create_authorized_network(payload: NetworkCreate):
             description=payload.description,
             authorized=payload.authorized,
             enabled=payload.enabled,
+            db_path=DB_PATH,
         )
     except TargetPolicyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -164,7 +173,7 @@ def create_authorized_network(payload: NetworkCreate):
 
 @app.get("/networks/{network_id}", response_model=NetworkResponse)
 def get_authorized_network(network_id: int):
-    network = get_network(network_id)
+    network = get_network(network_id, db_path=DB_PATH)
 
     if network is None:
         raise HTTPException(status_code=404, detail="Network not found.")
@@ -177,7 +186,7 @@ def update_authorized_network(
     network_id: int,
     payload: NetworkUpdate,
 ):
-    if get_network(network_id) is None:
+    if get_network(network_id, db_path=DB_PATH) is None:
         raise HTTPException(status_code=404, detail="Network not found.")
 
     updates = payload.model_dump(exclude_unset=True)
@@ -188,12 +197,12 @@ def update_authorized_network(
             detail="Network update values cannot be null.",
         )
 
-    return update_network(network_id, **updates)
+    return update_network(network_id, db_path=DB_PATH, **updates)
 
 
 @app.delete("/networks/{network_id}", status_code=204)
 def delete_authorized_network(network_id: int):
-    if not delete_network(network_id):
+    if not delete_network(network_id, db_path=DB_PATH):
         raise HTTPException(status_code=404, detail="Network not found.")
 
 
@@ -642,3 +651,84 @@ def discover_network_devices(network_id: int):
         "device_count": len(devices),
         "devices": devices,
     }
+# Network Workspace 09B: explicit single-device service discovery.
+# The stored device and its stored authorized network remain authoritative.
+
+
+def _workspace_device_or_404(device_id: int):
+    device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found.")
+    return device
+
+
+def _workspace_discover_services(network: dict, device: dict):
+    scanner = NmapServiceDiscoveryScanner()
+    result = workspace_discover_services(network, device, scanner)
+    return ServiceInventoryService(db_path=DB_PATH).process_result(
+        network,
+        device,
+        result,
+    )
+
+
+@app.get("/devices/{device_id}")
+def get_workspace_device(device_id: int):
+    return _workspace_device_or_404(device_id)
+
+
+@app.post("/devices/{device_id}/discover-services")
+def discover_device_services(device_id: int):
+    device = _workspace_device_or_404(device_id)
+    network = _workspace_network_or_404(device["network_id"])
+
+    try:
+        persisted = _workspace_discover_services(network, device)
+    except ServiceDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ScannerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ScannerTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (ScannerExecutionError, ScannerParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "device_id": device["id"],
+        "network_id": network["id"],
+        "ip_address": device["last_ip_address"],
+        "port_count": len(persisted["ports"]),
+        "service_count": len(persisted["services"]),
+        "ports": persisted["ports"],
+        "services": persisted["services"],
+    }
+
+
+@app.get("/devices/{device_id}/ports")
+def list_workspace_device_ports(device_id: int):
+    _workspace_device_or_404(device_id)
+    return workspace_services_db.list_ports(device_id, db_path=DB_PATH)
+
+
+@app.get("/devices/{device_id}/services")
+def list_workspace_device_services(device_id: int):
+    _workspace_device_or_404(device_id)
+    return workspace_services_db.list_services(device_id, db_path=DB_PATH)
+
+
+@app.get("/devices/{device_id}/findings")
+def list_workspace_device_findings(device_id: int):
+    _workspace_device_or_404(device_id)
+    return workspace_findings_db.list_device_findings(
+        device_id,
+        db_path=DB_PATH,
+    )
+
+
+@app.get("/devices/{device_id}/cve-matches")
+def list_workspace_device_cve_matches(device_id: int):
+    _workspace_device_or_404(device_id)
+    return workspace_cves_db.list_device_cve_matches(
+        device_id,
+        db_path=DB_PATH,
+    )

@@ -1,29 +1,26 @@
 from fastapi.testclient import TestClient
+import pytest
 
-from api.main import app
-from database.networks import delete_network, list_networks
-
-
-client = TestClient(app)
+import api.main as api_main
+from database.db import initialize_database
 
 
-def clear_networks():
-    for network in list_networks():
-        delete_network(network["id"])
+@pytest.fixture
+def client(monkeypatch, tmp_path):
+    db_path = tmp_path / "network-api.db"
+    initialize_database(db_path)
+    monkeypatch.setattr(api_main, "DB_PATH", db_path)
+    return TestClient(api_main.app)
 
 
-def test_list_networks_empty():
-    clear_networks()
-
+def test_list_networks_empty(client):
     response = client.get("/networks")
 
     assert response.status_code == 200
     assert response.json() == []
 
 
-def test_create_authorized_network():
-    clear_networks()
-
+def test_create_authorized_network(client):
     response = client.post(
         "/networks",
         json={
@@ -39,9 +36,7 @@ def test_create_authorized_network():
     assert response.json()["cidr"] == "192.168.1.0/25"
 
 
-def test_network_api_rejects_unsafe_configuration():
-    clear_networks()
-
+def test_network_api_rejects_unsafe_configuration(client):
     for cidr in ("8.8.8.0/24", "192.168.0.0/23", "not-a-cidr"):
         response = client.post(
             "/networks",
@@ -54,9 +49,7 @@ def test_network_api_rejects_unsafe_configuration():
         assert response.status_code == 422
 
 
-def test_network_api_requires_explicit_authorization():
-    clear_networks()
-
+def test_network_api_requires_explicit_authorization(client):
     response = client.post(
         "/networks",
         json={
@@ -69,8 +62,7 @@ def test_network_api_requires_explicit_authorization():
     assert response.status_code == 422
 
 
-def test_network_api_rejects_duplicate_cidr():
-    clear_networks()
+def test_network_api_rejects_duplicate_cidr(client):
     payload = {
         "cidr": "192.168.0.0/24",
         "authorized": True,
@@ -83,8 +75,7 @@ def test_network_api_rejects_duplicate_cidr():
     assert response.status_code == 409
 
 
-def test_get_patch_and_delete_network():
-    clear_networks()
+def test_get_patch_and_delete_network(client):
     response = client.post(
         "/networks",
         json={
@@ -117,16 +108,13 @@ def test_get_patch_and_delete_network():
     assert client.get(f"/networks/{network_id}").status_code == 404
 
 
-def test_network_api_returns_404_for_missing_network():
-    clear_networks()
-
+def test_network_api_returns_404_for_missing_network(client):
     assert client.get("/networks/999999").status_code == 404
     assert client.patch("/networks/999999", json={}).status_code == 404
     assert client.delete("/networks/999999").status_code == 404
 
 
-def test_network_api_rejects_cidr_update_field():
-    clear_networks()
+def test_network_api_rejects_cidr_update_field(client):
     response = client.post(
         "/networks",
         json={
@@ -145,8 +133,7 @@ def test_network_api_rejects_cidr_update_field():
     assert response.status_code == 422
 
 
-def test_network_api_rejects_null_update_value():
-    clear_networks()
+def test_network_api_rejects_null_update_value(client):
     response = client.post(
         "/networks",
         json={
@@ -165,6 +152,6 @@ def test_network_api_rejects_null_update_value():
     assert response.status_code == 422
 
 
-def test_existing_api_endpoints_remain_available():
+def test_existing_api_endpoints_remain_available(client):
     assert client.get("/health").status_code == 200
     assert client.get("/events?limit=1").status_code == 200
