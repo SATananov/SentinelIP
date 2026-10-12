@@ -7,6 +7,7 @@ import {
 
 import {
   createPublicIPv4Scope,
+  createHostnameScope,
   discoverDeviceServices,
   discoverNetworkCandidates,
   discoverNetwork,
@@ -17,9 +18,12 @@ import {
   loadNetworks,
   loadScopeDevices,
   loadScopes,
+  previewHostname,
+  reauthorizeHostnameScope,
 } from '../services/networkApi.js'
 
 const PUBLIC_AUTHORIZATION_VERSION = 'public_ipv4_authorization_v1'
+const HOSTNAME_AUTHORIZATION_VERSION = 'hostname_authorization_v1'
 
 function isIPv4Address(value) {
   const parts = value.trim().split('.')
@@ -38,7 +42,7 @@ function DeviceStatus({ value }) {
   )
 }
 
-function ScopeState({ confirmed, enabled, type }) {
+function ScopeState({ confirmed, enabled, type, reauthorizationRequired = false }) {
   return (
     <div className="workspace-scope-badges">
       <span className={confirmed ? 'scope-badge scope-badge-confirmed' : 'scope-badge scope-badge-unconfirmed'}>
@@ -48,6 +52,7 @@ function ScopeState({ confirmed, enabled, type }) {
         {enabled ? 'Enabled' : 'Disabled'}
       </span>
       <span className="scope-badge scope-badge-type">{type}</span>
+      {reauthorizationRequired && <span className="scope-badge scope-badge-unconfirmed">Re-authorization required</span>}
     </div>
   )
 }
@@ -65,6 +70,16 @@ function NetworkWorkspace() {
   const [publicTargetName, setPublicTargetName] = useState('')
   const [publicTargetDescription, setPublicTargetDescription] = useState('')
   const [publicAuthorizationConfirmed, setPublicAuthorizationConfirmed] = useState(false)
+  const [hostnameInput, setHostnameInput] = useState('')
+  const [hostnameName, setHostnameName] = useState('')
+  const [hostnameDescription, setHostnameDescription] = useState('')
+  const [hostnamePreview, setHostnamePreview] = useState(null)
+  const [hostnameAuthorizationConfirmed, setHostnameAuthorizationConfirmed] = useState(false)
+  const [hostnamePreviewLoading, setHostnamePreviewLoading] = useState(false)
+  const [hostnameScopeLoading, setHostnameScopeLoading] = useState(false)
+  const [hostnameError, setHostnameError] = useState(null)
+  const [reauthorizeScopeId, setReauthorizeScopeId] = useState(null)
+  const [reauthorizationRequiredIds, setReauthorizationRequiredIds] = useState([])
 
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [selectionLoading, setSelectionLoading] = useState(false)
@@ -133,7 +148,7 @@ function NetworkWorkspace() {
   async function selectPublicTarget(scope) {
     const requestId = selectionRequest.current + 1
     selectionRequest.current = requestId
-    setSelectedScope({ kind: 'PUBLIC_IPV4', id: scope.id })
+    setSelectedScope({ kind: scope.scope_type, id: scope.id })
     setDevices([])
     setSelectedDeviceId(null)
     setDeviceReview(null)
@@ -181,15 +196,17 @@ function NetworkWorkspace() {
   }
 
   async function scanPublicTarget(scope) {
-    const canScan = scope.scope_type === 'PUBLIC_IPV4' && scope.authorized === true &&
+    const canScan = ['PUBLIC_IPV4', 'HOSTNAME'].includes(scope.scope_type) && scope.authorized === true &&
       scope.enabled === true && Boolean(scope.authorization_confirmed_at) &&
       Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source) &&
-      isIPv4Address(scope.canonical_target ?? '')
+      (scope.scope_type === 'PUBLIC_IPV4'
+        ? isIPv4Address(scope.canonical_target ?? '')
+        : scope.resolution_status === 'CURRENT' && scope.approved_addresses?.length > 0)
     if (!canScan) return
 
     const requestId = selectionRequest.current + 1
     selectionRequest.current = requestId
-    setSelectedScope({ kind: 'PUBLIC_IPV4', id: scope.id })
+    setSelectedScope({ kind: scope.scope_type, id: scope.id })
     setDevices([])
     setSelectedDeviceId(null)
     setDeviceReview(null)
@@ -199,7 +216,9 @@ function NetworkWorkspace() {
 
     try {
       const result = await discoverPublicScope(scope.id)
-      const nextDevices = result.device ? [result.device] : []
+      const nextDevices = Array.isArray(result.devices)
+        ? result.devices
+        : result.device ? [result.device] : []
       if (selectionRequest.current !== requestId) return
       setDevices(nextDevices)
       if (nextDevices.length > 0) {
@@ -210,7 +229,15 @@ function NetworkWorkspace() {
         }
       }
     } catch (err) {
-      if (selectionRequest.current === requestId) setPublicError(err.message)
+      if (selectionRequest.current === requestId) {
+        setPublicError(err.message)
+        if (scope.scope_type === 'HOSTNAME' && err.status === 409) {
+          setScopes((current) => current.map((item) => (
+            item.id === scope.id ? { ...item, resolution_status: 'REAUTH_REQUIRED' } : item
+          )))
+          setReauthorizationRequiredIds((current) => current.includes(scope.id) ? current : [...current, scope.id])
+        }
+      }
     } finally {
       if (selectionRequest.current === requestId) setScanLoading(false)
     }
@@ -238,7 +265,7 @@ function NetworkWorkspace() {
     setServiceScanLoading(true)
     setDeviceError(null)
     try {
-      if (selectedScope.kind === 'PUBLIC_IPV4') {
+      if (selectedScope.kind !== 'PRIVATE_NETWORK') {
         await discoverScopeDeviceServices(selectedScope.id, selectedDeviceId)
       } else {
         await discoverDeviceServices(selectedDeviceId)
@@ -295,14 +322,84 @@ function NetworkWorkspace() {
     }
   }
 
+  async function previewHostnameTarget() {
+    setHostnamePreviewLoading(true)
+    setHostnameError(null)
+    setHostnamePreview(null)
+    setHostnameAuthorizationConfirmed(false)
+    try {
+      const result = await previewHostname({ hostname: hostnameInput })
+      setHostnameInput(result.canonical_hostname)
+      setHostnamePreview(result)
+    } catch (err) {
+      setHostnameError(err.message)
+    } finally {
+      setHostnamePreviewLoading(false)
+    }
+  }
+
+  async function saveHostnameTarget(event) {
+    event.preventDefault()
+    if (!hostnamePreview?.eligible || !hostnameAuthorizationConfirmed) return
+    setHostnameScopeLoading(true)
+    setHostnameError(null)
+    const payload = {
+      canonical_hostname: hostnamePreview.canonical_hostname,
+      approved_resolved_ipv4: hostnamePreview.resolved_ipv4,
+      name: hostnameName.trim(),
+      description: hostnameDescription.trim(),
+      authorization_confirmed: true,
+      authorization_confirmation_version: HOSTNAME_AUTHORIZATION_VERSION,
+    }
+    try {
+      const scope = reauthorizeScopeId
+        ? await reauthorizeHostnameScope(reauthorizeScopeId, payload)
+        : await createHostnameScope(payload)
+      setScopes((current) => reauthorizeScopeId
+        ? current.map((item) => item.id === scope.id ? scope : item)
+        : [...current, scope])
+      setReauthorizationRequiredIds((current) => current.filter((id) => id !== scope.id))
+      setReauthorizeScopeId(null)
+      setHostnameInput('')
+      setHostnameName('')
+      setHostnameDescription('')
+      setHostnamePreview(null)
+      setHostnameAuthorizationConfirmed(false)
+      selectionRequest.current += 1
+      setSelectedScope({ kind: 'HOSTNAME', id: scope.id })
+      setDevices([])
+      setSelectedDeviceId(null)
+      setDeviceReview(null)
+      setDeviceError(null)
+    } catch (err) {
+      setHostnameError(err.message)
+      setHostnamePreview(null)
+      setHostnameAuthorizationConfirmed(false)
+    } finally {
+      setHostnameScopeLoading(false)
+    }
+  }
+
+  function beginHostnameReauthorization(scope) {
+    setReauthorizeScopeId(scope.id)
+    setHostnameInput(scope.canonical_target)
+    setHostnameName(scope.name ?? '')
+    setHostnameDescription(scope.description ?? '')
+    setHostnamePreview(null)
+    setHostnameAuthorizationConfirmed(false)
+    setHostnameError(null)
+  }
+
   const selectedNetwork = selectedScope?.kind === 'PRIVATE_NETWORK'
     ? networks.find((item) => item.id === selectedScope.id)
     : null
   const selectedPrivateScope = selectedNetwork
     ? scopes.find((item) => item.network_id === selectedNetwork.id)
     : null
-  const publicTargets = scopes.filter((scope) => scope.scope_type === 'PUBLIC_IPV4')
-  const activePublicTarget = selectedScope?.kind === 'PUBLIC_IPV4'
+  const publicTargets = scopes.filter((scope) => ['PUBLIC_IPV4', 'HOSTNAME'].includes(scope.scope_type))
+  const ipv4Targets = publicTargets.filter((scope) => scope.scope_type === 'PUBLIC_IPV4')
+  const hostnameTargets = publicTargets.filter((scope) => scope.scope_type === 'HOSTNAME')
+  const activePublicScope = ['PUBLIC_IPV4', 'HOSTNAME'].includes(selectedScope?.kind)
     ? publicTargets.find((scope) => scope.id === selectedScope.id)
     : null
 
@@ -317,14 +414,16 @@ function NetworkWorkspace() {
     privateScopeConfirmed && selectedNetwork?.enabled === true && selectedPrivateScope?.enabled === true,
   )
   const publicScopeConfirmed = Boolean(
-    activePublicTarget?.scope_type === 'PUBLIC_IPV4' && activePublicTarget.authorized === true &&
-    activePublicTarget.authorization_confirmed_at &&
-    activePublicTarget.authorization_confirmation_version && activePublicTarget.authorization_source &&
-    isIPv4Address(activePublicTarget.canonical_target ?? ''),
+    ['PUBLIC_IPV4', 'HOSTNAME'].includes(activePublicScope?.scope_type) && activePublicScope.authorized === true &&
+    activePublicScope.authorization_confirmed_at &&
+    activePublicScope.authorization_confirmation_version && activePublicScope.authorization_source &&
+    (activePublicScope.scope_type === 'PUBLIC_IPV4'
+      ? isIPv4Address(activePublicScope.canonical_target ?? '')
+      : activePublicScope.resolution_status === 'CURRENT' && activePublicScope.approved_addresses?.length > 0),
   )
-  const publicScanAllowed = Boolean(publicScopeConfirmed && activePublicTarget.enabled === true)
+  const publicScanAllowed = Boolean(publicScopeConfirmed && activePublicScope.enabled === true)
   const anyActionBusy = workspaceLoading || selectionLoading || scanLoading ||
-    deviceLoading || serviceScanLoading || publicScopeLoading
+    deviceLoading || serviceScanLoading || publicScopeLoading || hostnamePreviewLoading || hostnameScopeLoading
 
   return (
     <section className="network-workspace">
@@ -444,7 +543,7 @@ function NetworkWorkspace() {
           <span className="network-candidate-state public-target-badge">Single IPv4 only</span>
         </div>
         <p className="network-candidate-note">
-          Add one public IPv4 address that you own or are authorized to assess. Hostnames and ranges are not accepted.
+          Add an individually authorized public IPv4 address or hostname. Hostname scans remain bound to the exact approved IPv4 set.
         </p>
         <form className="public-target-form" onSubmit={addPublicTarget}>
           <label>
@@ -482,44 +581,126 @@ function NetworkWorkspace() {
           </button>
         </form>
         {publicError && <div className="network-error" role="alert">{publicError}</div>}
-        {publicTargets.length === 0 ? (
-          <p className="network-mini-empty">No public targets are authorized.</p>
-        ) : (
-          <div className="authorized-scope-list">
-            {publicTargets.map((scope) => {
-              const confirmed = scope.authorized === true && Boolean(scope.authorization_confirmed_at) &&
-                Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source)
-              const isSelected = selectedScope?.kind === 'PUBLIC_IPV4' && selectedScope.id === scope.id
-              return (
-                <div className={isSelected ? 'authorized-scope-row is-selected public-scope-row' : 'authorized-scope-row public-scope-row'} key={scope.id}>
-                  <div className="authorized-scope-main">
-                    <strong>{scope.name || 'Public IPv4 Target'}</strong>
-                    <span className="mono">{scope.canonical_target}</span>
-                    <ScopeState confirmed={confirmed} enabled={scope.enabled === true} type="Public IPv4" />
+        <div className="hostname-target-form-section">
+          <h4>Hostname</h4>
+          <p className="network-candidate-note">Preview resolves A records only. Review and authorize the exact eligible public IPv4 addresses shown.</p>
+          <form className="public-target-form" onSubmit={saveHostnameTarget}>
+            <label>
+              <span>Hostname</span>
+              <input
+                value={hostnameInput}
+                disabled={hostnamePreviewLoading || hostnameScopeLoading}
+                onChange={(event) => {
+                  setHostnameInput(event.target.value)
+                  setHostnamePreview(null)
+                  setHostnameAuthorizationConfirmed(false)
+                }}
+                autoComplete="off"
+                aria-label="Hostname target"
+              />
+            </label>
+            <label>
+              <span>Name (optional)</span>
+              <input value={hostnameName} onChange={(event) => setHostnameName(event.target.value)} maxLength={120} />
+            </label>
+            <label className="public-target-description">
+              <span>Description (optional)</span>
+              <input value={hostnameDescription} onChange={(event) => setHostnameDescription(event.target.value)} maxLength={500} />
+            </label>
+            <div className="hostname-form-actions">
+              <button
+                className="network-secondary-action"
+                type="button"
+                onClick={previewHostnameTarget}
+                disabled={!hostnameInput.trim() || anyActionBusy}
+              >
+                {hostnamePreviewLoading ? 'Resolving…' : 'Resolve / Preview'}
+              </button>
+              {hostnamePreview?.eligible && (
+                <>
+                  <div className="hostname-preview-addresses" aria-live="polite">
+                    <strong>Resolved public IPv4 addresses</strong>
+                    <ul>{hostnamePreview.resolved_ipv4.map((address) => <li className="mono" key={address}>{address}</li>)}</ul>
                   </div>
-                  <div className="authorized-scope-actions">
-                    <button
-                      className="network-secondary-action"
-                      type="button"
-                      onClick={() => selectPublicTarget(scope)}
-                      disabled={anyActionBusy}
-                    >
-                      {isSelected ? 'Selected' : 'Select'}
-                    </button>
-                    <button
-                      className="network-primary-action"
-                      type="button"
-                      onClick={() => scanPublicTarget(scope)}
-                      disabled={!confirmed || !scope.enabled || !isIPv4Address(scope.canonical_target ?? '') || anyActionBusy}
-                    >
-                      {scanLoading && isSelected ? 'Scanning…' : 'Scan Target'}
-                    </button>
+                  <label className="public-target-confirmation">
+                    <input
+                      type="checkbox"
+                      checked={hostnameAuthorizationConfirmed}
+                      onChange={(event) => setHostnameAuthorizationConfirmed(event.target.checked)}
+                    />
+                    <span>I confirm that I own this hostname or have authorization to assess the resolved targets shown above.</span>
+                  </label>
+                  <button
+                    className="network-primary-action"
+                    type="submit"
+                    disabled={!hostnameAuthorizationConfirmed || anyActionBusy}
+                  >
+                    {hostnameScopeLoading ? 'Saving…' : reauthorizeScopeId ? 'Renew Authorization' : 'Add Hostname'}
+                  </button>
+                </>
+              )}
+            </div>
+          </form>
+          {hostnameError && <div className="network-error" role="alert">{hostnameError}</div>}
+          {hostnamePreview && !hostnamePreview.eligible && (
+            <div className="network-error" role="alert">{hostnamePreview.errors.join(' ')}</div>
+          )}
+        </div>
+
+        <div className="hostname-target-list-section">
+          <h4>Authorized Public IPv4</h4>
+          {ipv4Targets.length === 0 ? <p className="network-mini-empty">No public IPv4 targets are authorized.</p> : (
+            <div className="authorized-scope-list">
+              {ipv4Targets.map((scope) => {
+                const confirmed = scope.authorized === true && Boolean(scope.authorization_confirmed_at) &&
+                  Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source)
+                const isSelected = selectedScope?.kind === 'PUBLIC_IPV4' && selectedScope.id === scope.id
+                return (
+                  <div className={isSelected ? 'authorized-scope-row is-selected public-scope-row' : 'authorized-scope-row public-scope-row'} key={scope.id}>
+                    <div className="authorized-scope-main">
+                      <strong>{scope.name || 'Public IPv4 Target'}</strong>
+                      <span className="mono">{scope.canonical_target}</span>
+                      <ScopeState confirmed={confirmed} enabled={scope.enabled === true} type="Public IPv4" />
+                    </div>
+                    <div className="authorized-scope-actions">
+                      <button className="network-secondary-action" type="button" onClick={() => selectPublicTarget(scope)} disabled={anyActionBusy}>{isSelected ? 'Selected' : 'Select'}</button>
+                      <button className="network-primary-action" type="button" onClick={() => scanPublicTarget(scope)} disabled={!confirmed || !scope.enabled || !isIPv4Address(scope.canonical_target ?? '') || anyActionBusy}>{scanLoading && isSelected ? 'Scanning…' : 'Scan Target'}</button>
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="hostname-target-list-section">
+          <h4>Authorized Hostnames</h4>
+          {hostnameTargets.length === 0 ? <p className="network-mini-empty">No hostnames are authorized.</p> : (
+            <div className="authorized-scope-list">
+              {hostnameTargets.map((scope) => {
+                const confirmed = scope.authorized === true && Boolean(scope.authorization_confirmed_at) &&
+                  Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source)
+                const reauthorizationRequired = reauthorizationRequiredIds.includes(scope.id) || scope.resolution_status !== 'CURRENT'
+                const isSelected = selectedScope?.kind === 'HOSTNAME' && selectedScope.id === scope.id
+                return (
+                  <div className={isSelected ? 'authorized-scope-row is-selected public-scope-row' : 'authorized-scope-row public-scope-row'} key={scope.id}>
+                    <div className="authorized-scope-main">
+                      <strong>{scope.name || 'Hostname Target'}</strong>
+                      <span className="mono">{scope.canonical_target}</span>
+                      <ScopeState confirmed={confirmed} enabled={scope.enabled === true} type="Hostname" reauthorizationRequired={reauthorizationRequired} />
+                      <small>Approved addresses: {scope.approved_addresses?.length ? scope.approved_addresses.join(', ') : 'none'}</small>
+                    </div>
+                    <div className="authorized-scope-actions">
+                      <button className="network-secondary-action" type="button" onClick={() => selectPublicTarget(scope)} disabled={anyActionBusy}>{isSelected ? 'Selected' : 'Select'}</button>
+                      {reauthorizationRequired && <button className="network-secondary-action" type="button" onClick={() => beginHostnameReauthorization(scope)} disabled={anyActionBusy}>Renew Authorization</button>}
+                      <button className="network-primary-action" type="button" onClick={() => scanPublicTarget(scope)} disabled={!confirmed || !scope.enabled || reauthorizationRequired || !scope.approved_addresses?.length || anyActionBusy}>{scanLoading && isSelected ? 'Scanning…' : 'Scan Target'}</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </article>
 
       <article className="panel workspace-section selected-asset-section">
@@ -532,7 +713,7 @@ function NetworkWorkspace() {
             <span className="selected-scope-label">
               {selectedScope.kind === 'PRIVATE_NETWORK'
                 ? selectedNetwork?.cidr
-                : activePublicTarget?.canonical_target}
+                : activePublicScope?.canonical_target}
             </span>
           )}
         </div>

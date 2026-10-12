@@ -1145,6 +1145,41 @@ h2 {
   margin: 14px 0 18px;
 }
 
+.hostname-form-actions,
+.hostname-target-form-section,
+.hostname-target-list-section {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.hostname-form-actions {
+  grid-column: 1 / -1;
+  justify-items: start;
+}
+
+.hostname-target-form-section,
+.hostname-target-list-section {
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border-color, rgba(148, 163, 184, 0.2));
+}
+
+.hostname-preview-addresses {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.2));
+  border-radius: 0.7rem;
+  background: rgba(15, 23, 42, 0.24);
+}
+
+.hostname-preview-addresses ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1.25rem;
+  margin: 0.55rem 0 0;
+  padding-left: 1.1rem;
+}
+
 .public-target-form > label {
   display: grid;
   gap: 6px;

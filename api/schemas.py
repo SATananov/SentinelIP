@@ -50,12 +50,33 @@ class AuthorizedScopeResponse(BaseModel):
     created_at: str
     updated_at: str
     network_id: int | None = None
+    approved_addresses: list[str] = Field(default_factory=list)
+    resolution_verified_at: str | None = None
+    resolution_version: str | None = None
+    resolution_status: str | None = None
 
 
 class PublicIPv4ScopeCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=500)
+    authorization_confirmed: StrictBool
+    authorization_confirmation_version: str = Field(min_length=1, max_length=80)
+
+
+class HostnamePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hostname: str = Field(min_length=1, max_length=1024)
+
+
+class HostnameScopeCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canonical_hostname: str = Field(min_length=1, max_length=253)
+    approved_resolved_ipv4: list[str] = Field(min_length=1, max_length=16)
     name: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=500)
     authorization_confirmed: StrictBool

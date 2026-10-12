@@ -74,6 +74,7 @@ def create_device(
 def create_scope_device(
     scope_id: int,
     *,
+    ip_address: str | None = None,
     first_seen: str,
     last_seen: str,
     status: str,
@@ -93,7 +94,7 @@ def create_scope_device(
         ).fetchone()
         if (
             scope is None
-            or scope["scope_type"] != "PUBLIC_IPV4"
+            or scope["scope_type"] not in {"PUBLIC_IPV4", "HOSTNAME"}
             or scope["authorized"] != 1
             or scope["enabled"] != 1
             or not all(
@@ -105,11 +106,28 @@ def create_scope_device(
                 )
             )
         ):
-            raise ValueError("An enabled, confirmed public IPv4 scope is required.")
-        try:
-            address = normalize_public_ipv4(scope["canonical_target"])
-        except PublicTargetPolicyError as exc:
-            raise ValueError("The public scope target is invalid.") from exc
+            raise ValueError("An enabled, confirmed public target scope is required.")
+        if scope["scope_type"] == "PUBLIC_IPV4":
+            try:
+                address = normalize_public_ipv4(scope["canonical_target"])
+            except PublicTargetPolicyError as exc:
+                raise ValueError("The public scope target is invalid.") from exc
+            if ip_address is not None and normalize_public_ipv4(ip_address) != address:
+                raise ValueError("Device address does not match the public scope.")
+        else:
+            if scope["resolution_status"] != "CURRENT":
+                raise ValueError("Hostname resolution must be current before inventory is updated.")
+            try:
+                address = normalize_public_ipv4(ip_address)
+            except PublicTargetPolicyError as exc:
+                raise ValueError("A valid approved hostname address is required.") from exc
+            approved = connection.execute(
+                """SELECT 1 FROM scope_hostname_addresses
+                   WHERE scope_id = ? AND ipv4_address = ? AND approved = 1""",
+                (scope_id, address),
+            ).fetchone()
+            if approved is None:
+                raise ValueError("Device address is not approved for this hostname scope.")
         stable_key = f"scope:{scope_id}:ipv4:{address}"
         existing = connection.execute(
             "SELECT id FROM devices WHERE stable_key = ?", (stable_key,)
@@ -167,10 +185,16 @@ def save_scope_device_observation(
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         owned_device = connection.execute(
-            """SELECT 1 FROM devices
-               WHERE id = ? AND scope_id = ? AND network_id IS NULL
-                 AND last_ip_address = ?""",
-            (device_id, scope_id, address),
+            """SELECT 1 FROM devices d
+               JOIN authorized_scopes s ON s.id = d.scope_id
+               WHERE d.id = ? AND d.scope_id = ? AND d.network_id IS NULL
+                 AND d.last_ip_address = ? AND s.authorized = 1 AND s.enabled = 1
+                 AND (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = ?
+                      OR s.scope_type = 'HOSTNAME' AND EXISTS (
+                          SELECT 1 FROM scope_hostname_addresses a
+                          WHERE a.scope_id = s.id AND a.ipv4_address = ? AND a.approved = 1
+                      ))""",
+            (device_id, scope_id, address, address, address),
         ).fetchone()
         if owned_device is None:
             raise ValueError("Device does not belong to the public target scope.")

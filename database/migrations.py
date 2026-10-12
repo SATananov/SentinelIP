@@ -964,6 +964,104 @@ MIGRATIONS = (
             "CREATE INDEX idx_findings_service ON findings(service_id)",
         ),
     ),
+    (
+        28,
+        (
+            "ALTER TABLE authorized_scopes ADD COLUMN resolution_verified_at TEXT",
+            "ALTER TABLE authorized_scopes ADD COLUMN resolution_version TEXT",
+            "ALTER TABLE authorized_scopes ADD COLUMN resolution_status TEXT",
+            "DROP TRIGGER devices_scope_target_insert",
+            "DROP TRIGGER devices_scope_target_update",
+            """
+            CREATE TABLE scope_hostname_addresses (
+                scope_id INTEGER NOT NULL,
+                ipv4_address TEXT NOT NULL,
+                approved INTEGER NOT NULL CHECK (approved IN (0, 1)),
+                approved_at TEXT NOT NULL,
+                verified_at TEXT NOT NULL,
+                resolution_version TEXT NOT NULL,
+                PRIMARY KEY (scope_id, ipv4_address),
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id)
+                    ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX idx_scope_hostname_addresses_approved ON scope_hostname_addresses(scope_id, approved, ipv4_address)",
+            """
+            CREATE TRIGGER scope_hostname_address_insert
+            BEFORE INSERT ON scope_hostname_addresses
+            WHEN NOT EXISTS (
+                SELECT 1 FROM authorized_scopes
+                WHERE id = NEW.scope_id AND scope_type = 'HOSTNAME'
+                  AND authorized = 1
+                  AND authorization_confirmed_at IS NOT NULL
+                  AND authorization_confirmation_version IS NOT NULL
+                  AND authorization_source IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'hostname address requires confirmed hostname scope');
+            END
+            """,
+            """
+            CREATE TRIGGER scope_hostname_address_approved_update
+            BEFORE UPDATE OF approved ON scope_hostname_addresses
+            WHEN NEW.approved = 1 AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes
+                WHERE id = NEW.scope_id AND scope_type = 'HOSTNAME'
+                  AND authorized = 1
+                  AND authorization_confirmed_at IS NOT NULL
+                  AND authorization_confirmation_version IS NOT NULL
+                  AND authorization_source IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'hostname address requires confirmed hostname scope');
+            END
+            """,
+            """
+            CREATE TRIGGER devices_scope_target_insert
+            BEFORE INSERT ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes s
+                WHERE s.id = NEW.scope_id AND s.authorized = 1 AND s.enabled = 1
+                  AND s.authorization_confirmed_at IS NOT NULL
+                  AND s.authorization_confirmation_version IS NOT NULL
+                  AND s.authorization_source IS NOT NULL
+                  AND (
+                    (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = NEW.last_ip_address)
+                    OR (s.scope_type = 'HOSTNAME' AND s.resolution_status = 'CURRENT' AND EXISTS (
+                        SELECT 1 FROM scope_hostname_addresses a
+                        WHERE a.scope_id = s.id AND a.ipv4_address = NEW.last_ip_address
+                          AND a.approved = 1
+                    ))
+                  )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END
+            """,
+            """
+            CREATE TRIGGER devices_scope_target_update
+            BEFORE UPDATE OF scope_id, last_ip_address ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes s
+                WHERE s.id = NEW.scope_id AND s.authorized = 1 AND s.enabled = 1
+                  AND s.authorization_confirmed_at IS NOT NULL
+                  AND s.authorization_confirmation_version IS NOT NULL
+                  AND s.authorization_source IS NOT NULL
+                  AND (
+                    (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = NEW.last_ip_address)
+                    OR (s.scope_type = 'HOSTNAME' AND s.resolution_status = 'CURRENT' AND EXISTS (
+                        SELECT 1 FROM scope_hostname_addresses a
+                        WHERE a.scope_id = s.id AND a.ipv4_address = NEW.last_ip_address
+                          AND a.approved = 1
+                    ))
+                  )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END
+            """,
+        ),
+    ),
 )
 
 

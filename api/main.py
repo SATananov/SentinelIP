@@ -57,13 +57,26 @@ from services.pdf_report import build_security_report
 from services.telemetry_ingestion import TelemetryIngestionError, ingest_dns, ingest_web
 from services.target_policy import TargetPolicyError
 from database.scopes import get_scope as get_authorized_scope
-from database.scopes import create_scope, get_scope_for_network, list_scopes
+from database.scopes import (
+    create_hostname_scope,
+    create_scope,
+    get_scope_for_network,
+    list_scopes,
+    reauthorize_hostname_scope,
+)
 from services.scope_authorization import (
     ScopeAuthorizationError,
     require_private_network_scope,
     require_public_ipv4_scope,
+    require_hostname_scope,
+    HOSTNAME_CONFIRMATION_VERSION,
 )
-from api.schemas import AuthorizedScopeResponse, PublicIPv4ScopeCreate
+from api.schemas import (
+    AuthorizedScopeResponse,
+    HostnamePreviewRequest,
+    HostnameScopeCreate,
+    PublicIPv4ScopeCreate,
+)
 from database.inventory import list_scope_devices
 from services.public_target_policy import (
     PUBLIC_IPV4_CONFIRMATION_VERSION,
@@ -75,6 +88,20 @@ from services.risk_engine import RiskEngine
 from services.local_network_discovery import (
     LocalNetworkDiscoveryError,
     discover_local_networks,
+)
+from services.hostname_policy import HostnamePolicyError, normalize_hostname
+from services.hostname_resolution import (
+    HostnameResolutionError,
+    HostnameResolver,
+    IneligibleHostnameResolution,
+    preview_hostname,
+)
+from services.hostname_scope_discovery import (
+    HostnameReauthorizationRequired,
+    HostnameResolverUnavailable,
+    HostnameScopeDiscoveryError,
+    scan_hostname_scope,
+    verify_hostname_resolution,
 )
 
 
@@ -282,6 +309,119 @@ def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
         ) from exc
 
 
+def _verified_hostname_approval(payload: HostnameScopeCreate):
+    if payload.authorization_confirmed is not True:
+        raise HTTPException(
+            status_code=422,
+            detail="Explicit authorization confirmation is required.",
+        )
+    if payload.authorization_confirmation_version != HOSTNAME_CONFIRMATION_VERSION:
+        raise HTTPException(
+            status_code=422,
+            detail="Authorization confirmation version is unsupported.",
+        )
+    try:
+        hostname = normalize_hostname(payload.canonical_hostname)
+    except HostnamePolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if hostname != payload.canonical_hostname:
+        raise HTTPException(
+            status_code=422,
+            detail="A canonical hostname is required.",
+        )
+    try:
+        requested_addresses = tuple(
+            sorted(normalize_public_ipv4(value) for value in payload.approved_resolved_ipv4)
+        )
+    except PublicTargetPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if len(requested_addresses) != len(set(requested_addresses)):
+        raise HTTPException(status_code=422, detail="Approved IPv4 addresses must be unique.")
+    try:
+        resolved = HostnameResolver().resolve(hostname)
+    except IneligibleHostnameResolution as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HostnameResolutionError as exc:
+        raise HTTPException(status_code=503, detail="Hostname DNS resolution could not be verified.") from exc
+    if requested_addresses != resolved.resolved_ipv4:
+        raise HTTPException(
+            status_code=409,
+            detail="Hostname DNS results changed. Preview the current addresses and confirm authorization again.",
+        )
+    return hostname, requested_addresses, resolved.resolution_version
+
+
+@app.post("/scopes/hostname/preview")
+def preview_authorized_hostname(payload: HostnamePreviewRequest):
+    try:
+        hostname = normalize_hostname(payload.hostname)
+    except HostnamePolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return preview_hostname(hostname, HostnameResolver())
+
+
+@app.post(
+    "/scopes/hostname",
+    response_model=AuthorizedScopeResponse,
+    status_code=201,
+)
+def create_authorized_hostname_scope(payload: HostnameScopeCreate):
+    hostname, addresses, resolution_version = _verified_hostname_approval(payload)
+    try:
+        return create_hostname_scope(
+            canonical_hostname=hostname,
+            approved_addresses=list(addresses),
+            name=payload.name,
+            description=payload.description,
+            authorization_confirmed_at=datetime.now().isoformat(timespec="seconds"),
+            authorization_confirmation_version=payload.authorization_confirmation_version,
+            authorization_source="api_explicit_hostname_authorization_confirmation",
+            resolution_version=resolution_version,
+            db_path=DB_PATH,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A scope for this hostname already exists.",
+        ) from exc
+
+
+@app.post(
+    "/scopes/{scope_id}/hostname/reauthorize",
+    response_model=AuthorizedScopeResponse,
+)
+def reauthorize_hostname(scope_id: int, payload: HostnameScopeCreate):
+    scope = get_authorized_scope(scope_id, db_path=DB_PATH)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Scope not found.")
+    if scope.get("scope_type") != "HOSTNAME":
+        raise HTTPException(status_code=403, detail="The scope is not a hostname target.")
+    try:
+        existing_hostname = require_hostname_scope(
+            scope, require_current=False, require_enabled=False
+        )
+        requested_hostname = normalize_hostname(payload.canonical_hostname)
+        if requested_hostname != existing_hostname or requested_hostname != payload.canonical_hostname:
+            raise HTTPException(status_code=422, detail="Hostname does not match the existing scope.")
+    except HostnamePolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    hostname, addresses, resolution_version = _verified_hostname_approval(payload)
+    try:
+        return reauthorize_hostname_scope(
+            scope_id,
+            approved_addresses=list(addresses),
+            authorization_confirmed_at=datetime.now().isoformat(timespec="seconds"),
+            authorization_confirmation_version=payload.authorization_confirmation_version,
+            authorization_source="api_explicit_hostname_reauthorization_confirmation",
+            resolution_version=resolution_version,
+            db_path=DB_PATH,
+        )
+    except ScopeAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @app.get("/scopes/{scope_id}/devices")
 def list_scope_inventory_devices(scope_id: int):
     scope = get_authorized_scope(scope_id, db_path=DB_PATH)
@@ -296,16 +436,31 @@ def discover_public_scope(scope_id: int):
     if scope is None:
         raise HTTPException(status_code=404, detail="Scope not found.")
     try:
-        require_public_ipv4_scope(scope)
-        result = scan_public_scope(
-            scope,
-            NmapHostDiscoveryScanner(),
-            NmapServiceDiscoveryScanner(),
-            db_path=DB_PATH,
-        )
+        if scope.get("scope_type") == "PUBLIC_IPV4":
+            require_public_ipv4_scope(scope)
+            result = scan_public_scope(
+                scope,
+                NmapHostDiscoveryScanner(),
+                NmapServiceDiscoveryScanner(),
+                db_path=DB_PATH,
+            )
+        elif scope.get("scope_type") == "HOSTNAME":
+            result = scan_hostname_scope(
+                scope,
+                HostnameResolver(),
+                NmapHostDiscoveryScanner(),
+                NmapServiceDiscoveryScanner(),
+                db_path=DB_PATH,
+            )
+        else:
+            raise HTTPException(status_code=403, detail="This scope type cannot be scanned.")
     except ScopeAuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except PublicScopeDiscoveryError as exc:
+    except HostnameReauthorizationRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HostnameResolverUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (PublicScopeDiscoveryError, HostnameScopeDiscoveryError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ScannerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -325,16 +480,28 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
     if device is None or device.get("scope_id") != scope_id or device.get("network_id") is not None:
         raise HTTPException(status_code=404, detail="Scope device not found.")
     try:
-        target = require_public_ipv4_scope(scope)
-    except ScopeAuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if device.get("last_ip_address") != target:
-        raise HTTPException(status_code=403, detail="Device target does not match scope.")
-    try:
+        if scope.get("scope_type") == "PUBLIC_IPV4":
+            target = require_public_ipv4_scope(scope)
+            if device.get("last_ip_address") != target:
+                raise HTTPException(status_code=403, detail="Device target does not match scope.")
+            hostname_scope = False
+        elif scope.get("scope_type") == "HOSTNAME":
+            approved = verify_hostname_resolution(
+                scope, HostnameResolver(), db_path=DB_PATH
+            )
+            target = device.get("last_ip_address")
+            if target not in approved:
+                raise HTTPException(status_code=403, detail="Device address is not approved for this hostname scope.")
+            hostname_scope = True
+        else:
+            raise HTTPException(status_code=403, detail="This scope type does not support service discovery.")
         service_scanner = NmapServiceDiscoveryScanner()
         result = service_scanner.discover_public_services(target)
-        inventory = ServiceInventoryService(db_path=DB_PATH).process_public_result(
-            scope, device, result
+        inventory_service = ServiceInventoryService(db_path=DB_PATH)
+        inventory = (
+            inventory_service.process_hostname_result(scope, device, result)
+            if hostname_scope
+            else inventory_service.process_public_result(scope, device, result)
         )
         current_device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
         findings = RiskEngine(db_path=DB_PATH).evaluate_scope_device(
@@ -343,6 +510,12 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
         matches = workspace_cves_db.list_device_cve_matches(device_id, db_path=DB_PATH)
     except ScopeAuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except HostnameReauthorizationRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HostnameResolverUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HostnameScopeDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ServiceDiscoveryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ScannerUnavailableError as exc:

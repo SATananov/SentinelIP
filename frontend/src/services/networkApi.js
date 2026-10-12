@@ -13,9 +13,9 @@ async function requestJson(path, options = {}) {
       detail = ''
     }
 
-    throw new Error(
-      `Network API request failed (${response.status})${detail}`,
-    )
+    const error = new Error(`Network API request failed (${response.status})${detail}`)
+    error.status = response.status
+    throw error
   }
 
   return response.json()
@@ -31,6 +31,30 @@ export function loadScopes(signal) {
 
 export function createPublicIPv4Scope(payload) {
   return requestJson('/scopes/public-ipv4', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewHostname(payload) {
+  return requestJson('/scopes/hostname/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createHostnameScope(payload) {
+  return requestJson('/scopes/hostname', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function reauthorizeHostnameScope(scopeId, payload) {
+  return requestJson(`/scopes/${scopeId}/hostname/reauthorize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

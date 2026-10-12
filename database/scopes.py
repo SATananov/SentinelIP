@@ -4,6 +4,7 @@ from datetime import datetime
 from database.db import DB_PATH, get_connection, initialize_database
 from services.scope_models import ScopeError, ScopeType
 from services.public_target_policy import normalize_public_ipv4
+from services.hostname_policy import normalize_hostname
 from services.target_policy import normalize_cidr
 
 
@@ -17,6 +18,7 @@ def _as_scope(row):
     result = dict(row)
     result["authorized"] = bool(result["authorized"])
     result["enabled"] = bool(result["enabled"])
+    result["approved_addresses"] = []
     return result
 
 
@@ -35,7 +37,18 @@ def _normalize_target(scope_type: str, canonical_target: str) -> str:
         return normalize_cidr(target)
     if scope_type == ScopeType.PUBLIC_IPV4.value:
         return normalize_public_ipv4(target)
+    if scope_type == ScopeType.HOSTNAME.value:
+        return normalize_hostname(target)
     return target
+
+
+def _hostname_addresses(connection, scope_id: int) -> list[str]:
+    rows = connection.execute(
+        """SELECT ipv4_address FROM scope_hostname_addresses
+           WHERE scope_id = ? AND approved = 1 ORDER BY ipv4_address ASC""",
+        (scope_id,),
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 def _insert_scope(
@@ -168,7 +181,10 @@ def create_scope(
             """,
             (scope_id,),
         ).fetchone()
-    return _as_scope(row)
+        result = _as_scope(row)
+        if result is not None and result["scope_type"] == ScopeType.HOSTNAME.value:
+            result["approved_addresses"] = _hostname_addresses(connection, scope_id)
+    return result
 
 
 def get_scope(scope_id: int, db_path=DB_PATH):
@@ -185,7 +201,10 @@ def get_scope(scope_id: int, db_path=DB_PATH):
             """,
             (scope_id,),
         ).fetchone()
-    return _as_scope(row)
+        result = _as_scope(row)
+        if result is not None and result["scope_type"] == ScopeType.HOSTNAME.value:
+            result["approved_addresses"] = _hostname_addresses(connection, scope_id)
+    return result
 
 
 def list_scopes(scope_type: str | ScopeType | None = None, db_path=DB_PATH):
@@ -209,7 +228,167 @@ def list_scopes(scope_type: str | ScopeType | None = None, db_path=DB_PATH):
             """,
             parameters,
         ).fetchall()
-    return [_as_scope(row) for row in rows]
+        results = [_as_scope(row) for row in rows]
+        hostname_scope_ids = [
+            row["id"] for row in results
+            if row["scope_type"] == ScopeType.HOSTNAME.value
+        ]
+        if hostname_scope_ids:
+            placeholders = ",".join("?" for _ in hostname_scope_ids)
+            address_rows = connection.execute(
+                f"""SELECT scope_id, ipv4_address FROM scope_hostname_addresses
+                    WHERE approved = 1 AND scope_id IN ({placeholders})
+                    ORDER BY scope_id, ipv4_address""",
+                hostname_scope_ids,
+            ).fetchall()
+            addresses_by_scope = {}
+            for address_row in address_rows:
+                addresses_by_scope.setdefault(address_row["scope_id"], []).append(
+                    address_row["ipv4_address"]
+                )
+            for result in results:
+                if result["scope_type"] == ScopeType.HOSTNAME.value:
+                    result["approved_addresses"] = addresses_by_scope.get(result["id"], [])
+    return results
+
+
+def list_hostname_addresses(scope_id: int, db_path=DB_PATH) -> list[str]:
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        return _hostname_addresses(connection, scope_id)
+
+
+def create_hostname_scope(
+    *,
+    canonical_hostname: str,
+    approved_addresses: list[str],
+    name: str = "",
+    description: str = "",
+    authorization_confirmed_at: str,
+    authorization_confirmation_version: str,
+    authorization_source: str,
+    resolution_version: str,
+    db_path=DB_PATH,
+):
+    hostname = normalize_hostname(canonical_hostname)
+    addresses = _normalize_hostname_addresses(approved_addresses)
+    timestamp = _timestamp()
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        scope_id = _insert_scope(
+            connection,
+            scope_type=ScopeType.HOSTNAME,
+            canonical_target=hostname,
+            name=name,
+            description=description,
+            authorized=True,
+            enabled=True,
+            authorization_confirmed_at=authorization_confirmed_at,
+            authorization_confirmation_version=authorization_confirmation_version,
+            authorization_source=authorization_source,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        _write_hostname_addresses(connection, scope_id, addresses, timestamp, resolution_version)
+        connection.execute(
+            """UPDATE authorized_scopes SET resolution_verified_at = ?,
+               resolution_version = ?, resolution_status = 'CURRENT' WHERE id = ?""",
+            (timestamp, resolution_version, scope_id),
+        )
+        row = connection.execute(
+            """SELECT authorized_scopes.*, NULL AS network_id
+               FROM authorized_scopes WHERE id = ?""",
+            (scope_id,),
+        ).fetchone()
+        result = _as_scope(row)
+        result["approved_addresses"] = _hostname_addresses(connection, scope_id)
+    return result
+
+
+def reauthorize_hostname_scope(
+    scope_id: int,
+    *,
+    approved_addresses: list[str],
+    authorization_confirmed_at: str,
+    authorization_confirmation_version: str,
+    authorization_source: str,
+    resolution_version: str,
+    db_path=DB_PATH,
+):
+    addresses = _normalize_hostname_addresses(approved_addresses)
+    timestamp = _timestamp()
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        scope = connection.execute(
+            "SELECT * FROM authorized_scopes WHERE id = ?", (scope_id,)
+        ).fetchone()
+        if scope is None or scope["scope_type"] != ScopeType.HOSTNAME.value:
+            raise ScopeError("A persisted hostname scope is required.")
+        connection.execute(
+            """UPDATE authorized_scopes SET authorized = 1,
+               authorization_confirmed_at = ?, authorization_confirmation_version = ?,
+               authorization_source = ?, resolution_verified_at = ?, resolution_version = ?,
+               resolution_status = 'CURRENT', updated_at = ? WHERE id = ?""",
+            (
+                authorization_confirmed_at,
+                authorization_confirmation_version,
+                authorization_source,
+                timestamp,
+                resolution_version,
+                timestamp,
+                scope_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE scope_hostname_addresses SET approved = 0 WHERE scope_id = ?",
+            (scope_id,),
+        )
+        _write_hostname_addresses(connection, scope_id, addresses, timestamp, resolution_version)
+        row = connection.execute(
+            """SELECT authorized_scopes.*, NULL AS network_id
+               FROM authorized_scopes WHERE id = ?""",
+            (scope_id,),
+        ).fetchone()
+        result = _as_scope(row)
+        result["approved_addresses"] = _hostname_addresses(connection, scope_id)
+    return result
+
+
+def mark_hostname_resolution_stale(scope_id: int, db_path=DB_PATH) -> None:
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.execute(
+            """UPDATE authorized_scopes SET resolution_status = 'REAUTH_REQUIRED',
+               updated_at = ? WHERE id = ? AND scope_type = 'HOSTNAME'""",
+            (_timestamp(), scope_id),
+        )
+
+
+def _normalize_hostname_addresses(addresses: list[str]) -> tuple[str, ...]:
+    if not isinstance(addresses, list) or not addresses:
+        raise ScopeError("At least one approved public IPv4 address is required.")
+    normalized = tuple(normalize_public_ipv4(address) for address in addresses)
+    if len(normalized) != len(set(normalized)):
+        raise ScopeError("Approved IPv4 addresses must be unique.")
+    return tuple(sorted(normalized))
+
+
+def _write_hostname_addresses(connection, scope_id, addresses, timestamp, version):
+    connection.executemany(
+        """INSERT INTO scope_hostname_addresses (
+            scope_id, ipv4_address, approved, approved_at, verified_at, resolution_version
+        ) VALUES (?, ?, 1, ?, ?, ?)
+        ON CONFLICT(scope_id, ipv4_address) DO UPDATE SET
+            approved = 1, approved_at = excluded.approved_at,
+            verified_at = excluded.verified_at,
+            resolution_version = excluded.resolution_version""",
+        [
+            (scope_id, address, timestamp, timestamp, version)
+            for address in addresses
+        ],
+    )
 
 
 def get_scope_for_network(network_id: int, db_path=DB_PATH):

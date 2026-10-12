@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 
 from database import services as services_db
+from database import scopes as scopes_db
 from database.db import DB_PATH
 from services.change_detection import (
     persist_changes,
@@ -15,6 +16,7 @@ from services.service_models import (
     ServiceObservation,
 )
 from services.scope_authorization import ScopeAuthorizationError, require_public_ipv4_scope
+from services.scope_authorization import require_hostname_scope
 from services.target_policy import validate_cidr
 
 
@@ -94,6 +96,27 @@ class ServiceInventoryService:
         result: ServiceDiscoveryResult,
     ) -> dict[str, list[dict]]:
         return self._process_result(*_public_context(scope, device), result)
+
+    def process_hostname_result(
+        self,
+        scope: Mapping[str, object],
+        device: Mapping[str, object],
+        result: ServiceDiscoveryResult,
+    ) -> dict[str, list[dict]]:
+        if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
+            raise ServiceInventoryError("A stored hostname scope and device are required.")
+        try:
+            require_hostname_scope(scope)
+            target_ip = normalize_ipv4(device.get("last_ip_address"))
+        except (ScopeAuthorizationError, ValueError) as exc:
+            raise ServiceInventoryError(str(exc)) from exc
+        if device.get("network_id") is not None or device.get("scope_id") != scope.get("id"):
+            raise ServiceInventoryError("The device does not belong to the hostname scope.")
+        if type(device.get("id")) is not int or device["id"] <= 0 or target_ip not in scopes_db.list_hostname_addresses(
+            scope["id"], self.db_path
+        ):
+            raise ServiceInventoryError("The device address is not approved for the hostname scope.")
+        return self._process_result(None, device["id"], target_ip, result)
 
     def _process_result(
         self,
