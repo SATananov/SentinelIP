@@ -964,3 +964,342 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Network Workspace 09C */
+
+.network-workspace {
+  margin: 24px 0;
+}
+
+.network-workspace-heading,
+.network-toolbar,
+.network-summary,
+.network-device-summary,
+.network-review-heading,
+.network-finding-top {
+  display: flex;
+  align-items: center;
+}
+
+.network-workspace-heading {
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.network-workspace-heading h2 {
+  margin: 4px 0 0;
+}
+
+.network-workspace-copy {
+  max-width: 760px;
+  margin: 8px 0 0;
+  color: #929aaa;
+  line-height: 1.55;
+}
+
+.network-boundary {
+  flex: 0 0 auto;
+  border: 1px solid #39404d;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #aeb6c6;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.network-toolbar {
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #2b303a;
+  border-radius: 12px;
+  background: #15181f;
+}
+
+.network-toolbar label {
+  display: grid;
+  flex: 1 1 420px;
+  gap: 7px;
+}
+
+.network-toolbar label > span {
+  color: #8e96a6;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.network-toolbar select {
+  width: 100%;
+  border: 1px solid #353b47;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #101319;
+  color: #e4e7ed;
+}
+
+.network-primary-action,
+.network-secondary-action {
+  border: 1px solid #3e4655;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #202733;
+  color: #edf1f7;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.network-primary-action:hover:not(:disabled),
+.network-secondary-action:hover:not(:disabled) {
+  background: #293242;
+}
+
+.network-primary-action:disabled,
+.network-secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.network-context {
+  display: grid;
+  min-width: 86px;
+  text-align: right;
+}
+
+.network-context span {
+  color: #838b9b;
+  font-size: 0.75rem;
+}
+
+.network-context strong {
+  font-size: 1.3rem;
+}
+
+.network-summary {
+  gap: 12px;
+  margin-top: 10px;
+  color: #8e96a6;
+  font-size: 0.84rem;
+}
+
+.network-summary span + span::before {
+  margin-right: 12px;
+  color: #49505c;
+  content: "•";
+}
+
+.network-error {
+  margin: 12px 0;
+  border: 1px solid #6e3840;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #28181c;
+  color: #f0a6ae;
+}
+
+.network-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(270px, 0.8fr) minmax(0, 2fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.network-device-panel,
+.network-detail-panel {
+  min-width: 0;
+}
+
+.network-device-panel h3,
+.network-detail-panel h3 {
+  margin: 4px 0 0;
+}
+
+.network-device-list {
+  display: grid;
+  gap: 8px;
+}
+
+.network-device-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #2d333e;
+  border-radius: 9px;
+  padding: 11px 12px;
+  background: #11141a;
+  color: #dfe4ec;
+  text-align: left;
+  cursor: pointer;
+}
+
+.network-device-row:hover {
+  border-color: #464f5f;
+  background: #171c24;
+}
+
+.network-device-row.is-selected {
+  border-color: #5d718f;
+  background: #1b2430;
+}
+
+.network-device-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.network-device-row > div > span {
+  overflow: hidden;
+  color: #8e96a6;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid #3d4552;
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.network-status-online {
+  border-color: #37654f;
+  color: #83d7ad;
+}
+
+.network-status-offline {
+  border-color: #6b4147;
+  color: #e59ca5;
+}
+
+.network-device-summary {
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+  border: 1px solid #2b303a;
+  border-radius: 10px;
+  padding: 12px;
+  background: #11141a;
+}
+
+.network-device-summary > div {
+  display: grid;
+  gap: 4px;
+}
+
+.network-device-summary span {
+  color: #7f8798;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.network-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.network-review-grid > section {
+  min-width: 0;
+  border: 1px solid #2b303a;
+  border-radius: 10px;
+  padding: 12px;
+  background: #11141a;
+}
+
+.network-review-heading {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.network-review-heading h4 {
+  margin: 0;
+}
+
+.network-review-heading span {
+  color: #9aa2b1;
+  font-weight: 700;
+}
+
+.network-fact-list,
+.network-service-list {
+  display: grid;
+  gap: 7px;
+}
+
+.network-fact-row,
+.network-service-row {
+  border: 1px solid #292f39;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #15191f;
+}
+
+.network-fact-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.network-service-row {
+  display: grid;
+  gap: 5px;
+}
+
+.network-service-row > span,
+.network-service-row > small,
+.network-mini-empty {
+  color: #8992a1;
+}
+
+.network-service-row > small,
+.network-mini-empty {
+  font-size: 0.78rem;
+}
+
+.network-mini-empty {
+  margin: 0;
+}
+
+.network-finding-top {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+@media (max-width: 1000px) {
+  .network-workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .network-workspace-heading,
+  .network-toolbar,
+  .network-device-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .network-boundary {
+    align-self: flex-start;
+  }
+
+  .network-context {
+    text-align: left;
+  }
+
+  .network-review-grid {
+    grid-template-columns: 1fr;
+  }
+}

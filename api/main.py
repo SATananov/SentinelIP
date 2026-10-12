@@ -20,6 +20,7 @@ from services.device_inventory import DeviceInventoryService
 from services.host_discovery import HostDiscoveryError, discover_hosts as workspace_discover_hosts
 from services.scanner_adapters.nmap_adapter import (
     NmapHostDiscoveryScanner,
+    NmapServiceDiscoveryScanner,
     ScannerExecutionError,
     ScannerParseError,
     ScannerTimeoutError,

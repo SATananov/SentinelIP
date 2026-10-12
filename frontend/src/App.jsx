@@ -16,6 +16,7 @@ import {
 } from 'recharts'
 
 import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
+import NetworkWorkspace from './components/NetworkWorkspace.jsx'
 
 import './App.css'
 
@@ -333,6 +334,8 @@ function App() {
           <strong>{overview.severity.ALERT}</strong>
         </article>
       </section>
+
+      <NetworkWorkspace />
 
       <SecurityReviewPanel
         refreshSignal={lastUpdated}
