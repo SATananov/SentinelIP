@@ -564,6 +564,54 @@ MIGRATIONS = (
                ON web_detection_observations(observation_id)""",
         ),
     ),
+    (
+        23,
+        (
+            """CREATE TABLE threat_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                threat_type TEXT NOT NULL CHECK (threat_type IN (
+                    'SSH_BRUTE_FORCE_THREAT', 'SUSPICIOUS_AUTH_ACTIVITY', 'WEB_CREDENTIAL_FLOW_THREAT')),
+                state TEXT NOT NULL CHECK (state IN ('ANOMALOUS', 'SUSPECTED')),
+                severity TEXT NOT NULL CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH')),
+                confidence TEXT NOT NULL CHECK (confidence IN ('LOW', 'MEDIUM', 'HIGH')),
+                device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                source_ip TEXT,
+                sensor_id INTEGER REFERENCES telemetry_sensors(id) ON DELETE SET NULL,
+                hostname TEXT,
+                primary_evidence_type TEXT NOT NULL CHECK (primary_evidence_type IN ('SSH_EVENT', 'WEB_DETECTION')),
+                primary_evidence_id INTEGER NOT NULL,
+                anchor_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                recommendation TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE threat_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                threat_id INTEGER NOT NULL REFERENCES threat_detections(id),
+                evidence_type TEXT NOT NULL CHECK (evidence_type IN ('SSH_EVENT', 'WEB_DETECTION')),
+                evidence_id INTEGER NOT NULL,
+                ssh_event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+                web_detection_id INTEGER REFERENCES web_detections(id) ON DELETE SET NULL,
+                evidence_snapshot TEXT NOT NULL,
+                CHECK ((evidence_type = 'SSH_EVENT' AND web_detection_id IS NULL)
+                    OR (evidence_type = 'WEB_DETECTION' AND ssh_event_id IS NULL)),
+                UNIQUE (threat_id, evidence_type, evidence_id)
+            )""",
+            """CREATE INDEX idx_threat_detections_source_time ON threat_detections(source_ip, last_seen)""",
+            """CREATE INDEX idx_threat_detections_sensor_time ON threat_detections(sensor_id, last_seen)""",
+            """CREATE INDEX idx_threat_evidence_ssh ON threat_evidence(ssh_event_id)""",
+            """CREATE INDEX idx_threat_evidence_web ON threat_evidence(web_detection_id)""",
+            """CREATE INDEX idx_events_threat_window ON events(source_ip, event_type, julianday(timestamp), id)""",
+            """CREATE INDEX idx_web_detections_threat_anchor
+               ON web_detections(sensor_id, device_id, primary_observation_id, detection_type)""",
+        ),
+    ),
 )
 
 
