@@ -971,6 +971,119 @@ h2 {
   margin: 24px 0;
 }
 
+.workspace-section {
+  margin-top: 16px;
+}
+
+.authorized-scope-list {
+  display: grid;
+  gap: 9px;
+}
+
+.authorized-scope-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #2d333e;
+  border-radius: 10px;
+  padding: 14px;
+  background: #11141a;
+}
+
+.authorized-scope-row.is-selected {
+  border-color: #5d718f;
+  background: #18212d;
+}
+
+.public-scope-row {
+  border-color: #344258;
+  background: #121720;
+}
+
+.authorized-scope-main {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.authorized-scope-main > strong {
+  color: #e2e7ef;
+  font-size: 0.96rem;
+}
+
+.authorized-scope-main > small {
+  color: #8992a1;
+}
+
+.workspace-scope-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scope-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #3d4552;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #aeb6c6;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.scope-badge-confirmed,
+.scope-badge-enabled {
+  border-color: #37654f;
+  color: #83d7ad;
+}
+
+.scope-badge-unconfirmed,
+.scope-badge-disabled {
+  border-color: #665b37;
+  color: #d8c27c;
+}
+
+.scope-badge-type {
+  border-color: #4b5d79;
+  color: #a9c2e8;
+}
+
+.authorized-scope-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.selected-scope-label {
+  max-width: 45%;
+  overflow-wrap: anywhere;
+  border: 1px solid #39404d;
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: #c3ccdb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.selected-asset-section .network-workspace-grid {
+  margin-top: 0;
+}
+
+.selected-asset-section .network-detail-panel,
+.selected-asset-section .network-device-panel {
+  min-width: 0;
+}
+
+.selected-asset-section .network-detail-panel > .panel-heading {
+  padding-bottom: 12px;
+}
+
+.selected-asset-section .network-detail-panel h4 {
+  margin: 4px 0 0;
+}
+
 .network-candidate-panel {
   margin-top: 16px;
 }
@@ -1476,6 +1589,20 @@ h2 {
   .public-target-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .authorized-scope-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .authorized-scope-actions {
+    flex-wrap: wrap;
+  }
+
+  .selected-scope-label {
+    max-width: 100%;
+    align-self: flex-start;
   }
 
   .public-target-actions {

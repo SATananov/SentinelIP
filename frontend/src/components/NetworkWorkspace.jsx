@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from 'react'
 
@@ -37,34 +38,53 @@ function DeviceStatus({ value }) {
   )
 }
 
+function ScopeState({ confirmed, enabled, type }) {
+  return (
+    <div className="workspace-scope-badges">
+      <span className={confirmed ? 'scope-badge scope-badge-confirmed' : 'scope-badge scope-badge-unconfirmed'}>
+        {confirmed ? 'Confirmed' : 'Not confirmed'}
+      </span>
+      <span className={enabled ? 'scope-badge scope-badge-enabled' : 'scope-badge scope-badge-disabled'}>
+        {enabled ? 'Enabled' : 'Disabled'}
+      </span>
+      <span className="scope-badge scope-badge-type">{type}</span>
+    </div>
+  )
+}
+
 function NetworkWorkspace() {
   const [networks, setNetworks] = useState([])
   const [scopes, setScopes] = useState([])
-  const [selectedPublicScopeId, setSelectedPublicScopeId] = useState(null)
-  const [publicTarget, setPublicTarget] = useState('')
-  const [publicTargetName, setPublicTargetName] = useState('')
-  const [publicTargetDescription, setPublicTargetDescription] = useState('')
-  const [publicAuthorizationConfirmed, setPublicAuthorizationConfirmed] = useState(false)
   const [networkCandidates, setNetworkCandidates] = useState([])
-  const [selectedNetworkId, setSelectedNetworkId] = useState(null)
+  const [selectedScope, setSelectedScope] = useState(null)
   const [devices, setDevices] = useState([])
   const [selectedDeviceId, setSelectedDeviceId] = useState(null)
   const [deviceReview, setDeviceReview] = useState(null)
 
-  const [loading, setLoading] = useState(true)
+  const [publicTarget, setPublicTarget] = useState('')
+  const [publicTargetName, setPublicTargetName] = useState('')
+  const [publicTargetDescription, setPublicTargetDescription] = useState('')
+  const [publicAuthorizationConfirmed, setPublicAuthorizationConfirmed] = useState(false)
+
+  const [workspaceLoading, setWorkspaceLoading] = useState(true)
+  const [selectionLoading, setSelectionLoading] = useState(false)
   const [scanLoading, setScanLoading] = useState(false)
   const [deviceLoading, setDeviceLoading] = useState(false)
   const [serviceScanLoading, setServiceScanLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [deviceError, setDeviceError] = useState(null)
   const [candidateLoading, setCandidateLoading] = useState(false)
-  const [candidateError, setCandidateError] = useState(null)
   const [publicScopeLoading, setPublicScopeLoading] = useState(false)
-  const [publicScopeError, setPublicScopeError] = useState(null)
+
+  const [workspaceError, setWorkspaceError] = useState(null)
+  const [privateError, setPrivateError] = useState(null)
+  const [publicError, setPublicError] = useState(null)
+  const [candidateError, setCandidateError] = useState(null)
+  const [deviceError, setDeviceError] = useState(null)
+
+  const selectionRequest = useRef(0)
 
   const loadWorkspace = useCallback(async (signal) => {
-    setLoading(true)
-    setError(null)
+    setWorkspaceLoading(true)
+    setWorkspaceError(null)
 
     try {
       const [networkData, scopeData] = await Promise.all([
@@ -73,84 +93,126 @@ function NetworkWorkspace() {
       ])
       setNetworks(networkData)
       setScopes(scopeData)
-
-      if (networkData.length === 0) {
-        setSelectedNetworkId(null)
-        setDevices([])
-        return
-      }
-
-      const firstNetwork = networkData[0]
-      const deviceData = await loadNetworkDevices(firstNetwork.id, signal)
-
-      setSelectedNetworkId(firstNetwork.id)
-      setDevices(deviceData)
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        setError(err.message)
-      }
+      if (err.name !== 'AbortError') setWorkspaceError(err.message)
     } finally {
-      setLoading(false)
+      setWorkspaceLoading(false)
     }
   }, [])
 
   useEffect(() => {
     const controller = new AbortController()
-    const timer = setTimeout(() => {
-      loadWorkspace(controller.signal)
-    }, 0)
-
+    const timer = setTimeout(() => loadWorkspace(controller.signal), 0)
     return () => {
       clearTimeout(timer)
       controller.abort()
     }
   }, [loadWorkspace])
 
-  async function selectNetwork(event) {
-    const networkId = Number(event.target.value)
-
-    setSelectedPublicScopeId(null)
-    setSelectedNetworkId(networkId)
+  async function selectPrivateNetwork(network) {
+    const requestId = selectionRequest.current + 1
+    selectionRequest.current = requestId
+    setSelectedScope({ kind: 'PRIVATE_NETWORK', id: network.id })
     setDevices([])
     setSelectedDeviceId(null)
     setDeviceReview(null)
     setDeviceError(null)
-    setLoading(true)
-    setError(null)
+    setPrivateError(null)
+    setSelectionLoading(true)
 
     try {
-      const deviceData = await loadNetworkDevices(networkId)
-      setDevices(deviceData)
+      const data = await loadNetworkDevices(network.id)
+      if (selectionRequest.current === requestId) setDevices(data)
     } catch (err) {
-      setError(err.message)
+      if (selectionRequest.current === requestId) setPrivateError(err.message)
     } finally {
-      setLoading(false)
+      if (selectionRequest.current === requestId) setSelectionLoading(false)
     }
   }
 
-  async function scanNetwork() {
-    if (!selectedNetworkId) {
-      return
-    }
-
-    setScanLoading(true)
-    setError(null)
+  async function selectPublicTarget(scope) {
+    const requestId = selectionRequest.current + 1
+    selectionRequest.current = requestId
+    setSelectedScope({ kind: 'PUBLIC_IPV4', id: scope.id })
+    setDevices([])
+    setSelectedDeviceId(null)
+    setDeviceReview(null)
+    setDeviceError(null)
+    setPublicError(null)
+    setSelectionLoading(true)
 
     try {
-      const result = await discoverNetwork(selectedNetworkId)
-      setDevices(result.devices)
+      const data = await loadScopeDevices(scope.id)
+      if (selectionRequest.current === requestId) setDevices(data)
+    } catch (err) {
+      if (selectionRequest.current === requestId) setPublicError(err.message)
+    } finally {
+      if (selectionRequest.current === requestId) setSelectionLoading(false)
+    }
+  }
 
-      if (
-        selectedDeviceId &&
-        !result.devices.some((device) => device.id === selectedDeviceId)
-      ) {
-        setSelectedDeviceId(null)
-        setDeviceReview(null)
+  async function scanPrivateNetwork(network) {
+    const scope = scopes.find((item) => item.network_id === network.id)
+    const canScan = network.authorized === true && network.enabled === true &&
+      scope?.scope_type === 'PRIVATE_NETWORK' && scope.authorized === true &&
+      scope.enabled === true && scope.canonical_target === network.cidr &&
+      Boolean(scope.authorization_confirmed_at) &&
+      Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source)
+    if (!canScan) return
+
+    const requestId = selectionRequest.current + 1
+    selectionRequest.current = requestId
+    setSelectedScope({ kind: 'PRIVATE_NETWORK', id: network.id })
+    setDevices([])
+    setSelectedDeviceId(null)
+    setDeviceReview(null)
+    setDeviceError(null)
+    setPrivateError(null)
+    setScanLoading(true)
+
+    try {
+      const result = await discoverNetwork(network.id)
+      if (selectionRequest.current === requestId) setDevices(result.devices)
+    } catch (err) {
+      if (selectionRequest.current === requestId) setPrivateError(err.message)
+    } finally {
+      if (selectionRequest.current === requestId) setScanLoading(false)
+    }
+  }
+
+  async function scanPublicTarget(scope) {
+    const canScan = scope.scope_type === 'PUBLIC_IPV4' && scope.authorized === true &&
+      scope.enabled === true && Boolean(scope.authorization_confirmed_at) &&
+      Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source) &&
+      isIPv4Address(scope.canonical_target ?? '')
+    if (!canScan) return
+
+    const requestId = selectionRequest.current + 1
+    selectionRequest.current = requestId
+    setSelectedScope({ kind: 'PUBLIC_IPV4', id: scope.id })
+    setDevices([])
+    setSelectedDeviceId(null)
+    setDeviceReview(null)
+    setDeviceError(null)
+    setPublicError(null)
+    setScanLoading(true)
+
+    try {
+      const result = await discoverPublicScope(scope.id)
+      const nextDevices = result.device ? [result.device] : []
+      if (selectionRequest.current !== requestId) return
+      setDevices(nextDevices)
+      if (nextDevices.length > 0) {
+        const review = await loadDeviceReview(nextDevices[0].id)
+        if (selectionRequest.current === requestId) {
+          setSelectedDeviceId(nextDevices[0].id)
+          setDeviceReview(review)
+        }
       }
     } catch (err) {
-      setError(err.message)
+      if (selectionRequest.current === requestId) setPublicError(err.message)
     } finally {
-      setScanLoading(false)
+      if (selectionRequest.current === requestId) setScanLoading(false)
     }
   }
 
@@ -171,21 +233,17 @@ function NetworkWorkspace() {
   }
 
   async function scanServices() {
-    if (!selectedDeviceId) {
-      return
-    }
+    if (!selectedDeviceId || !selectedScope) return
 
     setServiceScanLoading(true)
     setDeviceError(null)
-
     try {
-      if (selectedPublicScopeId) {
-        await discoverScopeDeviceServices(selectedPublicScopeId, selectedDeviceId)
+      if (selectedScope.kind === 'PUBLIC_IPV4') {
+        await discoverScopeDeviceServices(selectedScope.id, selectedDeviceId)
       } else {
         await discoverDeviceServices(selectedDeviceId)
       }
-      const result = await loadDeviceReview(selectedDeviceId)
-      setDeviceReview(result)
+      setDeviceReview(await loadDeviceReview(selectedDeviceId))
     } catch (err) {
       setDeviceError(err.message)
     } finally {
@@ -196,10 +254,8 @@ function NetworkWorkspace() {
   async function refreshNetworkCandidates() {
     setCandidateLoading(true)
     setCandidateError(null)
-
     try {
-      const candidates = await discoverNetworkCandidates()
-      setNetworkCandidates(candidates)
+      setNetworkCandidates(await discoverNetworkCandidates())
     } catch (err) {
       setCandidateError(err.message)
     } finally {
@@ -212,7 +268,7 @@ function NetworkWorkspace() {
     if (!isIPv4Address(publicTarget) || !publicAuthorizationConfirmed) return
 
     setPublicScopeLoading(true)
-    setPublicScopeError(null)
+    setPublicError(null)
     try {
       const scope = await createPublicIPv4Scope({
         target: publicTarget.trim(),
@@ -226,90 +282,49 @@ function NetworkWorkspace() {
       setPublicTargetName('')
       setPublicTargetDescription('')
       setPublicAuthorizationConfirmed(false)
-      setSelectedPublicScopeId(scope.id)
-      setSelectedNetworkId(null)
+      selectionRequest.current += 1
+      setSelectedScope({ kind: 'PUBLIC_IPV4', id: scope.id })
       setDevices([])
       setSelectedDeviceId(null)
       setDeviceReview(null)
+      setDeviceError(null)
     } catch (err) {
-      setPublicScopeError(err.message)
+      setPublicError(err.message)
     } finally {
       setPublicScopeLoading(false)
     }
   }
 
-  async function selectPublicTarget(scopeId) {
-    setSelectedPublicScopeId(scopeId)
-    setSelectedNetworkId(null)
-    setDevices([])
-    setSelectedDeviceId(null)
-    setDeviceReview(null)
-    setLoading(true)
-    setError(null)
-    try {
-      setDevices(await loadScopeDevices(scopeId))
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function scanPublicTarget(scopeId) {
-    setSelectedPublicScopeId(scopeId)
-    setSelectedNetworkId(null)
-    setScanLoading(true)
-    setError(null)
-    setDeviceError(null)
-    setSelectedDeviceId(null)
-    setDeviceReview(null)
-    try {
-      const result = await discoverPublicScope(scopeId)
-      const nextDevices = result.device ? [result.device] : []
-      setDevices(nextDevices)
-      if (nextDevices.length > 0) {
-        const review = await loadDeviceReview(nextDevices[0].id)
-        setSelectedDeviceId(nextDevices[0].id)
-        setDeviceReview(review)
-      }
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setScanLoading(false)
-    }
-  }
-
-  const selectedNetwork = networks.find(
-    (network) => network.id === selectedNetworkId,
-  )
-  const selectedScope = scopes.find(
-    (scope) => scope.network_id === selectedNetworkId,
-  )
+  const selectedNetwork = selectedScope?.kind === 'PRIVATE_NETWORK'
+    ? networks.find((item) => item.id === selectedScope.id)
+    : null
+  const selectedPrivateScope = selectedNetwork
+    ? scopes.find((item) => item.network_id === selectedNetwork.id)
+    : null
   const publicTargets = scopes.filter((scope) => scope.scope_type === 'PUBLIC_IPV4')
-  const selectedPublicScope = publicTargets.find(
-    (scope) => scope.id === selectedPublicScopeId,
+  const activePublicTarget = selectedScope?.kind === 'PUBLIC_IPV4'
+    ? publicTargets.find((scope) => scope.id === selectedScope.id)
+    : null
+
+  const privateScopeConfirmed = Boolean(
+    selectedNetwork?.authorized === true && selectedPrivateScope?.authorized === true &&
+    selectedPrivateScope?.scope_type === 'PRIVATE_NETWORK' &&
+    selectedPrivateScope?.canonical_target === selectedNetwork?.cidr &&
+    selectedPrivateScope?.authorization_confirmed_at &&
+    selectedPrivateScope?.authorization_confirmation_version && selectedPrivateScope?.authorization_source,
   )
-  const scopeAllowsScan = Boolean(
-    selectedNetwork?.authorized === true &&
-    selectedNetwork?.enabled === true &&
-    selectedScope?.scope_type === 'PRIVATE_NETWORK' &&
-    selectedScope?.canonical_target === selectedNetwork?.cidr &&
-    selectedScope?.authorized === true &&
-    selectedScope?.enabled === true &&
-    selectedScope?.authorization_confirmed_at &&
-    selectedScope?.authorization_confirmation_version &&
-    selectedScope?.authorization_source,
+  const privateScanAllowed = Boolean(
+    privateScopeConfirmed && selectedNetwork?.enabled === true && selectedPrivateScope?.enabled === true,
   )
-  const publicScopeAllowsScan = Boolean(
-    selectedPublicScope?.scope_type === 'PUBLIC_IPV4' &&
-    selectedPublicScope?.authorized === true &&
-    selectedPublicScope?.enabled === true &&
-    selectedPublicScope?.authorization_confirmed_at &&
-    selectedPublicScope?.authorization_confirmation_version &&
-    selectedPublicScope?.authorization_source &&
-    isIPv4Address(selectedPublicScope?.canonical_target ?? '')
+  const publicScopeConfirmed = Boolean(
+    activePublicTarget?.scope_type === 'PUBLIC_IPV4' && activePublicTarget.authorized === true &&
+    activePublicTarget.authorization_confirmed_at &&
+    activePublicTarget.authorization_confirmation_version && activePublicTarget.authorization_source &&
+    isIPv4Address(activePublicTarget.canonical_target ?? ''),
   )
-  const busy = loading || scanLoading || deviceLoading || serviceScanLoading
+  const publicScanAllowed = Boolean(publicScopeConfirmed && activePublicTarget.enabled === true)
+  const anyActionBusy = workspaceLoading || selectionLoading || scanLoading ||
+    deviceLoading || serviceScanLoading || publicScopeLoading
 
   return (
     <section className="network-workspace">
@@ -318,112 +333,118 @@ function NetworkWorkspace() {
           <p className="panel-kicker">Network Visibility</p>
           <h2>Network Workspace</h2>
           <p className="network-workspace-copy">
-            Discover authorized private networks and public targets, review devices, and inspect
-            persisted ports, services, findings, and CVE matches.
+            Discover local network candidates, select an authorized scope, and review its persisted device evidence.
           </p>
         </div>
-
-        <span className="network-boundary">
-          AUTHORIZED TARGETS ONLY
-        </span>
+        <span className="network-boundary">AUTHORIZED TARGETS ONLY</span>
       </div>
 
-      {error && (
-        <div className="network-error">
-          {error}
-        </div>
-      )}
+      {workspaceError && <div className="network-error" role="alert">{workspaceError}</div>}
 
-      <div className="network-toolbar">
-        <label>
-          <span>Authorized network</span>
-          <select
-            value={selectedNetworkId ?? ''}
-            onChange={selectNetwork}
-            disabled={busy || networks.length === 0}
-          >
-            {networks.length === 0 && (
-              <option value="">No networks configured</option>
-            )}
-
-            {networks.map((network) => (
-              <option key={network.id} value={network.id}>
-                {network.name
-                  ? `${network.name} · ${network.cidr}`
-                  : network.cidr}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button
-          className="network-primary-action"
-          type="button"
-          onClick={scanNetwork}
-          disabled={!selectedNetworkId || !scopeAllowsScan || busy}
-        >
-          {scanLoading ? 'Scanning network…' : 'Scan Network'}
-        </button>
-
-        <div className="network-context">
-          <span>Devices</span>
-          <strong>{devices.length}</strong>
-        </div>
-      </div>
-
-      {selectedNetwork && (
-        <article className="panel network-scope-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="panel-kicker">Authorized Scope</p>
-              <h3>{selectedScope?.name || 'Selected Network Scope'}</h3>
-            </div>
-            <span className={
-              scopeAllowsScan
-                ? 'network-candidate-state network-scope-confirmed'
-                : 'network-candidate-state network-scope-unconfirmed'
-            }>
-              {scopeAllowsScan ? 'Confirmed' : 'Not confirmed'}
-            </span>
+      <article className="panel workspace-section discovered-network-section">
+        <div className="panel-heading">
+          <div>
+            <p className="panel-kicker">Passive Local Discovery</p>
+            <h3>Discovered Networks</h3>
           </div>
-          <dl className="network-scope-details">
-            <div>
-              <dt>Type</dt>
-              <dd>{selectedScope?.scope_type === 'PRIVATE_NETWORK'
-                ? 'Private Network'
-                : 'Unavailable'}</dd>
-            </div>
-            <div>
-              <dt>Target</dt>
-              <dd className="mono">
-                {selectedScope?.canonical_target ?? selectedNetwork.cidr}
-              </dd>
-            </div>
-            <div>
-              <dt>Authorization</dt>
-              <dd>{scopeAllowsScan ? 'Confirmed' : 'Not confirmed'}</dd>
-            </div>
-            <div>
-              <dt>State</dt>
-              <dd>{selectedScope?.enabled ? 'Enabled' : 'Disabled'}</dd>
-            </div>
-          </dl>
-        </article>
-      )}
+          <button
+            className="network-secondary-action"
+            type="button"
+            onClick={refreshNetworkCandidates}
+            disabled={candidateLoading}
+          >
+            {candidateLoading ? 'Discovering…' : 'Discover Networks'}
+          </button>
+        </div>
+        <p className="network-candidate-note">
+          Candidates are read from local interface and route state. Discovery does not scan, save, or authorize them.
+        </p>
+        {candidateError && <div className="network-error" role="alert">{candidateError}</div>}
+        {candidateLoading ? (
+          <p className="network-mini-empty">Reading local network state…</p>
+        ) : networkCandidates.length === 0 ? (
+          <p className="network-mini-empty">No candidates loaded. Choose Discover Networks to inspect local network state.</p>
+        ) : (
+          <div className="network-candidate-list">
+            {networkCandidates.map((candidate) => (
+              <div className="network-candidate-row" key={candidate.cidr}>
+                <div>
+                  <strong className="mono">{candidate.cidr}</strong>
+                  <span>Interface: {candidate.interface || 'Unknown'} · Source: {candidate.source.replaceAll('_', ' ')}</span>
+                  <small>{candidate.evidence.join(' · ')}</small>
+                </div>
+                <span className="network-candidate-state">Candidate · not authorized</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </article>
 
-      <article className="panel public-target-panel">
+      <article className="panel workspace-section private-network-section">
+        <div className="panel-heading">
+          <div>
+            <p className="panel-kicker">Saved Private Scope</p>
+            <h3>Authorized Private Networks</h3>
+          </div>
+          <span className="panel-count">{networks.length}</span>
+        </div>
+        {privateError && <div className="network-error" role="alert">{privateError}</div>}
+        {workspaceLoading ? (
+          <p className="network-mini-empty">Loading authorized networks…</p>
+        ) : networks.length === 0 ? (
+          <p className="network-mini-empty">No private networks are saved.</p>
+        ) : (
+          <div className="authorized-scope-list">
+            {networks.map((network) => {
+              const scope = scopes.find((item) => item.network_id === network.id)
+              const confirmed = network.authorized === true && scope?.authorized === true &&
+                scope?.scope_type === 'PRIVATE_NETWORK' && Boolean(scope?.authorization_confirmed_at) &&
+                Boolean(scope?.authorization_confirmation_version) && Boolean(scope?.authorization_source)
+              const enabled = network.enabled === true && scope?.enabled === true
+              const isSelected = selectedScope?.kind === 'PRIVATE_NETWORK' && selectedScope.id === network.id
+              return (
+                <div className={isSelected ? 'authorized-scope-row is-selected' : 'authorized-scope-row'} key={network.id}>
+                  <div className="authorized-scope-main">
+                    <strong>{network.name || 'Private Network'}</strong>
+                    <span className="mono">{network.cidr}</span>
+                    <ScopeState confirmed={confirmed} enabled={enabled} type="Private Network" />
+                    {isSelected && <small>{devices.length} devices in current inventory view</small>}
+                  </div>
+                  <div className="authorized-scope-actions">
+                    <button
+                      className="network-secondary-action"
+                      type="button"
+                      onClick={() => selectPrivateNetwork(network)}
+                      disabled={anyActionBusy}
+                    >
+                      {isSelected ? 'Selected' : 'Select'}
+                    </button>
+                    <button
+                      className="network-primary-action"
+                      type="button"
+                      onClick={() => scanPrivateNetwork(network)}
+                      disabled={!confirmed || !enabled || anyActionBusy}
+                    >
+                      {scanLoading && isSelected ? 'Scanning…' : 'Scan Network'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </article>
+
+      <article className="panel workspace-section public-target-panel">
         <div className="panel-heading">
           <div>
             <p className="panel-kicker">Explicit Authorization</p>
             <h3>Public Targets</h3>
           </div>
-          <span className="network-candidate-state public-target-badge">
-            Single IPv4 only
-          </span>
+          <span className="network-candidate-state public-target-badge">Single IPv4 only</span>
         </div>
         <p className="network-candidate-note">
-          Add only a public IPv4 address you own or are authorized to assess.
-          Hostnames and ranges are not accepted.
+          Add one public IPv4 address that you own or are authorized to assess. Hostnames and ranges are not accepted.
         </p>
         <form className="public-target-form" onSubmit={addPublicTarget}>
           <label>
@@ -438,19 +459,11 @@ function NetworkWorkspace() {
           </label>
           <label>
             <span>Name (optional)</span>
-            <input
-              value={publicTargetName}
-              onChange={(event) => setPublicTargetName(event.target.value)}
-              maxLength={120}
-            />
+            <input value={publicTargetName} onChange={(event) => setPublicTargetName(event.target.value)} maxLength={120} />
           </label>
           <label className="public-target-description">
             <span>Description (optional)</span>
-            <input
-              value={publicTargetDescription}
-              onChange={(event) => setPublicTargetDescription(event.target.value)}
-              maxLength={500}
-            />
+            <input value={publicTargetDescription} onChange={(event) => setPublicTargetDescription(event.target.value)} maxLength={500} />
           </label>
           <label className="public-target-confirmation">
             <input
@@ -463,45 +476,41 @@ function NetworkWorkspace() {
           <button
             className="network-primary-action"
             type="submit"
-            disabled={publicScopeLoading || !isIPv4Address(publicTarget) || !publicAuthorizationConfirmed}
+            disabled={publicScopeLoading || anyActionBusy || !isIPv4Address(publicTarget) || !publicAuthorizationConfirmed}
           >
             {publicScopeLoading ? 'Saving…' : 'Add Public Target'}
           </button>
         </form>
-        {publicScopeError && (
-          <div className="network-error" role="alert">{publicScopeError}</div>
-        )}
+        {publicError && <div className="network-error" role="alert">{publicError}</div>}
         {publicTargets.length === 0 ? (
           <p className="network-mini-empty">No public targets are authorized.</p>
         ) : (
-          <div className="public-target-list">
+          <div className="authorized-scope-list">
             {publicTargets.map((scope) => {
-              const canScan = scope.authorized && scope.enabled &&
-                scope.authorization_confirmed_at &&
-                scope.authorization_confirmation_version && scope.authorization_source
-              const isSelected = scope.id === selectedPublicScopeId
+              const confirmed = scope.authorized === true && Boolean(scope.authorization_confirmed_at) &&
+                Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source)
+              const isSelected = selectedScope?.kind === 'PUBLIC_IPV4' && selectedScope.id === scope.id
               return (
-                <div className={isSelected ? 'public-target-row is-selected' : 'public-target-row'} key={scope.id}>
-                  <div>
+                <div className={isSelected ? 'authorized-scope-row is-selected public-scope-row' : 'authorized-scope-row public-scope-row'} key={scope.id}>
+                  <div className="authorized-scope-main">
                     <strong>{scope.name || 'Public IPv4 Target'}</strong>
-                    <small>Type: Public IPv4</small>
                     <span className="mono">{scope.canonical_target}</span>
-                    <small>Authorization: {canScan ? 'Confirmed' : 'Not confirmed'} · State: {scope.enabled ? 'Enabled' : 'Disabled'}</small>
+                    <ScopeState confirmed={confirmed} enabled={scope.enabled === true} type="Public IPv4" />
                   </div>
-                  <div className="public-target-actions">
+                  <div className="authorized-scope-actions">
                     <button
                       className="network-secondary-action"
                       type="button"
-                      onClick={() => selectPublicTarget(scope.id)}
-                      disabled={loading || scanLoading}
+                      onClick={() => selectPublicTarget(scope)}
+                      disabled={anyActionBusy}
                     >
-                      {isSelected ? 'Selected' : 'Review Target'}
+                      {isSelected ? 'Selected' : 'Select'}
                     </button>
                     <button
                       className="network-primary-action"
                       type="button"
-                      onClick={() => scanPublicTarget(scope.id)}
-                      disabled={!canScan || busy || publicScopeLoading}
+                      onClick={() => scanPublicTarget(scope)}
+                      disabled={!confirmed || !scope.enabled || !isIPv4Address(scope.canonical_target ?? '') || anyActionBusy}
                     >
                       {scanLoading && isSelected ? 'Scanning…' : 'Scan Target'}
                     </button>
@@ -513,299 +522,160 @@ function NetworkWorkspace() {
         )}
       </article>
 
-      <article className="panel network-candidate-panel">
+      <article className="panel workspace-section selected-asset-section">
         <div className="panel-heading">
           <div>
-            <p className="panel-kicker">Local System State</p>
-            <h3>Discovered Networks</h3>
+            <p className="panel-kicker">Selected Scope</p>
+            <h3>Selected Asset / Review</h3>
           </div>
-
-          <button
-            className="network-secondary-action"
-            type="button"
-            onClick={refreshNetworkCandidates}
-            disabled={candidateLoading}
-          >
-            {candidateLoading ? 'Discovering…' : 'Discover Networks'}
-          </button>
+          {selectedScope && (
+            <span className="selected-scope-label">
+              {selectedScope.kind === 'PRIVATE_NETWORK'
+                ? selectedNetwork?.cidr
+                : activePublicTarget?.canonical_target}
+            </span>
+          )}
         </div>
 
-        <p className="network-candidate-note">
-          Candidates come from local interface and route state. Discovery does
-          not scan, save, or authorize these networks.
-        </p>
-
-        {candidateError && (
-          <div className="network-error" role="alert">
-            {candidateError}
-          </div>
-        )}
-
-        {candidateLoading ? (
-          <p className="network-mini-empty">Reading local network state…</p>
-        ) : networkCandidates.length === 0 ? (
-          <p className="network-mini-empty">
-            No candidates discovered yet. Choose Discover Networks to read the
-            local interface and route table.
-          </p>
+        {!selectedScope ? (
+          <p className="empty-state">Select an authorized private network or public target to view its devices and persisted review evidence.</p>
+        ) : selectionLoading ? (
+          <p className="empty-state">Loading devices for the selected scope…</p>
         ) : (
-          <div className="network-candidate-list">
-            {networkCandidates.map((candidate) => (
-              <div className="network-candidate-row" key={candidate.cidr}>
-                <div>
-                  <strong className="mono">{candidate.cidr}</strong>
-                  <span>
-                    Interface: {candidate.interface || 'Unknown'} · Source:{' '}
-                    {candidate.source
-                      .split('+')
-                      .map((source) => source.replaceAll('_', ' '))
-                      .join(' + ')}
-                  </span>
-                  <small>{candidate.evidence.join(' · ')}</small>
-                </div>
-                <span className="network-candidate-state">
-                  Candidate · not authorized
-                </span>
+          <div className="network-workspace-grid">
+            <section className="network-device-panel">
+              <div className="network-review-heading">
+                <h4>Devices</h4>
+                <span>{devices.length}</span>
               </div>
-            ))}
+              {devices.length === 0 ? (
+                <p className="empty-state">
+                  {scanLoading ? 'Scanning the selected authorized scope…' : 'No device evidence is currently persisted for this scope.'}
+                </p>
+              ) : (
+                <div className="network-device-list">
+                  {devices.map((device) => (
+                    <button
+                      className={device.id === selectedDeviceId ? 'network-device-row is-selected' : 'network-device-row'}
+                      type="button"
+                      key={device.id}
+                      onClick={() => selectDevice(device.id)}
+                      disabled={anyActionBusy}
+                    >
+                      <div>
+                        <strong className="mono">{device.last_ip_address}</strong>
+                        <span>{device.vendor ?? device.hostname ?? 'Unknown device'}</span>
+                      </div>
+                      <DeviceStatus value={device.status} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="network-detail-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="panel-kicker">Device Evidence</p>
+                  <h4>{deviceReview?.device?.last_ip_address ?? 'Review a device'}</h4>
+                </div>
+                <button
+                  className="network-secondary-action"
+                  type="button"
+                  onClick={scanServices}
+                  disabled={!selectedDeviceId || !(privateScanAllowed || publicScanAllowed) || anyActionBusy}
+                >
+                  {serviceScanLoading ? 'Scanning services…' : 'Scan Services'}
+                </button>
+              </div>
+              {deviceError && <div className="network-error" role="alert">{deviceError}</div>}
+              {!selectedDeviceId ? (
+                <p className="empty-state">Select a device to review its persisted ports, services, findings, and CVE matches.</p>
+              ) : deviceLoading ? (
+                <p className="empty-state">Loading device review…</p>
+              ) : deviceReview ? (
+                <DeviceReview review={deviceReview} />
+              ) : (
+                <p className="empty-state">Device review is unavailable.</p>
+              )}
+            </section>
           </div>
         )}
       </article>
-
-      <div className="network-workspace-grid">
-        <article className="panel network-device-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="panel-kicker">Inventory</p>
-              <h3>Devices</h3>
-            </div>
-
-            <span className="panel-count">{devices.length}</span>
-          </div>
-
-          {loading ? (
-            <p className="empty-state">Loading device inventory…</p>
-          ) : devices.length === 0 ? (
-            <p className="empty-state">
-              {selectedPublicScope
-                ? 'No device evidence is currently persisted for this target.'
-                : 'No devices are currently persisted for this network.'}
-            </p>
-          ) : (
-            <div className="network-device-list">
-              {devices.map((device) => (
-                <button
-                  className={
-                    device.id === selectedDeviceId
-                      ? 'network-device-row is-selected'
-                      : 'network-device-row'
-                  }
-                  type="button"
-                  key={device.id}
-                  onClick={() => selectDevice(device.id)}
-                  disabled={busy}
-                >
-                  <div>
-                    <strong className="mono">
-                      {device.last_ip_address}
-                    </strong>
-                    <span>
-                      {device.vendor ?? device.hostname ?? 'Unknown device'}
-                    </span>
-                  </div>
-
-                  <DeviceStatus value={device.status} />
-                </button>
-              ))}
-            </div>
-          )}
-        </article>
-
-        <article className="panel network-detail-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="panel-kicker">Selected Device</p>
-              <h3>
-                {deviceReview?.device?.last_ip_address ?? 'Device Review'}
-              </h3>
-            </div>
-
-            <button
-              className="network-secondary-action"
-              type="button"
-              onClick={scanServices}
-              disabled={!selectedDeviceId || !(scopeAllowsScan || publicScopeAllowsScan) || busy}
-            >
-              {serviceScanLoading
-                ? 'Scanning services…'
-                : 'Scan Services'}
-            </button>
-          </div>
-
-          {deviceError && (
-            <div className="network-error">
-              {deviceError}
-            </div>
-          )}
-
-          {!selectedDeviceId ? (
-            <p className="empty-state">
-              Select a discovered device to inspect its persisted security
-              state.
-            </p>
-          ) : deviceLoading ? (
-            <p className="empty-state">Loading device review…</p>
-          ) : deviceReview ? (
-            <>
-              <div className="network-device-summary">
-                <div>
-                  <span>IP</span>
-                  <strong className="mono">
-                    {deviceReview.device.last_ip_address}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Vendor</span>
-                  <strong>
-                    {deviceReview.device.vendor ?? 'Unknown'}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Identity</span>
-                  <strong>
-                    {deviceReview.device.identity_confidence}
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Status</span>
-                  <DeviceStatus value={deviceReview.device.status} />
-                </div>
-              </div>
-
-              <div className="network-review-grid">
-                <section>
-                  <div className="network-review-heading">
-                    <h4>Ports</h4>
-                    <span>{deviceReview.ports.length}</span>
-                  </div>
-
-                  {deviceReview.ports.length === 0 ? (
-                    <p className="network-mini-empty">No persisted ports.</p>
-                  ) : (
-                    <div className="network-fact-list">
-                      {deviceReview.ports.map((port) => (
-                        <div key={port.id} className="network-fact-row">
-                          <span className="mono">
-                            {port.port_number}/{port.transport}
-                          </span>
-                          <strong>{port.state}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <div className="network-review-heading">
-                    <h4>Services</h4>
-                    <span>{deviceReview.services.length}</span>
-                  </div>
-
-                  {deviceReview.services.length === 0 ? (
-                    <p className="network-mini-empty">
-                      No persisted services.
-                    </p>
-                  ) : (
-                    <div className="network-service-list">
-                      {deviceReview.services.map((service) => (
-                        <div key={service.id} className="network-service-row">
-                          <strong>
-                            {service.service_name ?? 'Unknown service'}
-                          </strong>
-                          <span>
-                            {service.product ?? 'No product evidence'}
-                            {service.version
-                              ? ` · ${service.version}`
-                              : ''}
-                          </span>
-                          <small>
-                            Confidence: {service.confidence}
-                          </small>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <div className="network-review-heading">
-                    <h4>Findings</h4>
-                    <span>{deviceReview.findings.length}</span>
-                  </div>
-
-                  {deviceReview.findings.length === 0 ? (
-                    <p className="network-mini-empty">
-                      No persisted risk findings.
-                    </p>
-                  ) : (
-                    <div className="network-service-list">
-                      {deviceReview.findings.map((finding) => (
-                        <div key={finding.id} className="network-service-row">
-                          <div className="network-finding-top">
-                            <strong>{finding.title}</strong>
-                            <span className={`security-badge security-badge-${String(finding.severity).toLowerCase()}`}>
-                              {finding.severity}
-                            </span>
-                          </div>
-                          <span>{finding.reason}</span>
-                          <small>
-                            {finding.status} · confidence {finding.confidence}
-                          </small>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <div className="network-review-heading">
-                    <h4>CVE Matches</h4>
-                    <span>{deviceReview.cveMatches.length}</span>
-                  </div>
-
-                  {deviceReview.cveMatches.length === 0 ? (
-                    <p className="network-mini-empty">
-                      No persisted CVE matches.
-                    </p>
-                  ) : (
-                    <div className="network-service-list">
-                      {deviceReview.cveMatches.map((match) => (
-                        <div key={match.id} className="network-service-row">
-                          <strong>{match.cve_id ?? `Match #${match.id}`}</strong>
-                          <span>
-                            {match.match_status ?? match.status ?? 'Review'}
-                          </span>
-                          <small>
-                            Confidence: {match.confidence ?? 'Unknown'}
-                          </small>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              </div>
-            </>
-          ) : (
-            <p className="empty-state">
-              Device review is unavailable.
-            </p>
-          )}
-        </article>
-      </div>
     </section>
+  )
+}
+
+function DeviceReview({ review }) {
+  const { device, ports, services, findings, cveMatches } = review
+  const groups = [
+    { title: 'Ports', items: ports },
+    { title: 'Services', items: services },
+    { title: 'Findings', items: findings },
+    { title: 'CVE Matches', items: cveMatches },
+  ]
+
+  return (
+    <>
+      <div className="network-device-summary">
+        <div><span>IP</span><strong className="mono">{device.last_ip_address}</strong></div>
+        <div><span>Hostname</span><strong>{device.hostname ?? 'Unknown'}</strong></div>
+        <div><span>Vendor</span><strong>{device.vendor ?? 'Unknown'}</strong></div>
+        <div><span>Identity confidence</span><strong>{device.identity_confidence ?? 'Unknown'}</strong></div>
+        <div><span>Status</span><DeviceStatus value={device.status} /></div>
+      </div>
+      <div className="network-review-grid">
+        {groups.map(({ title, items }) => (
+          <section key={title}>
+            <div className="network-review-heading"><h4>{title}</h4><span>{items.length}</span></div>
+            {items.length === 0 ? (
+              <p className="network-mini-empty">No persisted {title.toLowerCase()}.</p>
+            ) : title === 'Ports' ? (
+              <div className="network-fact-list">
+                {items.map((port) => (
+                  <div key={port.id} className="network-fact-row">
+                    <span className="mono">{port.port_number}/{port.transport}</span><strong>{port.state}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : title === 'Services' ? (
+              <div className="network-service-list">
+                {items.map((service) => (
+                  <div key={service.id} className="network-service-row">
+                    <strong>{service.service_name ?? 'Unknown service'}</strong>
+                    <span>{service.product ?? 'No product evidence'}{service.version ? ` · ${service.version}` : ''}</span>
+                    <small>Confidence: {service.confidence}</small>
+                  </div>
+                ))}
+              </div>
+            ) : title === 'Findings' ? (
+              <div className="network-service-list">
+                {items.map((finding) => (
+                  <div key={finding.id} className="network-service-row">
+                    <div className="network-finding-top">
+                      <strong>{finding.title}</strong>
+                      <span className={`security-badge security-badge-${String(finding.severity).toLowerCase()}`}>{finding.severity}</span>
+                    </div>
+                    <span>{finding.reason}</span>
+                    <small>{finding.status} · confidence {finding.confidence}</small>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="network-service-list">
+                {items.map((match) => (
+                  <div key={match.id} className="network-service-row">
+                    <strong>{match.cve_id ?? `Match #${match.id}`}</strong>
+                    <span>{match.match_status ?? match.status ?? 'Review'}</span>
+                    <small>Confidence: {match.confidence ?? 'Unknown'}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        ))}
+      </div>
+    </>
   )
 }
 
