@@ -1062,6 +1062,75 @@ MIGRATIONS = (
             """,
         ),
     ),
+    (
+        29,
+        (
+            """CREATE TABLE scope_cidr_addresses (
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id) ON DELETE CASCADE,
+                canonical_cidr TEXT NOT NULL,
+                ipv4_address TEXT NOT NULL,
+                PRIMARY KEY (scope_id, ipv4_address)
+            )""",
+            """CREATE TRIGGER scope_cidr_address_insert BEFORE INSERT ON scope_cidr_addresses
+            WHEN NOT EXISTS (
+                SELECT 1 FROM authorized_scopes s WHERE s.id = NEW.scope_id
+                AND s.scope_type = 'PUBLIC_CIDR' AND s.canonical_target = NEW.canonical_cidr
+            )
+            BEGIN SELECT RAISE(ABORT, 'CIDR address requires matching scope'); END""",
+            "DROP TRIGGER devices_scope_target_insert",
+            "DROP TRIGGER devices_scope_target_update",
+            """CREATE TRIGGER devices_scope_target_insert
+            BEFORE INSERT ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes s
+                WHERE s.id = NEW.scope_id AND s.authorized = 1 AND s.enabled = 1
+                  AND s.authorization_confirmed_at IS NOT NULL
+                  AND s.authorization_confirmation_version IS NOT NULL
+                  AND s.authorization_source IS NOT NULL
+                  AND (
+                    (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = NEW.last_ip_address)
+                    OR (s.scope_type = 'PUBLIC_CIDR' AND EXISTS (
+                        SELECT 1 FROM scope_cidr_addresses a
+                        WHERE a.scope_id = s.id AND a.canonical_cidr = s.canonical_target
+                          AND a.ipv4_address = NEW.last_ip_address
+                    ))
+                    OR (s.scope_type = 'HOSTNAME' AND s.resolution_status = 'CURRENT' AND EXISTS (
+                        SELECT 1 FROM scope_hostname_addresses a
+                        WHERE a.scope_id = s.id AND a.ipv4_address = NEW.last_ip_address
+                          AND a.approved = 1
+                    ))
+                  )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END""",
+            """CREATE TRIGGER devices_scope_target_update
+            BEFORE UPDATE OF scope_id, last_ip_address ON devices
+            WHEN NEW.scope_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authorized_scopes s
+                WHERE s.id = NEW.scope_id AND s.authorized = 1 AND s.enabled = 1
+                  AND s.authorization_confirmed_at IS NOT NULL
+                  AND s.authorization_confirmation_version IS NOT NULL
+                  AND s.authorization_source IS NOT NULL
+                  AND (
+                    (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = NEW.last_ip_address)
+                    OR (s.scope_type = 'PUBLIC_CIDR' AND EXISTS (
+                        SELECT 1 FROM scope_cidr_addresses a
+                        WHERE a.scope_id = s.id AND a.canonical_cidr = s.canonical_target
+                          AND a.ipv4_address = NEW.last_ip_address
+                    ))
+                    OR (s.scope_type = 'HOSTNAME' AND s.resolution_status = 'CURRENT' AND EXISTS (
+                        SELECT 1 FROM scope_hostname_addresses a
+                        WHERE a.scope_id = s.id AND a.ipv4_address = NEW.last_ip_address
+                          AND a.approved = 1
+                    ))
+                  )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'scope device target mismatch');
+            END""",
+        ),
+    ),
 )
 
 

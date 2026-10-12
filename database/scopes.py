@@ -5,6 +5,7 @@ from database.db import DB_PATH, get_connection, initialize_database
 from services.scope_models import ScopeError, ScopeType
 from services.public_target_policy import normalize_public_ipv4
 from services.hostname_policy import normalize_hostname
+from services.public_cidr_policy import normalize_public_cidr, public_cidr_addresses
 from services.target_policy import normalize_cidr
 
 
@@ -19,6 +20,12 @@ def _as_scope(row):
     result["authorized"] = bool(result["authorized"])
     result["enabled"] = bool(result["enabled"])
     result["approved_addresses"] = []
+    result["address_count"] = None
+    if result["scope_type"] == "PUBLIC_CIDR":
+        try:
+            result["address_count"] = len(public_cidr_addresses(result["canonical_target"]))
+        except ValueError:
+            result["address_count"] = None
     return result
 
 
@@ -37,6 +44,8 @@ def _normalize_target(scope_type: str, canonical_target: str) -> str:
         return normalize_cidr(target)
     if scope_type == ScopeType.PUBLIC_IPV4.value:
         return normalize_public_ipv4(target)
+    if scope_type == ScopeType.PUBLIC_CIDR.value:
+        return normalize_public_cidr(target)
     if scope_type == ScopeType.HOSTNAME.value:
         return normalize_hostname(target)
     return target
@@ -105,7 +114,13 @@ def _insert_scope(
             updated_at,
         ),
     )
-    return cursor.lastrowid
+    scope_id = cursor.lastrowid
+    if normalized_type == ScopeType.PUBLIC_CIDR.value:
+        connection.executemany(
+            "INSERT INTO scope_cidr_addresses (scope_id, canonical_cidr, ipv4_address) VALUES (?, ?, ?)",
+            [(scope_id, normalized_target, address) for address in public_cidr_addresses(normalized_target)],
+        )
+    return scope_id
 
 
 def create_private_scope_for_network(connection, network: dict) -> int:
@@ -451,3 +466,23 @@ def update_scope_enabled(scope_id: int, enabled: bool, db_path=DB_PATH):
             (int(enabled), timestamp, scope_id),
         )
     return get_scope(scope_id, db_path)
+
+
+def require_cidr_membership(scope, db_path=DB_PATH) -> tuple[str, ...]:
+    """Fail closed if persisted membership and the validated scope disagree."""
+    from services.scope_authorization import require_public_cidr_scope, ScopeAuthorizationError
+    target = require_public_cidr_scope(scope)
+    expected = public_cidr_addresses(target)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM authorized_scopes WHERE id = ?", (scope["id"],)).fetchone()
+        stored = _as_scope(row)
+        if require_public_cidr_scope(stored) != target:
+            raise ScopeAuthorizationError("The persisted scope target changed.")
+        actual = connection.execute(
+            "SELECT canonical_cidr, ipv4_address FROM scope_cidr_addresses WHERE scope_id = ?",
+            (scope["id"],),
+        ).fetchall()
+    if {tuple(row) for row in actual} != {(target, address) for address in expected}:
+        raise ScopeAuthorizationError("Persisted public CIDR membership does not match the authorized range.")
+    return expected

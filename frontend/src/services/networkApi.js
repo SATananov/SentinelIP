@@ -122,3 +122,15 @@ export async function loadDeviceReview(deviceId, signal) {
     cveMatches,
   }
 }
+
+export function previewPublicCidr(payload) {
+  return requestJson('/scopes/public-cidr/preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export function createPublicCidrScope(payload) {
+  return requestJson('/scopes/public-cidr', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}

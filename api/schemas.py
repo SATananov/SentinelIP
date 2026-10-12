@@ -50,6 +50,7 @@ class AuthorizedScopeResponse(BaseModel):
     created_at: str
     updated_at: str
     network_id: int | None = None
+    address_count: int | None = None
     approved_addresses: list[str] = Field(default_factory=list)
     resolution_verified_at: str | None = None
     resolution_version: str | None = None
@@ -113,3 +114,12 @@ class DnsTelemetryCreate(BaseModel):
     resolver: str | None = None
     ttl: int | None = None
     metadata: dict | None = None
+
+
+class PublicCIDRPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: str = Field(min_length=1, max_length=64)
+
+
+class PublicCIDRScopeCreate(PublicIPv4ScopeCreate):
+    """Explicit confirmation for every address of a bounded public CIDR."""

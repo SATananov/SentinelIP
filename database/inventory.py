@@ -94,7 +94,7 @@ def create_scope_device(
         ).fetchone()
         if (
             scope is None
-            or scope["scope_type"] not in {"PUBLIC_IPV4", "HOSTNAME"}
+            or scope["scope_type"] not in {"PUBLIC_IPV4", "HOSTNAME", "PUBLIC_CIDR"}
             or scope["authorized"] != 1
             or scope["enabled"] != 1
             or not all(
@@ -114,6 +114,14 @@ def create_scope_device(
                 raise ValueError("The public scope target is invalid.") from exc
             if ip_address is not None and normalize_public_ipv4(ip_address) != address:
                 raise ValueError("Device address does not match the public scope.")
+        elif scope["scope_type"] == "PUBLIC_CIDR":
+            from database.scopes import require_cidr_membership
+            context = dict(scope)
+            context["authorized"] = bool(context["authorized"])
+            context["enabled"] = bool(context["enabled"])
+            address = normalize_public_ipv4(ip_address)
+            if address not in require_cidr_membership(context, db_path):
+                raise ValueError("Device address is outside the approved public CIDR.")
         else:
             if scope["resolution_status"] != "CURRENT":
                 raise ValueError("Hostname resolution must be current before inventory is updated.")
@@ -190,6 +198,11 @@ def save_scope_device_observation(
                WHERE d.id = ? AND d.scope_id = ? AND d.network_id IS NULL
                  AND d.last_ip_address = ? AND s.authorized = 1 AND s.enabled = 1
                  AND (s.scope_type = 'PUBLIC_IPV4' AND s.canonical_target = ?
+                      OR s.scope_type = 'PUBLIC_CIDR' AND EXISTS (
+                          SELECT 1 FROM scope_cidr_addresses a
+                          WHERE a.scope_id = s.id AND a.canonical_cidr = s.canonical_target
+                            AND a.ipv4_address = d.last_ip_address
+                      )
                       OR s.scope_type = 'HOSTNAME' AND EXISTS (
                           SELECT 1 FROM scope_hostname_addresses a
                           WHERE a.scope_id = s.id AND a.ipv4_address = ? AND a.approved = 1

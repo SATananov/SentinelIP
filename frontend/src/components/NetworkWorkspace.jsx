@@ -1,3 +1,5 @@
+import { canScanPublicCidr } from '../services/publicCidrState.js'
+import PublicCidrTargets from './PublicCidrTargets.jsx'
 import {
   useCallback,
   useEffect,
@@ -58,6 +60,7 @@ function ScopeState({ confirmed, enabled, type, reauthorizationRequired = false 
 }
 
 function NetworkWorkspace() {
+  const [cidrBusy, setCidrBusy] = useState(false)
   const [networks, setNetworks] = useState([])
   const [scopes, setScopes] = useState([])
   const [networkCandidates, setNetworkCandidates] = useState([])
@@ -196,12 +199,14 @@ function NetworkWorkspace() {
   }
 
   async function scanPublicTarget(scope) {
-    const canScan = ['PUBLIC_IPV4', 'HOSTNAME'].includes(scope.scope_type) && scope.authorized === true &&
+    const canScan = ['PUBLIC_IPV4', 'HOSTNAME', 'PUBLIC_CIDR'].includes(scope.scope_type) && scope.authorized === true &&
       scope.enabled === true && Boolean(scope.authorization_confirmed_at) &&
       Boolean(scope.authorization_confirmation_version) && Boolean(scope.authorization_source) &&
       (scope.scope_type === 'PUBLIC_IPV4'
         ? isIPv4Address(scope.canonical_target ?? '')
-        : scope.resolution_status === 'CURRENT' && scope.approved_addresses?.length > 0)
+        : scope.scope_type === 'PUBLIC_CIDR'
+          ? canScanPublicCidr(scope)
+          : scope.resolution_status === 'CURRENT' && scope.approved_addresses?.length > 0)
     if (!canScan) return
 
     const requestId = selectionRequest.current + 1
@@ -396,10 +401,10 @@ function NetworkWorkspace() {
   const selectedPrivateScope = selectedNetwork
     ? scopes.find((item) => item.network_id === selectedNetwork.id)
     : null
-  const publicTargets = scopes.filter((scope) => ['PUBLIC_IPV4', 'HOSTNAME'].includes(scope.scope_type))
+  const publicTargets = scopes.filter((scope) => ['PUBLIC_IPV4', 'HOSTNAME', 'PUBLIC_CIDR'].includes(scope.scope_type))
   const ipv4Targets = publicTargets.filter((scope) => scope.scope_type === 'PUBLIC_IPV4')
   const hostnameTargets = publicTargets.filter((scope) => scope.scope_type === 'HOSTNAME')
-  const activePublicScope = ['PUBLIC_IPV4', 'HOSTNAME'].includes(selectedScope?.kind)
+  const activePublicScope = ['PUBLIC_IPV4', 'HOSTNAME', 'PUBLIC_CIDR'].includes(selectedScope?.kind)
     ? publicTargets.find((scope) => scope.id === selectedScope.id)
     : null
 
@@ -414,15 +419,17 @@ function NetworkWorkspace() {
     privateScopeConfirmed && selectedNetwork?.enabled === true && selectedPrivateScope?.enabled === true,
   )
   const publicScopeConfirmed = Boolean(
-    ['PUBLIC_IPV4', 'HOSTNAME'].includes(activePublicScope?.scope_type) && activePublicScope.authorized === true &&
+    ['PUBLIC_IPV4', 'HOSTNAME', 'PUBLIC_CIDR'].includes(activePublicScope?.scope_type) && activePublicScope.authorized === true &&
     activePublicScope.authorization_confirmed_at &&
     activePublicScope.authorization_confirmation_version && activePublicScope.authorization_source &&
     (activePublicScope.scope_type === 'PUBLIC_IPV4'
       ? isIPv4Address(activePublicScope.canonical_target ?? '')
-      : activePublicScope.resolution_status === 'CURRENT' && activePublicScope.approved_addresses?.length > 0),
+      : activePublicScope.scope_type === 'PUBLIC_CIDR'
+        ? canScanPublicCidr(activePublicScope)
+        : activePublicScope.resolution_status === 'CURRENT' && activePublicScope.approved_addresses?.length > 0),
   )
   const publicScanAllowed = Boolean(publicScopeConfirmed && activePublicScope.enabled === true)
-  const anyActionBusy = workspaceLoading || selectionLoading || scanLoading ||
+  const anyActionBusy = cidrBusy || workspaceLoading || selectionLoading || scanLoading ||
     deviceLoading || serviceScanLoading || publicScopeLoading || hostnamePreviewLoading || hostnameScopeLoading
 
   return (
@@ -540,10 +547,10 @@ function NetworkWorkspace() {
             <p className="panel-kicker">Explicit Authorization</p>
             <h3>Public Targets</h3>
           </div>
-          <span className="network-candidate-state public-target-badge">Single IPv4 only</span>
+          <span className="network-candidate-state public-target-badge">Explicit scope only</span>
         </div>
         <p className="network-candidate-note">
-          Add an individually authorized public IPv4 address or hostname. Hostname scans remain bound to the exact approved IPv4 set.
+          Add an authorized public IPv4 address, small CIDR range, or hostname. Hostname scans remain bound to the exact approved IPv4 set.
         </p>
         <form className="public-target-form" onSubmit={addPublicTarget}>
           <label>
@@ -581,6 +588,25 @@ function NetworkWorkspace() {
           </button>
         </form>
         {publicError && <div className="network-error" role="alert">{publicError}</div>}
+        <PublicCidrTargets
+          scopes={publicTargets.filter((scope) => scope.scope_type === 'PUBLIC_CIDR')}
+          selectedScope={selectedScope}
+          busy={anyActionBusy}
+          scanning={scanLoading}
+          onBusyChange={setCidrBusy}
+          onSelect={selectPublicTarget}
+          onScan={scanPublicTarget}
+          onCreated={(scope) => {
+            setScopes((current) => [...current, scope])
+            selectionRequest.current += 1
+            setSelectedScope({ kind: 'PUBLIC_CIDR', id: scope.id })
+            setDevices([])
+            setSelectedDeviceId(null)
+            setDeviceReview(null)
+            setDeviceError(null)
+            setPublicError(null)
+          }}
+        />
         <div className="hostname-target-form-section">
           <h4>Hostname</h4>
           <p className="network-candidate-note">Preview resolves A records only. Review and authorize the exact eligible public IPv4 addresses shown.</p>

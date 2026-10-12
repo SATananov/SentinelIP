@@ -1,5 +1,7 @@
 from collections.abc import Mapping
 
+from services.public_cidr_policy import PUBLIC_CIDR_CONFIRMATION_VERSION, normalize_public_cidr
+
 from services.scope_models import ScopeType
 from services.public_target_policy import (
     PublicTargetPolicyError,
@@ -140,3 +142,24 @@ def require_hostname_scope(scope, *, require_current=True, require_enabled=True)
     ):
         raise ScopeAuthorizationError("Hostname re-authorization is required.")
     return hostname
+
+
+def require_public_cidr_scope(scope) -> str:
+    if not isinstance(scope, Mapping) or scope.get("scope_type") != "PUBLIC_CIDR":
+        raise ScopeAuthorizationError("A persisted public CIDR scope is required.")
+    if type(scope.get("id")) is not int or scope["id"] <= 0:
+        raise ScopeAuthorizationError("The scope ID is invalid.")
+    if scope.get("authorized") is not True or scope.get("enabled") is not True:
+        raise ScopeAuthorizationError("The public CIDR scope must be authorized and enabled.")
+    if scope.get("authorization_confirmation_version") != PUBLIC_CIDR_CONFIRMATION_VERSION or not all(
+        isinstance(scope.get(field), str) and scope[field].strip()
+        for field in ("authorization_confirmed_at", "authorization_source")
+    ):
+        raise ScopeAuthorizationError("The public CIDR scope requires supported explicit confirmation.")
+    try:
+        canonical = normalize_public_cidr(scope.get("canonical_target"))
+    except ValueError as exc:
+        raise ScopeAuthorizationError(str(exc)) from exc
+    if canonical != scope["canonical_target"]:
+        raise ScopeAuthorizationError("The stored public CIDR is not canonical.")
+    return canonical

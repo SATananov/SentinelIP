@@ -97,6 +97,18 @@ class ServiceInventoryService:
     ) -> dict[str, list[dict]]:
         return self._process_result(*_public_context(scope, device), result)
 
+    def process_cidr_result(self, scope, device, result):
+        if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
+            raise ServiceInventoryError("A persisted CIDR scope and device are required.")
+        addresses = scopes_db.require_cidr_membership(scope, self.db_path)
+        if (device.get("scope_id") != scope.get("id")
+            or device.get("network_id") is not None
+            or type(device.get("id")) is not int
+            or device["id"] <= 0
+            or device.get("last_ip_address") not in addresses):
+            raise ServiceInventoryError("The device is outside the authorized CIDR scope.")
+        return self._process_result(None, device["id"], device["last_ip_address"], result)
+
     def process_hostname_result(
         self,
         scope: Mapping[str, object],

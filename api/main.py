@@ -63,6 +63,7 @@ from database.scopes import (
     get_scope_for_network,
     list_scopes,
     reauthorize_hostname_scope,
+    require_cidr_membership,
 )
 from services.scope_authorization import (
     ScopeAuthorizationError,
@@ -76,6 +77,8 @@ from api.schemas import (
     HostnamePreviewRequest,
     HostnameScopeCreate,
     PublicIPv4ScopeCreate,
+    PublicCIDRPreview,
+    PublicCIDRScopeCreate,
 )
 from database.inventory import list_scope_devices
 from services.public_target_policy import (
@@ -83,7 +86,13 @@ from services.public_target_policy import (
     PublicTargetPolicyError,
     normalize_public_ipv4,
 )
-from services.public_scope_discovery import PublicScopeDiscoveryError, scan_public_scope
+from services.public_scope_discovery import (
+    PublicScopeDiscoveryError, scan_public_scope, scan_public_cidr_scope,
+)
+from services.public_cidr_policy import (
+    normalize_public_cidr, public_cidr_addresses, PUBLIC_CIDR_CONFIRMATION_VERSION,
+    MAX_PUBLIC_CIDR_ADDRESSES,
+)
 from services.risk_engine import RiskEngine
 from services.local_network_discovery import (
     LocalNetworkDiscoveryError,
@@ -309,6 +318,36 @@ def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
         ) from exc
 
 
+@app.post("/scopes/public-cidr/preview")
+def preview_public_cidr(payload: PublicCIDRPreview):
+    try:
+        target = normalize_public_cidr(payload.target)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"canonical_target": target, "address_count": len(public_cidr_addresses(target)),
+            "maximum_addresses": MAX_PUBLIC_CIDR_ADDRESSES, "enumeration": "ALL_ADDRESSES"}
+
+
+@app.post("/scopes/public-cidr", response_model=AuthorizedScopeResponse, status_code=201)
+def create_public_cidr_scope(payload: PublicCIDRScopeCreate):
+    if payload.authorization_confirmed is not True or payload.authorization_confirmation_version != PUBLIC_CIDR_CONFIRMATION_VERSION:
+        raise HTTPException(status_code=422, detail="Explicit public CIDR authorization with the supported confirmation version is required.")
+    try:
+        target = normalize_public_cidr(payload.target)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        return create_scope(
+            scope_type="PUBLIC_CIDR", canonical_target=target,
+            name=payload.name, description=payload.description, authorized=True, enabled=True,
+            authorization_confirmed_at=datetime.now().isoformat(timespec="seconds"),
+            authorization_confirmation_version=PUBLIC_CIDR_CONFIRMATION_VERSION,
+            authorization_source="api_explicit_public_cidr_confirmation", db_path=DB_PATH,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="A scope for this public CIDR already exists.") from exc
+
+
 def _verified_hostname_approval(payload: HostnameScopeCreate):
     if payload.authorization_confirmed is not True:
         raise HTTPException(
@@ -444,6 +483,11 @@ def discover_public_scope(scope_id: int):
                 NmapServiceDiscoveryScanner(),
                 db_path=DB_PATH,
             )
+        elif scope.get("scope_type") == "PUBLIC_CIDR":
+            require_cidr_membership(scope, DB_PATH)
+            result = scan_public_cidr_scope(
+                scope, NmapHostDiscoveryScanner(), NmapServiceDiscoveryScanner(), db_path=DB_PATH,
+            )
         elif scope.get("scope_type") == "HOSTNAME":
             result = scan_hostname_scope(
                 scope,
@@ -485,6 +529,12 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
             if device.get("last_ip_address") != target:
                 raise HTTPException(status_code=403, detail="Device target does not match scope.")
             hostname_scope = False
+        elif scope.get("scope_type") == "PUBLIC_CIDR":
+            addresses = require_cidr_membership(scope, DB_PATH)
+            target = device.get("last_ip_address")
+            if target not in addresses:
+                raise HTTPException(status_code=403, detail="Device is outside the authorized CIDR.")
+            hostname_scope = False
         elif scope.get("scope_type") == "HOSTNAME":
             approved = verify_hostname_resolution(
                 scope, HostnameResolver(), db_path=DB_PATH
@@ -498,11 +548,12 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
         service_scanner = NmapServiceDiscoveryScanner()
         result = service_scanner.discover_public_services(target)
         inventory_service = ServiceInventoryService(db_path=DB_PATH)
-        inventory = (
-            inventory_service.process_hostname_result(scope, device, result)
-            if hostname_scope
-            else inventory_service.process_public_result(scope, device, result)
-        )
+        if hostname_scope:
+            inventory = inventory_service.process_hostname_result(scope, device, result)
+        elif scope["scope_type"] == "PUBLIC_CIDR":
+            inventory = inventory_service.process_cidr_result(scope, device, result)
+        else:
+            inventory = inventory_service.process_public_result(scope, device, result)
         current_device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
         findings = RiskEngine(db_path=DB_PATH).evaluate_scope_device(
             current_device, scope_id
