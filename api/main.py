@@ -6,6 +6,17 @@ from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from database import inventory as workspace_inventory_db
+from database import networks as workspace_networks_db
+from services.device_inventory import DeviceInventoryService
+from services.host_discovery import HostDiscoveryError, discover_hosts as workspace_discover_hosts
+from services.scanner_adapters.nmap_adapter import (
+    NmapHostDiscoveryScanner,
+    ScannerExecutionError,
+    ScannerParseError,
+    ScannerTimeoutError,
+    ScannerUnavailableError,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from database.db import (
@@ -580,3 +591,54 @@ def incident_detail(incident_id: int):
         raise HTTPException(status_code=404, detail="Incident not found.")
 
     return item
+
+# Network Workspace: explicit authorized-network discovery bridge.
+# The caller must explicitly request discovery for a stored network.
+# Existing target-policy, scanner, and inventory services remain authoritative.
+
+def _workspace_network_or_404(network_id: int):
+    network = workspace_networks_db.get_network(network_id, db_path=DB_PATH)
+    if network is None:
+        raise HTTPException(status_code=404, detail="Network not found.")
+    return network
+
+
+def _workspace_discover(network: dict):
+    scanner = NmapHostDiscoveryScanner()
+    scan_result = workspace_discover_hosts(network, scanner)
+    return DeviceInventoryService(db_path=DB_PATH).process_scan(
+        network,
+        scan_result,
+    )
+
+
+@app.get("/networks/{network_id}/devices")
+def list_network_devices(network_id: int):
+    _workspace_network_or_404(network_id)
+    return workspace_inventory_db.list_devices(
+        network_id=network_id,
+        db_path=DB_PATH,
+    )
+
+
+@app.post("/networks/{network_id}/discover")
+def discover_network_devices(network_id: int):
+    network = _workspace_network_or_404(network_id)
+
+    try:
+        devices = _workspace_discover(network)
+    except HostDiscoveryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ScannerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ScannerTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (ScannerExecutionError, ScannerParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "network_id": network["id"],
+        "cidr": network["cidr"],
+        "device_count": len(devices),
+        "devices": devices,
+    }
