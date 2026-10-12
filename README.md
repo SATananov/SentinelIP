@@ -81,8 +81,12 @@ The current project does not provide:
 - autonomous agent loops
 - model-generated security actions
 
-Network discovery is constrained by explicit target policy and authorized
-private-network scope.
+Network discovery requires a persisted, explicitly authorized and bounded
+scope. Supported targets are private IPv4 networks (up to /24), a single public
+IPv4 address, a hostname bound to its confirmed resolved IPv4 addresses, and
+small public IPv4 CIDRs containing at most eight addresses. Locally discovered
+network candidates remain untrusted until separately authorized. SentinelIP
+does not support unauthorized or unbounded Internet-wide scanning.
 
 Deterministic SentinelIP services remain authoritative. Optional runtime layers
 do not create new persisted security meaning.

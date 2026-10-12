@@ -20,9 +20,9 @@ def test_device_and_finding_rebuild_preserves_all_existing_relations(
     device = create_device(
         stable_key="network:1:ip:192.168.44.10",
         network_id=network["id"],
-        mac_address=None,
-        hostname=None,
-        vendor=None,
+        mac_address="02:00:00:00:44:10",
+        hostname="legacy-host",
+        vendor="Fixture Vendor",
         first_seen="2026-10-12T10:00:00",
         last_seen="2026-10-12T10:00:00",
         last_ip_address="192.168.44.10",
@@ -34,9 +34,9 @@ def test_device_and_finding_rebuild_preserves_all_existing_relations(
         device_id=device["id"],
         network_id=network["id"],
         ip_address=device["last_ip_address"],
-        mac_address=None,
-        hostname=None,
-        vendor=None,
+        mac_address=device["mac_address"],
+        hostname=device["hostname"],
+        vendor=device["vendor"],
         status="ONLINE",
         observed_at=device["last_seen"],
         source="migration-test",
@@ -105,7 +105,10 @@ def test_device_and_finding_rebuild_preserves_all_existing_relations(
 
     with get_connection(path) as connection:
         migrated_device = connection.execute(
-            "SELECT id, stable_key, network_id, scope_id FROM devices WHERE id=?",
+            """SELECT id, stable_key, network_id, scope_id, mac_address, hostname,
+                      vendor, first_seen, last_seen, last_ip_address, status,
+                      identity_confidence, created_at, updated_at
+               FROM devices WHERE id=?""",
             (device["id"],),
         ).fetchone()
         assert migrated_device == (
@@ -113,17 +116,58 @@ def test_device_and_finding_rebuild_preserves_all_existing_relations(
             device["stable_key"],
             network["id"],
             None,
+            "02:00:00:00:44:10",
+            "legacy-host",
+            "Fixture Vendor",
+            "2026-10-12T10:00:00",
+            "2026-10-12T10:00:00",
+            "192.168.44.10",
+            "ONLINE",
+            "LOW",
+            device["created_at"],
+            device["updated_at"],
+        )
+        migrated_observation = connection.execute(
+            """SELECT device_id, network_id, ip_address, mac_address, hostname,
+                      vendor, status, observed_at, source
+               FROM device_observations WHERE device_id=?""",
+            (device["id"],),
+        ).fetchone()
+        assert migrated_observation == (
+            device["id"], network["id"], "192.168.44.10", "02:00:00:00:44:10",
+            "legacy-host", "Fixture Vendor", "ONLINE", "2026-10-12T10:00:00",
+            "migration-test",
         )
         assert connection.execute(
-            "SELECT COUNT(*) FROM device_observations WHERE device_id=?",
-            (device["id"],),
-        ).fetchone()[0] == 1
+            "SELECT id, cidr, name, description, authorized, enabled, created_at, updated_at FROM networks WHERE id=?",
+            (network["id"],),
+        ).fetchone() == (
+            network["id"], "192.168.44.0/24", "Lab", "", 1, 1,
+            network["created_at"], network["updated_at"],
+        )
         assert connection.execute(
             "SELECT COUNT(*) FROM ports WHERE device_id=?", (device["id"],)
         ).fetchone()[0] == 1
         assert connection.execute(
             "SELECT COUNT(*) FROM services WHERE device_id=?", (device["id"],)
         ).fetchone()[0] == 1
+        migrated_finding = connection.execute(
+            """SELECT id, device_id, network_id, scope_id, port_id, service_id,
+                      stable_key, first_seen, last_seen, created_at, updated_at
+               FROM findings WHERE id=?""",
+            (finding_id,),
+        ).fetchone()
+        assert migrated_finding == (
+            finding_id, device["id"], network["id"], None, port["id"], service["id"],
+            "migration-finding-key", "2026-10-12T10:00:00", "2026-10-12T10:00:00",
+            "2026-10-12T10:00:00", "2026-10-12T10:00:00",
+        )
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute(
+            "SELECT device_id, port_id, service_id, finding_id, stable_key FROM cve_matches"
+        ).fetchone() == (
+            device["id"], port["id"], service["id"], finding_id,
+            "migration-cve-match-key",
+        )
     assert len(list_device_cve_matches(device["id"], path)) == 1
     assert len(list_device_findings(device["id"], path)) == 1
