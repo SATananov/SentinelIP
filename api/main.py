@@ -56,6 +56,10 @@ from api.schemas import DnsTelemetryCreate, WebTelemetryCreate
 from services.pdf_report import build_security_report
 from services.telemetry_ingestion import TelemetryIngestionError, ingest_dns, ingest_web
 from services.target_policy import TargetPolicyError
+from services.local_network_discovery import (
+    LocalNetworkDiscoveryError,
+    discover_local_networks,
+)
 
 
 app = FastAPI(
@@ -205,6 +209,19 @@ def update_authorized_network(
 def delete_authorized_network(network_id: int):
     if not delete_network(network_id, db_path=DB_PATH):
         raise HTTPException(status_code=404, detail="Network not found.")
+
+
+@app.get("/network-candidates")
+def network_candidates():
+    try:
+        candidates = discover_local_networks()
+    except LocalNetworkDiscoveryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Local network candidates are unavailable.",
+        ) from exc
+
+    return [candidate.as_dict() for candidate in candidates]
 
 
 @app.get("/overview")

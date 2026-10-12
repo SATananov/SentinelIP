@@ -6,6 +6,7 @@ import {
 
 import {
   discoverDeviceServices,
+  discoverNetworkCandidates,
   discoverNetwork,
   loadDeviceReview,
   loadNetworkDevices,
@@ -24,6 +25,7 @@ function DeviceStatus({ value }) {
 
 function NetworkWorkspace() {
   const [networks, setNetworks] = useState([])
+  const [networkCandidates, setNetworkCandidates] = useState([])
   const [selectedNetworkId, setSelectedNetworkId] = useState(null)
   const [devices, setDevices] = useState([])
   const [selectedDeviceId, setSelectedDeviceId] = useState(null)
@@ -35,6 +37,8 @@ function NetworkWorkspace() {
   const [serviceScanLoading, setServiceScanLoading] = useState(false)
   const [error, setError] = useState(null)
   const [deviceError, setDeviceError] = useState(null)
+  const [candidateLoading, setCandidateLoading] = useState(false)
+  const [candidateError, setCandidateError] = useState(null)
 
   const loadWorkspace = useCallback(async (signal) => {
     setLoading(true)
@@ -158,6 +162,20 @@ function NetworkWorkspace() {
     }
   }
 
+  async function refreshNetworkCandidates() {
+    setCandidateLoading(true)
+    setCandidateError(null)
+
+    try {
+      const candidates = await discoverNetworkCandidates()
+      setNetworkCandidates(candidates)
+    } catch (err) {
+      setCandidateError(err.message)
+    } finally {
+      setCandidateLoading(false)
+    }
+  }
+
   const selectedNetwork = networks.find(
     (network) => network.id === selectedNetworkId,
   )
@@ -234,6 +252,65 @@ function NetworkWorkspace() {
           </span>
         </div>
       )}
+
+      <article className="panel network-candidate-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="panel-kicker">Local System State</p>
+            <h3>Discovered Networks</h3>
+          </div>
+
+          <button
+            className="network-secondary-action"
+            type="button"
+            onClick={refreshNetworkCandidates}
+            disabled={candidateLoading}
+          >
+            {candidateLoading ? 'Discovering…' : 'Discover Networks'}
+          </button>
+        </div>
+
+        <p className="network-candidate-note">
+          Candidates come from local interface and route state. Discovery does
+          not scan, save, or authorize these networks.
+        </p>
+
+        {candidateError && (
+          <div className="network-error" role="alert">
+            {candidateError}
+          </div>
+        )}
+
+        {candidateLoading ? (
+          <p className="network-mini-empty">Reading local network state…</p>
+        ) : networkCandidates.length === 0 ? (
+          <p className="network-mini-empty">
+            No candidates discovered yet. Choose Discover Networks to read the
+            local interface and route table.
+          </p>
+        ) : (
+          <div className="network-candidate-list">
+            {networkCandidates.map((candidate) => (
+              <div className="network-candidate-row" key={candidate.cidr}>
+                <div>
+                  <strong className="mono">{candidate.cidr}</strong>
+                  <span>
+                    Interface: {candidate.interface || 'Unknown'} · Source:{' '}
+                    {candidate.source
+                      .split('+')
+                      .map((source) => source.replaceAll('_', ' '))
+                      .join(' + ')}
+                  </span>
+                  <small>{candidate.evidence.join(' · ')}</small>
+                </div>
+                <span className="network-candidate-state">
+                  Candidate · not authorized
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </article>
 
       <div className="network-workspace-grid">
         <article className="panel network-device-panel">

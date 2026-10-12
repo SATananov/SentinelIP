@@ -25,6 +25,10 @@ export function loadNetworks(signal) {
   return requestJson('/networks', { signal })
 }
 
+export function discoverNetworkCandidates(signal) {
+  return requestJson('/network-candidates', { signal })
+}
+
 export function loadNetworkDevices(networkId, signal) {
   return requestJson(`/networks/${networkId}/devices`, { signal })
 }

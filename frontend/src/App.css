@@ -971,6 +971,55 @@ h2 {
   margin: 24px 0;
 }
 
+.network-candidate-panel {
+  margin-top: 16px;
+}
+
+.network-candidate-note {
+  margin: -4px 0 12px;
+  color: #929aaa;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.network-candidate-list {
+  display: grid;
+  gap: 8px;
+}
+
+.network-candidate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #2d333e;
+  border-radius: 9px;
+  padding: 11px 12px;
+  background: #11141a;
+}
+
+.network-candidate-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.network-candidate-row > div > span,
+.network-candidate-row > div > small {
+  color: #8992a1;
+  overflow-wrap: anywhere;
+}
+
+.network-candidate-state {
+  flex: 0 0 auto;
+  border: 1px solid #665b37;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #d8c27c;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .network-workspace-heading,
 .network-toolbar,
 .network-summary,
@@ -1288,6 +1337,11 @@ h2 {
   .network-toolbar,
   .network-device-summary {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .network-candidate-row {
+    align-items: flex-start;
     flex-direction: column;
   }
 
