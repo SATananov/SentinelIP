@@ -145,7 +145,7 @@ def test_migration_34_preserves_perimeter_events_and_is_fk_clean(tmp_path, monke
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 40
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 41
         assert connection.execute("SELECT id FROM perimeter_events WHERE id=?", (existing["id"],)).fetchone()
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='perimeter_detections'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

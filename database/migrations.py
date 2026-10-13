@@ -1551,6 +1551,54 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        41,
+        (
+            """CREATE TABLE incident_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_key TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+                summary TEXT NOT NULL DEFAULT '' CHECK (length(summary) <= 4000),
+                state TEXT NOT NULL CHECK (state IN ('OPEN','IN_REVIEW','CLOSED')),
+                priority TEXT NOT NULL CHECK (priority IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+                confidence TEXT NOT NULL CHECK (confidence IN ('LOW','MEDIUM','HIGH')),
+                site_id INTEGER REFERENCES sites(id),
+                scope_id INTEGER REFERENCES authorized_scopes(id),
+                device_id INTEGER REFERENCES devices(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                first_evidence_at TEXT,
+                last_evidence_at TEXT,
+                closed_at TEXT,
+                disposition TEXT NOT NULL CHECK (disposition IN (
+                    'UNREVIEWED','EXPECTED_ACTIVITY','BENIGN','NEEDS_MONITORING',
+                    'ACTION_REQUIRED','FALSE_POSITIVE','INCONCLUSIVE')),
+                analyst_note TEXT CHECK (analyst_note IS NULL OR length(analyst_note) <= 4000),
+                CHECK ((state = 'CLOSED' AND closed_at IS NOT NULL)
+                    OR (state != 'CLOSED' AND closed_at IS NULL))
+            )""",
+            """CREATE TABLE incident_review_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id INTEGER NOT NULL REFERENCES incident_reviews(id) ON DELETE CASCADE,
+                evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+                    'PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
+                    'PERIMETER_HOST_CORRELATION','EXTERNAL_EXPOSURE_CHANGE',
+                    'THREAT_DETECTION','THREAT_CORRELATION','WEB_DETECTION')),
+                evidence_id INTEGER NOT NULL CHECK (evidence_id > 0),
+                observed_at TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                reason TEXT CHECK (reason IS NULL OR length(reason) <= 500),
+                UNIQUE (incident_id, evidence_type, evidence_id)
+            )""",
+            "CREATE INDEX idx_incident_reviews_state_priority ON incident_reviews(state,priority,updated_at)",
+            "CREATE INDEX idx_incident_reviews_site ON incident_reviews(site_id,updated_at)",
+            "CREATE INDEX idx_incident_reviews_scope ON incident_reviews(scope_id,updated_at)",
+            "CREATE INDEX idx_incident_reviews_device ON incident_reviews(device_id,updated_at)",
+            "CREATE INDEX idx_incident_review_evidence_source ON incident_review_evidence(evidence_type,evidence_id)",
+            "CREATE INDEX idx_incident_review_evidence_time ON incident_review_evidence(incident_id,observed_at)",
+        ),
+    ),
+
 )
 
 
