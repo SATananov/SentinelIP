@@ -52,6 +52,10 @@ from database.correlations import get_correlation, query_correlations
 from database.incidents import get_incident, query_incidents
 from database.perimeter import get_perimeter_event, query_perimeter_events
 from database.perimeter_detections import get_perimeter_detection, query_perimeter_detections
+from database.perimeter_policy_correlations import (
+    get_perimeter_policy_correlation,
+    query_perimeter_policy_correlations,
+)
 from database.networks import (
     create_network,
     delete_network,
@@ -914,6 +918,46 @@ def perimeter_detection_detail(detection_id: int):
     item = get_perimeter_detection(detection_id, db_path=DB_PATH)
     if item is None:
         raise HTTPException(status_code=404, detail="Perimeter detection not found.")
+    return item
+
+
+@app.get("/perimeter-policy-correlations")
+def perimeter_policy_correlations(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    site_id: int | None = Query(default=None, ge=1),
+    correlation_type: Literal["BLOCK_THEN_ALLOW", "ALLOW_THEN_BLOCK"] | None = None,
+    protocol: Literal["TCP", "UDP", "ICMP", "OTHER"] | None = None,
+    source_type: Literal["FIREWALL", "ROUTER", "GATEWAY", "SENSOR", "OTHER"] | None = None,
+    source_key: str | None = Query(default=None, min_length=1, max_length=128),
+    source_ip: str | None = None,
+    destination_ip: str | None = None,
+    destination_port: int | None = Query(default=None, ge=1, le=65535),
+    primary_action: Literal["ALLOW", "BLOCK", "REJECT"] | None = None,
+):
+    result = query_perimeter_policy_correlations(
+        limit=limit, offset=offset, site_id=site_id, correlation_type=correlation_type,
+        protocol=protocol, source_type=source_type, source_key=source_key, source_ip=source_ip, destination_ip=destination_ip,
+        destination_port=destination_port, primary_action=primary_action, db_path=DB_PATH,
+    )
+    return {
+        "total": result["total"], "count": len(result["items"]), "limit": limit, "offset": offset,
+        "filters": {
+            "site_id": site_id, "correlation_type": correlation_type, "protocol": protocol,
+            "source_type": source_type, "source_key": source_key, "source_ip": source_ip, "destination_ip": destination_ip,
+            "destination_port": destination_port, "primary_action": primary_action,
+        },
+        "correlations": result["items"],
+    }
+
+
+@app.get("/perimeter-policy-correlations/{correlation_id}")
+def perimeter_policy_correlation_detail(correlation_id: int):
+    if correlation_id <= 0:
+        raise HTTPException(status_code=422, detail="Perimeter policy correlation ID must be positive.")
+    item = get_perimeter_policy_correlation(correlation_id, db_path=DB_PATH)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Perimeter policy correlation not found.")
     return item
 
 

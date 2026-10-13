@@ -11,7 +11,7 @@ For each eligible primary event, SentinelIP compares only events from the same S
 - fewer than 5 matching events → `INBOUND_ATTEMPT`;
 - 5 or more matching events → `REPEATED_INBOUND_ATTEMPTS`.
 
-`ALLOW`, `BLOCK`, `REJECT`, and `UNKNOWN` remain distinct evidence. 11C deliberately does not collapse them into a generic threat state; allowed-vs-blocked correlation belongs to 11D.
+`ALLOW`, `BLOCK`, `REJECT`, and `UNKNOWN` remain distinct evidence. 11C deliberately does not collapse them into a generic threat state. 11D adds a separate deterministic allowed-vs-blocked correlation model while preserving the original action evidence.
 
 ## Identity and replay
 

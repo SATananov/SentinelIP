@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from api.sensor_enrollment import MachineRoute, authenticate_sensor_request, machine_transport
 from database.perimeter import persist_perimeter_events
 from services.perimeter_detection_engine import PerimeterDetectionEngine
+from services.perimeter_policy_engine import PerimeterPolicyCorrelationEngine
 from services.perimeter_models import PerimeterEvent, PerimeterModelError
 from services.remote_sensor_models import Capability
 
@@ -90,11 +91,14 @@ def register_perimeter_ingestion_routes(app: FastAPI, store_provider, db_path_pr
         except sqlite3.IntegrityError as exc:
             raise HTTPException(409, "Perimeter evidence conflicts with existing evidence.") from exc
 
-        detections = PerimeterDetectionEngine(db_path_provider()).evaluate_events([row["id"] for row in rows])
+        event_ids = [row["id"] for row in rows]
+        detections = PerimeterDetectionEngine(db_path_provider()).evaluate_events(event_ids)
+        correlations = PerimeterPolicyCorrelationEngine(db_path_provider()).evaluate_events(event_ids)
         return {
             "accepted": len(rows),
             "inserted": sum(1 for row in rows if not row["idempotent"]),
             "idempotent": sum(1 for row in rows if row["idempotent"]),
-            "event_ids": [row["id"] for row in rows],
+            "event_ids": event_ids,
             "detection_ids": [row["id"] for row in detections],
+            "policy_correlation_ids": [row["id"] for row in correlations],
         }

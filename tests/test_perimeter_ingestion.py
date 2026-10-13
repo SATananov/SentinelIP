@@ -10,6 +10,7 @@ from api.perimeter_ingestion import register_perimeter_ingestion_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware
 from database.db import get_connection
 from database.perimeter import persist_perimeter_events, query_perimeter_events
+from database.perimeter_policy_correlations import query_perimeter_policy_correlations
 from database.remote_sensors import RemoteSensorStore
 from sensor.client import CoreClient
 from sensor.config import SensorConfig
@@ -94,6 +95,27 @@ def test_machine_ingestion_derives_site_and_sensor_and_is_idempotent(ingestion):
     assert stored['site_id'] == site['id']
     assert stored['sensor_id'] == issued.record['id']
     assert stored['source_ip'] == '203.0.113.20'
+
+
+def test_ingestion_returns_policy_correlation_ids_for_allowed_vs_blocked_transition(ingestion):
+    store, client = ingestion
+    _, issued = make_sensor(store)
+    blocked = client.post(
+        '/sensor/perimeter-events', headers=auth(issued),
+        json={'events': [event_payload(external_event_id='router-block', action='BLOCK')]},
+    )
+    assert blocked.status_code == 202 and blocked.json()['policy_correlation_ids'] == []
+
+    allow_headers = authenticated_sensor_headers(
+        issued.record['sensor_uuid'], issued.secret, now=NOW, nonce='D' * 43)
+    allowed = client.post(
+        '/sensor/perimeter-events', headers=allow_headers,
+        json={'events': [event_payload(external_event_id='router-allow', action='ALLOW', raw_event_hash='b' * 64)]},
+    )
+    assert allowed.status_code == 202
+    assert len(allowed.json()['policy_correlation_ids']) == 1
+    rows = query_perimeter_policy_correlations(db_path=store.db_path)
+    assert rows['total'] == 1 and rows['items'][0]['correlation_type'] == 'BLOCK_THEN_ALLOW'
 
 
 def test_sensor_requires_log_collection_capability(ingestion):
