@@ -17,6 +17,7 @@ import {
 
 import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
 import NetworkWorkspace from './components/NetworkWorkspace.jsx'
+import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 
 import './App.css'
 
@@ -338,6 +339,10 @@ function App() {
       <NetworkWorkspace />
 
       <SecurityReviewPanel
+        refreshSignal={lastUpdated}
+      />
+
+      <ExternalActivityDashboard
         refreshSignal={lastUpdated}
       />
 

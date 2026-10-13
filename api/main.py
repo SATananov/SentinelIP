@@ -60,6 +60,7 @@ from database.perimeter_host_correlations import (
     get_perimeter_host_correlation,
     query_perimeter_host_correlations,
 )
+from services.perimeter_dashboard import build_perimeter_dashboard
 from database.networks import (
     create_network,
     delete_network,
@@ -1002,6 +1003,21 @@ def perimeter_host_correlation_detail(correlation_id: int):
     if item is None:
         raise HTTPException(status_code=404, detail="Perimeter host correlation not found.")
     return item
+
+
+
+@app.get("/perimeter-dashboard")
+def perimeter_dashboard(
+    site_id: int | None = Query(default=None, ge=1),
+    source_type: Literal["FIREWALL", "ROUTER", "GATEWAY", "SENSOR", "OTHER"] | None = None,
+    time_range: Literal["1h", "6h", "24h", "72h", "7d", "all"] = "24h",
+):
+    try:
+        return build_perimeter_dashboard(
+            site_id=site_id, source_type=source_type, time_range=time_range, db_path=DB_PATH
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
