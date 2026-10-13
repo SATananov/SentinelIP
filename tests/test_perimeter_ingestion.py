@@ -82,6 +82,7 @@ def test_machine_ingestion_derives_site_and_sensor_and_is_idempotent(ingestion):
     assert response.json()['inserted'] == 1
     assert response.json()['idempotent'] == 0
     assert len(response.json()['detection_ids']) == 1
+    assert response.json()['host_correlation_ids'] == []
 
     replay_headers = authenticated_sensor_headers(
         issued.record['sensor_uuid'], issued.secret, now=NOW, nonce='B' * 43)
@@ -251,3 +252,36 @@ def test_log_collection_capability_is_opt_in_and_does_not_require_nmap(tmp_path,
         '--capability', 'LOG_COLLECTION',
     ])
     assert args.capability == ['LOG_COLLECTION']
+
+
+def test_ingestion_returns_host_correlation_id_for_site_inventory_match(tmp_path):
+    from database.inventory import create_device
+    from database.networks import create_network
+
+    path = tmp_path / 'perimeter-host-ingest.db'
+    store = RemoteSensorStore(path, clock=lambda: NOW)
+    app = FastAPI()
+    register_perimeter_ingestion_routes(app, lambda: store, lambda: path)
+    app.add_middleware(SensorBodyLimitMiddleware)
+    site, issued = make_sensor(store)
+    network = create_network(
+        cidr='192.168.1.0/24', name='Site LAN', description='', authorized=True, enabled=True, db_path=path,
+    )
+    with get_connection(path) as connection:
+        scope_id = connection.execute(
+            'SELECT scope_id FROM network_scope_links WHERE network_id=?', (network['id'],)
+        ).fetchone()[0]
+    store.assign_scope(issued.record['id'], scope_id)
+    device = create_device(
+        stable_key=f"network:{network['id']}:mac:aa:bb:cc:dd:ee:10", network_id=network['id'],
+        mac_address='aa:bb:cc:dd:ee:10', hostname='host', vendor='Lab', first_seen=NOW.isoformat(),
+        last_seen=NOW.isoformat(), last_ip_address='192.168.1.10', status='ONLINE',
+        identity_confidence='HIGH', db_path=path,
+    )
+    with TestClient(app, base_url='https://core.test', client=('192.168.1.8', 5000)) as client:
+        response = client.post('/sensor/perimeter-events', headers=auth(issued), json={'events': [event_payload()]})
+    assert response.status_code == 202
+    assert len(response.json()['host_correlation_ids']) == 1
+    from database.perimeter_host_correlations import query_perimeter_host_correlations
+    rows = query_perimeter_host_correlations(site_id=site['id'], device_id=device['id'], db_path=path)
+    assert rows['total'] == 1

@@ -1338,6 +1338,41 @@ MIGRATIONS = (
             "CREATE INDEX idx_perimeter_policy_type_seen ON perimeter_policy_correlations(correlation_type,last_seen)",
         ),
     ),
+    (
+        36,
+        (
+            """CREATE TABLE perimeter_host_correlations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                correlation_type TEXT NOT NULL CHECK (correlation_type = 'DESTINATION_DEVICE_MATCH'),
+                state TEXT NOT NULL CHECK (state = 'REVIEW'),
+                confidence TEXT NOT NULL CHECK (confidence = 'HIGH'),
+                site_id INTEGER NOT NULL REFERENCES sites(id),
+                sensor_id INTEGER,
+                event_id INTEGER NOT NULL UNIQUE REFERENCES perimeter_events(id),
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                network_id INTEGER NOT NULL REFERENCES networks(id),
+                device_id INTEGER NOT NULL REFERENCES devices(id),
+                destination_ip TEXT NOT NULL,
+                destination_port INTEGER CHECK (destination_port IS NULL OR destination_port BETWEEN 1 AND 65535),
+                protocol TEXT NOT NULL CHECK (protocol IN ('TCP','UDP','ICMP','OTHER')),
+                action TEXT NOT NULL CHECK (action IN ('ALLOW','BLOCK','REJECT','UNKNOWN')),
+                observed_at TEXT NOT NULL,
+                device_last_seen TEXT NOT NULL,
+                device_status TEXT NOT NULL CHECK (device_status IN ('ONLINE','OFFLINE')),
+                identity_confidence TEXT NOT NULL CHECK (identity_confidence IN ('HIGH','MEDIUM','LOW')),
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (sensor_id, site_id) REFERENCES remote_sensors(id, site_id),
+                CHECK (protocol NOT IN ('TCP','UDP') OR destination_port IS NOT NULL)
+            )""",
+            "CREATE INDEX idx_perimeter_host_site_seen ON perimeter_host_correlations(site_id,observed_at)",
+            "CREATE INDEX idx_perimeter_host_device_seen ON perimeter_host_correlations(device_id,observed_at)",
+            "CREATE INDEX idx_perimeter_host_destination ON perimeter_host_correlations(destination_ip,destination_port,observed_at)",
+        ),
+    ),
 
 )
 

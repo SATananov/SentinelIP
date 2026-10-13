@@ -56,6 +56,10 @@ from database.perimeter_policy_correlations import (
     get_perimeter_policy_correlation,
     query_perimeter_policy_correlations,
 )
+from database.perimeter_host_correlations import (
+    get_perimeter_host_correlation,
+    query_perimeter_host_correlations,
+)
 from database.networks import (
     create_network,
     delete_network,
@@ -958,6 +962,45 @@ def perimeter_policy_correlation_detail(correlation_id: int):
     item = get_perimeter_policy_correlation(correlation_id, db_path=DB_PATH)
     if item is None:
         raise HTTPException(status_code=404, detail="Perimeter policy correlation not found.")
+    return item
+
+
+@app.get("/perimeter-host-correlations")
+def perimeter_host_correlations(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    site_id: int | None = Query(default=None, ge=1),
+    device_id: int | None = Query(default=None, ge=1),
+    network_id: int | None = Query(default=None, ge=1),
+    scope_id: int | None = Query(default=None, ge=1),
+    protocol: Literal["TCP", "UDP", "ICMP", "OTHER"] | None = None,
+    action: Literal["ALLOW", "BLOCK", "REJECT", "UNKNOWN"] | None = None,
+    destination_ip: str | None = None,
+    destination_port: int | None = Query(default=None, ge=1, le=65535),
+):
+    result = query_perimeter_host_correlations(
+        limit=limit, offset=offset, site_id=site_id, device_id=device_id, network_id=network_id,
+        scope_id=scope_id, protocol=protocol, action=action, destination_ip=destination_ip,
+        destination_port=destination_port, db_path=DB_PATH,
+    )
+    return {
+        "total": result["total"], "count": len(result["items"]), "limit": limit, "offset": offset,
+        "filters": {
+            "site_id": site_id, "device_id": device_id, "network_id": network_id, "scope_id": scope_id,
+            "protocol": protocol, "action": action, "destination_ip": destination_ip,
+            "destination_port": destination_port,
+        },
+        "correlations": result["items"],
+    }
+
+
+@app.get("/perimeter-host-correlations/{correlation_id}")
+def perimeter_host_correlation_detail(correlation_id: int):
+    if correlation_id <= 0:
+        raise HTTPException(status_code=422, detail="Perimeter host correlation ID must be positive.")
+    item = get_perimeter_host_correlation(correlation_id, db_path=DB_PATH)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Perimeter host correlation not found.")
     return item
 
 

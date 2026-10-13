@@ -12,6 +12,7 @@ from api.sensor_enrollment import MachineRoute, authenticate_sensor_request, mac
 from database.perimeter import persist_perimeter_events
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_policy_engine import PerimeterPolicyCorrelationEngine
+from services.perimeter_host_engine import PerimeterHostCorrelationEngine
 from services.perimeter_models import PerimeterEvent, PerimeterModelError
 from services.remote_sensor_models import Capability
 
@@ -94,6 +95,7 @@ def register_perimeter_ingestion_routes(app: FastAPI, store_provider, db_path_pr
         event_ids = [row["id"] for row in rows]
         detections = PerimeterDetectionEngine(db_path_provider()).evaluate_events(event_ids)
         correlations = PerimeterPolicyCorrelationEngine(db_path_provider()).evaluate_events(event_ids)
+        host_correlations = PerimeterHostCorrelationEngine(db_path_provider()).evaluate_events(event_ids)
         return {
             "accepted": len(rows),
             "inserted": sum(1 for row in rows if not row["idempotent"]),
@@ -101,4 +103,5 @@ def register_perimeter_ingestion_routes(app: FastAPI, store_provider, db_path_pr
             "event_ids": event_ids,
             "detection_ids": [row["id"] for row in detections],
             "policy_correlation_ids": [row["id"] for row in correlations],
+            "host_correlation_ids": [row["id"] for row in host_correlations],
         }

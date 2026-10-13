@@ -50,3 +50,5 @@ List filters include Site, correlation type, protocol, perimeter source type/key
 ## Boundaries
 
 11D does not perform packet capture, active scanning, firewall modification, blocking, reputation lookup, geolocation, exploit validation, host authentication correlation, or incident generation. A policy transition can reflect a rule change, NAT/firewall behavior, administrator action, or other benign causes. Host-level correlation belongs to 11E.
+
+11E adds a separate site-scoped host correlation layer that can associate a perimeter destination with one uniquely matching device in authorized private-network inventory. Policy correlations remain unchanged and do not themselves imply host acceptance.
