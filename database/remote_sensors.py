@@ -9,7 +9,7 @@ import uuid
 
 from database.db import DB_PATH, get_connection, initialize_database
 from services.remote_sensor_models import (
-    IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError,
+    IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError, RemoteSensorConflictError,
     capabilities, private_lan, sensor_status,
 )
 from services.scope_authorization import require_private_network_scope
@@ -140,9 +140,16 @@ class RemoteSensorStore:
             c.execute("UPDATE sensor_enrollment_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE id=?", (self._now().isoformat(), enrollment_id))
             return self._enrollment(c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone())
 
-    def consume_enrollment(self, token, *, name, platform, version, reported_capabilities=()):
-        """Local domain operation. No enrollment transport is exposed in 10A."""
+    def consume_enrollment(self, token, *, name, platform, version, reported_capabilities=(), sensor_uuid=None):
+        """Atomically create one identity and consume its site-bound invitation."""
         token_hash = _secret_hash(token)
+        if sensor_uuid is None:
+            sensor_uuid = str(uuid.uuid4())
+        else:
+            try:
+                sensor_uuid = str(uuid.UUID(_text(sensor_uuid, 'sensor UUID', 36)))
+            except ValueError as exc:
+                raise RemoteSensorError('Invalid sensor UUID.') from exc
         name = _text(name, 'sensor name')
         platform = _text(platform, 'platform', 64)
         version = _text(version, 'version', 64)
@@ -156,12 +163,14 @@ class RemoteSensorStore:
             if row is None or row['consumed_at'] or row['revoked_at'] or datetime.fromisoformat(row['expires_at']) <= now:
                 raise RemoteSensorAuthError("Enrollment credential rejected.")
             self._site(c, row['site_id'], active=True)
+            if c.execute('SELECT 1 FROM remote_sensors WHERE sensor_uuid=?', (sensor_uuid,)).fetchone():
+                raise RemoteSensorConflictError('Sensor UUID is already registered.')
             stamp = now.isoformat()
             sensor_id = c.execute(
                 """INSERT INTO remote_sensors (site_id,sensor_uuid,name,platform,version,capabilities,
                 enabled,credential_salt,credential_hash,credential_iterations,registered_at,created_at,updated_at)
                 VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)""",
-                (row['site_id'], str(uuid.uuid4()), name, platform, version, json.dumps(declared),
+                (row['site_id'], sensor_uuid, name, platform, version, json.dumps(declared),
                  salt.hex(), digest, TOKEN_ITERATIONS, stamp, stamp, stamp),
             ).lastrowid
             c.execute("UPDATE sensor_enrollment_tokens SET consumed_at=?,sensor_id=? WHERE id=?", (stamp, sensor_id, row['id']))
@@ -224,6 +233,16 @@ class RemoteSensorStore:
             return self._sensor(c, sensor_id, active=True)
         except RemoteSensorError as exc:
             raise RemoteSensorAuthError("Sensor credential rejected.") from exc
+
+    def authenticate_sensor(self, sensor_uuid, credential):
+        """UUID is a lookup key only; the dedicated secret proves identity."""
+        if not isinstance(sensor_uuid, str) or len(sensor_uuid) != 36:
+            raise RemoteSensorAuthError('Sensor credential rejected.')
+        with self._connection() as c:
+            row = c.execute('SELECT id FROM remote_sensors WHERE sensor_uuid=?', (sensor_uuid,)).fetchone()
+            if row is None:
+                raise RemoteSensorAuthError('Sensor credential rejected.')
+            return self._authenticate(c, row['id'], credential)
 
     def heartbeat(self, sensor_id, credential, *, platform, version, reported_capabilities=()):
         platform = _text(platform, 'platform', 64)

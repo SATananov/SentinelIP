@@ -1,5 +1,9 @@
 # Remote Sensor 10A: architecture and trust model
 
+This document records the 10A foundation. [Remote Sensor 10B](remote-sensor-10b.md)
+adds registration and authenticated self/heartbeat HTTP endpoints; its transport
+and caller-supplied UUID contracts supersede the corresponding 10A limitations.
+
 10A provides storage, local management and deterministic authorization primitives.
 It does **not** install a sensor, open a remote channel, execute jobs, scan a
 network, collect logs or accept remote inventory results. Network Workspace 09D

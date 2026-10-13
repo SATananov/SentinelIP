@@ -13,6 +13,10 @@ class RemoteSensorAuthError(RemoteSensorError):
     pass
 
 
+class RemoteSensorConflictError(RemoteSensorError):
+    pass
+
+
 class Capability(str, Enum):
     LOCAL_NETWORK_DISCOVERY = "LOCAL_NETWORK_DISCOVERY"
     HOST_DISCOVERY = "HOST_DISCOVERY"

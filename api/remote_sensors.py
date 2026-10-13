@@ -1,4 +1,4 @@
-"""Direct-loopback management only. Remote enrollment/heartbeat transport is deferred."""
+"""Direct-loopback management, separate from machine enrollment/authentication."""
 import ipaddress
 from collections.abc import Callable
 
@@ -38,7 +38,9 @@ def local_management(request: Request, response: Response):
         local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
     except ValueError:
         local = False
-    if (not local or request.url.hostname not in {'localhost', '127.0.0.1', '::1'}
+    if (request.headers.get('authorization') is not None
+            or request.headers.get('x-sensor-uuid') is not None
+            or not local or request.url.hostname not in {'localhost', '127.0.0.1', '::1'}
             or any(h in request.headers for h in ('forwarded', 'x-forwarded-for', 'x-forwarded-host'))
             or request.headers.get('origin') not in (None, 'http://localhost:5173', 'http://127.0.0.1:5173')):
         raise HTTPException(403, 'Remote sensor management requires direct local operator access.')
