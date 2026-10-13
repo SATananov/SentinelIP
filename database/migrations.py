@@ -1374,6 +1374,57 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        37,
+        (
+            """CREATE TABLE external_exposures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                scope_type TEXT NOT NULL CHECK (scope_type IN ('PUBLIC_IPV4','PUBLIC_CIDR','HOSTNAME')),
+                canonical_target TEXT NOT NULL,
+                device_id INTEGER NOT NULL REFERENCES devices(id),
+                target_ip TEXT NOT NULL,
+                port_number INTEGER NOT NULL CHECK (port_number BETWEEN 1 AND 65535),
+                transport TEXT NOT NULL CHECK (transport = 'tcp'),
+                service_name TEXT,
+                product TEXT,
+                version TEXT,
+                extra_info TEXT,
+                service_confidence TEXT CHECK (service_confidence IS NULL OR service_confidence IN ('LOW','MEDIUM','HIGH')),
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                last_observation_source TEXT NOT NULL,
+                last_scanner TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE external_exposure_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation_key TEXT NOT NULL UNIQUE,
+                exposure_id INTEGER NOT NULL REFERENCES external_exposures(id) ON DELETE CASCADE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                device_id INTEGER NOT NULL REFERENCES devices(id),
+                target_ip TEXT NOT NULL,
+                port_number INTEGER NOT NULL CHECK (port_number BETWEEN 1 AND 65535),
+                transport TEXT NOT NULL CHECK (transport = 'tcp'),
+                service_name TEXT,
+                product TEXT,
+                version TEXT,
+                extra_info TEXT,
+                service_confidence TEXT CHECK (service_confidence IS NULL OR service_confidence IN ('LOW','MEDIUM','HIGH')),
+                observed_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                scanner TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_external_exposures_scope_seen ON external_exposures(scope_id,last_seen)",
+            "CREATE INDEX idx_external_exposures_device_seen ON external_exposures(device_id,last_seen)",
+            "CREATE INDEX idx_external_exposures_target_port ON external_exposures(target_ip,port_number,transport)",
+            "CREATE INDEX idx_external_exposure_observations_exposure_seen ON external_exposure_observations(exposure_id,observed_at)",
+        ),
+    ),
+
 )
 
 

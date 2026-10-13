@@ -60,6 +60,11 @@ from database.perimeter_host_correlations import (
     get_perimeter_host_correlation,
     query_perimeter_host_correlations,
 )
+from database.external_exposures import (
+    get_external_exposure,
+    query_external_exposures,
+    list_exposure_observations,
+)
 from services.perimeter_dashboard import build_perimeter_dashboard
 from database.networks import (
     create_network,
@@ -600,6 +605,49 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
         "findings": findings,
         "cve_matches": matches,
     }
+
+
+@app.get("/external-exposures")
+def external_exposures(
+    scope_id: int | None = Query(default=None, ge=1),
+    device_id: int | None = Query(default=None, ge=1),
+    target_ip: str | None = None,
+    port_number: int | None = Query(default=None, ge=1, le=65535),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    if target_ip is not None:
+        try:
+            target_ip = normalize_public_ipv4(target_ip)
+        except PublicTargetPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = query_external_exposures(
+        scope_id=scope_id, device_id=device_id, target_ip=target_ip,
+        port_number=port_number, limit=limit, offset=offset, db_path=DB_PATH,
+    )
+    return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
+
+
+@app.get("/external-exposures/{exposure_id}")
+def external_exposure(exposure_id: int):
+    exposure = get_external_exposure(exposure_id, db_path=DB_PATH)
+    if exposure is None:
+        raise HTTPException(status_code=404, detail="External exposure not found.")
+    return exposure
+
+
+@app.get("/external-exposures/{exposure_id}/observations")
+def external_exposure_observations(
+    exposure_id: int,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    if get_external_exposure(exposure_id, db_path=DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="External exposure not found.")
+    result = list_exposure_observations(
+        exposure_id, limit=limit, offset=offset, db_path=DB_PATH
+    )
+    return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
 
 @app.get("/network-candidates")

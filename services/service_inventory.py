@@ -18,6 +18,7 @@ from services.service_models import (
 from services.scope_authorization import ScopeAuthorizationError, require_public_ipv4_scope
 from services.scope_authorization import require_hostname_scope
 from services.target_policy import validate_cidr
+from services.external_exposure_service import ExternalExposureService
 
 
 class ServiceInventoryError(ValueError):
@@ -95,7 +96,11 @@ class ServiceInventoryService:
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
     ) -> dict[str, list[dict]]:
-        return self._process_result(*_public_context(scope, device), result)
+        inventory = self._process_result(*_public_context(scope, device), result)
+        inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
+            scope, device, result
+        )
+        return inventory
 
     def process_cidr_result(self, scope, device, result):
         if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
@@ -107,7 +112,11 @@ class ServiceInventoryService:
             or device["id"] <= 0
             or device.get("last_ip_address") not in addresses):
             raise ServiceInventoryError("The device is outside the authorized CIDR scope.")
-        return self._process_result(None, device["id"], device["last_ip_address"], result)
+        inventory = self._process_result(None, device["id"], device["last_ip_address"], result)
+        inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
+            scope, device, result
+        )
+        return inventory
 
     def process_hostname_result(
         self,
@@ -128,7 +137,11 @@ class ServiceInventoryService:
             scope["id"], self.db_path
         ):
             raise ServiceInventoryError("The device address is not approved for the hostname scope.")
-        return self._process_result(None, device["id"], target_ip, result)
+        inventory = self._process_result(None, device["id"], target_ip, result)
+        inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
+            scope, device, result
+        )
+        return inventory
 
     def _process_result(
         self,
