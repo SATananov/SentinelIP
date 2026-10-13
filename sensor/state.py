@@ -41,16 +41,25 @@ def _atomic_write(path: str | Path, data: bytes, *, replace: bool):
     if not target.is_absolute():
         raise RemoteSensorError('Provisioning paths must be absolute.')
     try:
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == 'nt':
+            from .windows_security import assert_secret, protect_secret
+            assert_secret(target.parent)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd, temporary = tempfile.mkstemp(prefix='.sentinel-sensor-', dir=target.parent)
         try:
-            os.fchmod(fd, 0o600)
             with os.fdopen(fd, 'wb') as stream:
+                if os.name == 'nt':
+                    protect_secret(temporary)
+                else:
+                    os.fchmod(stream.fileno(), 0o600)
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
             if replace:
                 os.replace(temporary, target)
+            elif os.name == 'nt':
+                os.rename(temporary, target)  # Windows rename never overwrites an existing file.
             else:
                 # A hard link provides an atomic no-overwrite create on the same filesystem.
                 os.link(temporary, target)
@@ -83,7 +92,10 @@ def write_config(path: str | Path, value: dict, *, replace=False):
 
 def load_grants(path: str | Path, sensor_uuid: str, capabilities: tuple[str, ...]) -> dict[int, LocalExecutorGrant]:
     grant_path = Path(path)
-    if os.name != 'nt':
+    if os.name == 'nt':
+        from .windows_security import assert_secret
+        assert_secret(grant_path)
+    else:
         try:
             mode = grant_path.stat().st_mode & 0o777
         except OSError as exc:

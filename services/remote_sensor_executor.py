@@ -19,8 +19,8 @@ class RemoteSensorExecutor(Protocol):
     def discover_services(self, task: RemoteTaskContext, grant: LocalExecutorGrant) -> ServiceDiscoveryResult: ...
 
 
-class LinuxRemoteSensorExecutor:
-    """Reuse the existing fixed, conservative Nmap profiles on Linux."""
+class BoundedRemoteSensorExecutor:
+    """Shared typed task and result validation around platform scanners."""
     def __init__(self, host_scanner: HostDiscoveryScanner | None = None,
                  service_scanner: ServiceDiscoveryScanner | None = None):
         self.host_scanner = host_scanner or NmapHostDiscoveryScanner(timeout_seconds=30, max_output_bytes=1_048_576)
@@ -42,6 +42,10 @@ class LinuxRemoteSensorExecutor:
         network = {'id': task.network_id, 'cidr': grant.cidr, 'authorized': True, 'enabled': True}
         device = {'id': task.target_device_id, 'network_id': task.network_id, 'last_ip_address': target}
         return discover_services(network, device, self.service_scanner)
+
+
+class LinuxRemoteSensorExecutor(BoundedRemoteSensorExecutor):
+    """Existing fixed, conservative Linux Nmap profiles."""
 
 
 def task_context_from_claim(claim: Mapping[str, object]) -> RemoteTaskContext:

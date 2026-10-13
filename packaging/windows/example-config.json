@@ -1,0 +1,10 @@
+{
+  "core_url": "https://core.example.internal",
+  "sensor_uuid": "00000000-0000-4000-8000-000000000000",
+  "grant_file": "C:\\ProgramData\\SentinelIP\\Sensor\\grants.json",
+  "poll_interval": 10,
+  "heartbeat_interval": 45,
+  "request_timeout": 15,
+  "platform": "windows",
+  "capabilities": ["HOST_DISCOVERY", "SERVICE_DISCOVERY"]
+}

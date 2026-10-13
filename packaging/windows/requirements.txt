@@ -1,0 +1,2 @@
+# Explicit operator installation into an all-users Python; no installer downloads.
+pywin32>=311; sys_platform == 'win32'

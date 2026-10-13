@@ -1,4 +1,4 @@
-"""Linux sensor CLI: enroll, check-config, refresh-grant, self-test, run."""
+"""Shared Linux/Windows sensor CLI: enroll, check-config, refresh-grant, self-test, run."""
 import argparse
 import getpass
 import logging
@@ -10,7 +10,6 @@ import sys
 from threading import Event
 from uuid import UUID, uuid4
 
-from services.remote_sensor_executor import LinuxRemoteSensorExecutor
 from services.remote_sensor_models import LocalExecutorGrant, RemoteSensorError
 
 from .client import CoreClient, EnrollmentClient, SensorClientError
@@ -18,6 +17,7 @@ from .config import SensorConfig, load_config
 from .runtime import SensorRuntime, _json_log
 from .state import _normalize_grants, load_grants, write_config, write_grants
 from .version import RUNTIME_VERSION
+from .platforms import default_paths, select_executor
 
 DEFAULT_CONFIG = Path('/etc/sentinelip-sensor/config.json')
 DEFAULT_GRANTS = Path('/etc/sentinelip-sensor/grants.json')
@@ -25,6 +25,7 @@ _CAPABILITIES = ('HOST_DISCOVERY', 'SERVICE_DISCOVERY')
 
 
 def _parser():
+    default_config, default_grants = default_paths()
     parser = argparse.ArgumentParser(prog='sentinelip-sensor')
     parser.add_argument('--version', action='version', version=f'%(prog)s {RUNTIME_VERSION}')
     parser.add_argument('--config', help='protected JSON config path (or SENTINEL_SENSOR_CONFIG)')
@@ -33,13 +34,13 @@ def _parser():
         sub = subparsers.add_parser(name)
         sub.add_argument('--config', dest='sub_config', help=argparse.SUPPRESS)
     enroll = subparsers.add_parser('enroll')
-    enroll.add_argument('--config', default=str(DEFAULT_CONFIG), help='new protected config path')
-    enroll.add_argument('--grant-file', default=str(DEFAULT_GRANTS), help='protected grant file path')
+    enroll.add_argument('--config', default=str(default_config), help='new protected config path')
+    enroll.add_argument('--grant-file', default=str(default_grants), help='protected grant file path')
     enroll.add_argument('--core-url', required=True)
     enroll.add_argument('--development-mode', action='store_true', help='allow HTTP only for loopback development')
     enroll.add_argument('--sensor-uuid', help='canonical UUID; generated when omitted')
     enroll.add_argument('--name', required=True)
-    enroll.add_argument('--platform', default='linux')
+    enroll.add_argument('--platform', default=platform.system().lower())
     enroll.add_argument('--capability', action='append', choices=_CAPABILITIES,
                         help='repeat to select supported capabilities (defaults to both)')
     enroll.add_argument('--request-timeout', type=int, default=15)
@@ -72,6 +73,10 @@ def _check_dependencies(config):
 
 
 def _check_nmap():
+    if platform.system() == 'Windows':
+        from services.windows_sensor_executor import resolve_nmap
+        resolve_nmap()
+        return
     if not shutil.which('nmap'):
         raise RemoteSensorError('Nmap is required for bounded discovery but was not found.')
 
@@ -163,6 +168,16 @@ def _enroll(args, logger):
     print('No scanning was started. Run self-test, assign a private scope in Core, then refresh-grant.')
 
 
+def run_sensor(config, client, stop_event, logger):
+    """Shared service/console entry; SCM and console signals own the stop event."""
+    executor = select_executor()
+    _check_dependencies(config)
+    _assert_identity(config, client)
+    grants = _sync_grants(config, client)
+    runtime = SensorRuntime(config, grants, client, executor, stop_event=stop_event, logger=logger)
+    runtime.run()
+
+
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     logger = logging.getLogger('sentinelip.sensor')
@@ -192,20 +207,13 @@ def main(argv=None):
         if args.command == 'self-test':
             _self_test(config, client, logger)
             return 0
-        if platform.system().lower() != 'linux':
-            raise RemoteSensorError('This installation requires the Linux executor adapter.')
-        _check_dependencies(config)
-        _assert_identity(config, client)
-        grants = _sync_grants(config, client)
         stop_event = Event()
         def stop(signum, frame):
             stop_event.set()
             _json_log(logger, sensor_uuid=config.sensor_uuid, status='SHUTDOWN_REQUESTED')
         signal.signal(signal.SIGINT, stop)
         signal.signal(signal.SIGTERM, stop)
-        runtime = SensorRuntime(config, grants, client, LinuxRemoteSensorExecutor(),
-                                stop_event=stop_event, logger=logger)
-        runtime.run()
+        run_sensor(config, client, stop_event, logger)
         _json_log(logger, sensor_uuid=config.sensor_uuid, status='SHUTDOWN_COMPLETE')
         return 0
     except (RemoteSensorError, SensorClientError, ValueError, OSError) as exc:

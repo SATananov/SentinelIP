@@ -129,6 +129,7 @@ def test_enrollment_cli_saves_secret_only_after_success_and_never_prints_it(tmp_
     monkeypatch.setattr(cli, 'EnrollmentClient', FakeEnrollment)
     monkeypatch.setattr(cli, 'CoreClient', FakeCore)
     monkeypatch.setattr(cli, '_check_dependencies', lambda config: True)
+    monkeypatch.setattr(cli, '_check_nmap', lambda: True)
     monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt: 'T' * 43)
     args = SimpleNamespace(config=str(config_path), grant_file=str(grant_path),
                            core_url='https://core.test', development_mode=False,
@@ -153,6 +154,7 @@ def test_enrollment_failure_does_not_leave_credential_file(tmp_path, monkeypatch
         def close(self): pass
 
     monkeypatch.setattr(cli, 'EnrollmentClient', FailedEnrollment)
+    monkeypatch.setattr(cli, '_check_nmap', lambda: True)
     monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt: 'T' * 43)
     args = SimpleNamespace(config=str(tmp_path / 'config.json'), grant_file=str(tmp_path / 'grant.json'),
                            core_url='https://core.test', development_mode=False, sensor_uuid=None,

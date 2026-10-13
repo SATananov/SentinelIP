@@ -56,7 +56,10 @@ class SensorConfig:
 
 
 def _read_config(path: Path) -> dict:
-    if os.name != 'nt':
+    if os.name == 'nt':
+        from .windows_security import assert_secret
+        assert_secret(path)
+    else:
         try:
             mode = path.stat().st_mode & 0o777
         except OSError as exc:
@@ -80,7 +83,11 @@ def _read_config(path: Path) -> dict:
 def load_config(path: str | Path | None = None, *, environ=None) -> SensorConfig:
     """Load a protected JSON config; credential environment variable overrides its value."""
     env = os.environ if environ is None else environ
-    selected = Path(path or env.get('SENTINEL_SENSOR_CONFIG', 'sensor-config.json')).expanduser()
+    default = 'sensor-config.json'
+    if os.name == 'nt':
+        from .platforms import default_paths
+        default = str(default_paths()[0])
+    selected = Path(path or env.get('SENTINEL_SENSOR_CONFIG', default)).expanduser()
     raw = _read_config(selected)
     credential = env.get('SENTINEL_SENSOR_CREDENTIAL', raw.get('sensor_credential'))
     if not isinstance(credential, str) or not 40 <= len(credential) <= 128:

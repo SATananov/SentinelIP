@@ -45,7 +45,7 @@ make_dir "$ROOT/etc/systemd/system" 0755
 
 rm -rf -- "$ROOT/opt/sentinelip-sensor/sensor" "$ROOT/opt/sentinelip-sensor/services"
 mkdir -p -- "$ROOT/opt/sentinelip-sensor/sensor"
-for module in __init__ __main__ client config runtime state version; do
+for module in __init__ __main__ client config runtime state version platforms; do
   install -m 0644 "$SOURCE_DIR/sensor/$module.py" "$ROOT/opt/sentinelip-sensor/sensor/$module.py"
 done
 mkdir -p -- "$ROOT/opt/sentinelip-sensor/services/scanner_adapters"
