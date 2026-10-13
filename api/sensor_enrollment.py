@@ -1,5 +1,7 @@
 """Bounded machine registration and identity routes; no execution transport."""
 import ipaddress
+import json
+import re
 from collections.abc import Callable
 from uuid import UUID
 
@@ -11,8 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from database.remote_sensors import RemoteSensorStore
 from services.remote_sensor_models import (
-    Capability, RemoteSensorAuthError, RemoteSensorConflictError, RemoteSensorError,
+    Capability, RemoteSensorAuthError, RemoteSensorCapacityError,
+    RemoteSensorConflictError, RemoteSensorError, RemoteSensorRateLimitError,
+    RemoteSensorReplayError,
 )
+
+MAX_SENSOR_BODY_BYTES = 16 * 1024
+_TIMESTAMP_PATTERN = re.compile(r'^[0-9]{10}$')
 
 
 class MachineMetadata(BaseModel):
@@ -43,6 +50,63 @@ class MachineRoute(APIRoute):
             response.headers['Cache-Control'] = 'no-store'
             return response
         return protected
+
+
+class SensorBodyLimitMiddleware:
+    """Bound machine request bodies before JSON validation or credential work."""
+    def __init__(self, app, max_bytes=MAX_SENSOR_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get('path', '')
+        if scope['type'] != 'http' or not (
+            path.startswith('/sensor/') or path == '/sensor-enrollment/register'
+        ):
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get('headers', ()))
+        raw_length = headers.get(b'content-length')
+        if raw_length is not None:
+            try:
+                if int(raw_length) > self.max_bytes or int(raw_length) < 0:
+                    await self._too_large(send)
+                    return
+            except ValueError:
+                await self._too_large(send)
+                return
+        chunks = []
+        size = 0
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                return
+            chunk = message.get('body', b'')
+            size += len(chunk)
+            if size > self.max_bytes:
+                await self._too_large(send)
+                return
+            chunks.append(chunk)
+            if not message.get('more_body', False):
+                break
+        body = b''.join(chunks)
+        sent = False
+        async def replay_receive():
+            nonlocal sent
+            if sent:
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
+            sent = True
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    async def _too_large(send):
+        body = json.dumps({'detail': 'Sensor request body exceeds 16384 bytes.'}).encode()
+        await send({'type': 'http.response.start', 'status': 413, 'headers': [
+            (b'content-type', b'application/json'), (b'content-length', str(len(body)).encode()),
+            (b'cache-control', b'no-store'),
+        ]})
+        await send({'type': 'http.response.body', 'body': body})
 
 
 def machine_transport(request: Request):
@@ -85,11 +149,28 @@ def register_machine_routes(app: FastAPI, store_provider: Callable[[], RemoteSen
                 or len(request.headers.getlist('authorization')) != 1
                 or len(request.headers.getlist('x-sensor-uuid')) != 1):
             raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'})
+        timestamp_values = request.headers.getlist('x-sentinel-timestamp')
+        nonce_values = request.headers.getlist('x-sentinel-nonce')
+        if len(timestamp_values) != 1 or len(nonce_values) != 1:
+            raise HTTPException(400, 'X-Sentinel-Timestamp and X-Sentinel-Nonce are required exactly once.')
+        if not _TIMESTAMP_PATTERN.fullmatch(timestamp_values[0]):
+            raise HTTPException(400, 'X-Sentinel-Timestamp must be a 10-digit Unix timestamp in seconds.')
         store = store_provider()
         try:
-            sensor = store.authenticate_sensor(sensor_uuid, credential)
+            sensor = store.authorize_transport_request(sensor_uuid, credential,
+                                                       int(timestamp_values[0]), nonce_values[0])
         except RemoteSensorAuthError as exc:
             raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'}) from exc
+        except RemoteSensorReplayError as exc:
+            raise HTTPException(409, 'Sensor request rejected.') from exc
+        except RemoteSensorRateLimitError as exc:
+            raise HTTPException(429, 'Sensor request rate limit exceeded.', headers={'Retry-After': '60'}) from exc
+        except RemoteSensorCapacityError as exc:
+            raise HTTPException(503, 'Sensor transport capacity is temporarily exhausted.') from exc
+        except RemoteSensorError as exc:
+            message = str(exc)
+            status = 408 if 'outside the allowed window' in message else 400
+            raise HTTPException(status, message) from exc
         return store, sensor, credential
 
     @route('/sensor-enrollment/register', 'POST', 201)

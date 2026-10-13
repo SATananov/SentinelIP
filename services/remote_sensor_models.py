@@ -17,6 +17,18 @@ class RemoteSensorConflictError(RemoteSensorError):
     pass
 
 
+class RemoteSensorReplayError(RemoteSensorError):
+    pass
+
+
+class RemoteSensorRateLimitError(RemoteSensorError):
+    pass
+
+
+class RemoteSensorCapacityError(RemoteSensorError):
+    pass
+
+
 class Capability(str, Enum):
     LOCAL_NETWORK_DISCOVERY = "LOCAL_NETWORK_DISCOVERY"
     HOST_DISCOVERY = "HOST_DISCOVERY"

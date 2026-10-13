@@ -1181,6 +1181,20 @@ MIGRATIONS = (
             "CREATE INDEX remote_sensors_site ON remote_sensors(site_id, id)",
         ),
     ),
+    (
+        31,
+        (
+            """CREATE TABLE sensor_transport_nonces (
+                sensor_id INTEGER NOT NULL REFERENCES remote_sensors(id) ON DELETE CASCADE,
+                nonce TEXT NOT NULL,
+                request_timestamp INTEGER NOT NULL,
+                received_at INTEGER NOT NULL,
+                PRIMARY KEY (sensor_id, nonce)
+            )""",
+            "CREATE INDEX sensor_transport_nonces_request_timestamp ON sensor_transport_nonces(request_timestamp)",
+            "CREATE INDEX sensor_transport_nonces_sensor_received ON sensor_transport_nonces(sensor_id, received_at)",
+        ),
+    ),
 )
 
 

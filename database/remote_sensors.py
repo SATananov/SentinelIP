@@ -6,14 +6,24 @@ import secrets
 import sqlite3
 import json
 import uuid
+import re
 
 from database.db import DB_PATH, get_connection, initialize_database
 from services.remote_sensor_models import (
-    IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError, RemoteSensorConflictError,
+    IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError,
+    RemoteSensorCapacityError, RemoteSensorConflictError, RemoteSensorRateLimitError,
+    RemoteSensorReplayError,
     capabilities, private_lan, sensor_status,
 )
 from services.scope_authorization import require_private_network_scope
 from services.telemetry_auth import TOKEN_ITERATIONS, hash_sensor_token, verify_sensor_token
+
+TRANSPORT_FRESHNESS_SECONDS = 300
+TRANSPORT_RATE_WINDOW_SECONDS = 60
+TRANSPORT_RATE_LIMIT = 50
+TRANSPORT_NONCES_PER_SENSOR = 512
+TRANSPORT_NONCES_GLOBAL = 100_000
+_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 def _text(value, label, maximum=128, empty=False):
@@ -243,6 +253,40 @@ class RemoteSensorStore:
             if row is None:
                 raise RemoteSensorAuthError('Sensor credential rejected.')
             return self._authenticate(c, row['id'], credential)
+
+    def authorize_transport_request(self, sensor_uuid, credential, timestamp, nonce):
+        """Authenticate and atomically admit a fresh, unique, rate-limited request."""
+        if type(timestamp) is not int:
+            raise RemoteSensorError('Invalid request timestamp.')
+        if not isinstance(nonce, str) or not _NONCE_PATTERN.fullmatch(nonce):
+            raise RemoteSensorError('Invalid request nonce.')
+        now = int(self._now().timestamp())
+        if abs(now - timestamp) > TRANSPORT_FRESHNESS_SECONDS:
+            raise RemoteSensorError('Request timestamp is outside the allowed window.')
+        with self._connection(write=True) as c:
+            row = c.execute('SELECT id FROM remote_sensors WHERE sensor_uuid=?', (sensor_uuid,)).fetchone()
+            if row is None:
+                raise RemoteSensorAuthError('Sensor credential rejected.')
+            sensor = self._authenticate(c, row['id'], credential)
+            c.execute('DELETE FROM sensor_transport_nonces WHERE request_timestamp < ?',
+                      (now - TRANSPORT_FRESHNESS_SECONDS,))
+            if c.execute('SELECT 1 FROM sensor_transport_nonces WHERE sensor_id=? AND nonce=?',
+                          (sensor['id'], nonce)).fetchone():
+                raise RemoteSensorReplayError('Request nonce has already been used.')
+            count = c.execute('SELECT COUNT(*) FROM sensor_transport_nonces WHERE sensor_id=? AND received_at > ?',
+                              (sensor['id'], now - TRANSPORT_RATE_WINDOW_SECONDS)).fetchone()[0]
+            if count >= TRANSPORT_RATE_LIMIT:
+                raise RemoteSensorRateLimitError('Sensor request rate limit exceeded.')
+            total = c.execute('SELECT COUNT(*) FROM sensor_transport_nonces').fetchone()[0]
+            if total >= TRANSPORT_NONCES_GLOBAL:
+                raise RemoteSensorCapacityError('Sensor transport capacity is temporarily exhausted.')
+            sensor_count = c.execute('SELECT COUNT(*) FROM sensor_transport_nonces WHERE sensor_id=?',
+                                     (sensor['id'],)).fetchone()[0]
+            if sensor_count >= TRANSPORT_NONCES_PER_SENSOR:
+                raise RemoteSensorRateLimitError('Sensor replay record limit exceeded.')
+            c.execute('INSERT INTO sensor_transport_nonces VALUES (?,?,?,?)',
+                      (sensor['id'], nonce, timestamp, now))
+            return sensor
 
     def heartbeat(self, sensor_id, credential, *, platform, version, reported_capabilities=()):
         platform = _text(platform, 'platform', 64)
