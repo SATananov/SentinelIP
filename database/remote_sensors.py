@@ -341,6 +341,34 @@ class RemoteSensorStore:
             self._sensor(c, sensor_id)
             return [dict(r) for r in c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? ORDER BY scope_id LIMIT ? OFFSET ?", (sensor_id, limit, offset))]
 
+    def get_sensor_grants(self, sensor_id):
+        """Return only this active sensor's current, valid PRIVATE_NETWORK grants."""
+        with self._connection() as c:
+            sensor = self._sensor(c, sensor_id, active=True)
+            declared = set(sensor['capabilities'])
+            grants = []
+            rows = c.execute(
+                "SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND site_id=? ORDER BY scope_id LIMIT 101",
+                (sensor_id, sensor['site_id']),
+            ).fetchall()
+            if len(rows) > 100:
+                raise RemoteSensorError("Sensor grant count exceeds the supported bound.")
+            for assignment in rows:
+                try:
+                    scope = self._scope(c, assignment['scope_id'])
+                except RemoteSensorError:
+                    # An assignment whose scope/network is no longer valid is never issued.
+                    continue
+                if assignment['canonical_target'] != scope['canonical_target']:
+                    continue
+                grants.append({
+                    'scope_id': assignment['scope_id'],
+                    'scope_type': 'PRIVATE_NETWORK',
+                    'cidr': scope['canonical_target'],
+                    'capabilities': sorted(declared & {'HOST_DISCOVERY', 'SERVICE_DISCOVERY'}),
+                })
+            return grants
+
     def remove_assignment(self, sensor_id, scope_id):
         with self._connection(write=True) as c:
             self._sensor(c, sensor_id)

@@ -384,15 +384,21 @@ def test_shutdown_during_heartbeat_does_not_claim_new_work(tmp_path):
     assert not executor.calls
 
 
-def test_self_test_checks_core_identity_without_execution(tmp_path):
+def test_self_test_checks_core_identity_without_execution(tmp_path, monkeypatch):
     from sensor.__main__ import _self_test
     class SelfClient:
         def __init__(self): self.calls = []
-        def get_self(self): self.calls.append('self'); return {'sensor_uuid': SENSOR_UUID}
+        def get_self(self): self.calls.append('self'); return {'sensor_uuid': SENSOR_UUID, 'enabled': True}
+        def get_grant(self):
+            self.calls.append('grant')
+            return {'grants': [
+                {'scope_id': 7, 'scope_type': 'PRIVATE_NETWORK', 'cidr': '192.168.1.0/24',
+                 'capabilities': ['HOST_DISCOVERY', 'SERVICE_DISCOVERY']}]}
     config, _, _ = make_config(tmp_path)
+    monkeypatch.setattr('sensor.__main__._check_dependencies', lambda config: True)
     client = SelfClient()
     _self_test(config, client, logging.getLogger('test.sensor'))
-    assert client.calls == ['self']
+    assert client.calls == ['self', 'grant']
 
 
 def test_cli_has_no_raw_scan_or_command_mode():

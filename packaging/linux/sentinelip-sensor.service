@@ -1,0 +1,39 @@
+[Unit]
+Description=SentinelIP Remote Sensor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=sentinelip-sensor
+Group=sentinelip-sensor
+WorkingDirectory=/opt/sentinelip-sensor
+Environment=PATH=/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m sensor --config /etc/sentinelip-sensor/config.json run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=75
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/etc/sentinelip-sensor /var/lib/sentinelip-sensor
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

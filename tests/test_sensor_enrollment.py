@@ -252,7 +252,7 @@ def test_no_management_privilege_or_execution(context):
     for suffix in ('jobs', 'results', 'scan', 'execute', 'shell', 'scope-assignments'):
         assert remote.post(f'/sensor/{suffix}', headers=auth(sensor), json={'target': '8.8.8.8'}).status_code in (404, 405)
     machine_paths = {p for p in remote.get('/openapi.json').json()['paths'] if p.startswith(('/sensor/', '/sensor-enrollment/'))}
-    assert machine_paths == {'/sensor/self', '/sensor/heartbeat', '/sensor-enrollment/register'}
+    assert machine_paths == {'/sensor/self', '/sensor/grant', '/sensor/heartbeat', '/sensor-enrollment/register'}
     assert store.list_assignments(sensor['id']) == []
 
 

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from services.remote_sensor_models import RemoteSensorError
+from .version import RUNTIME_VERSION
 
 _ALLOWED_CAPABILITIES = frozenset({'HOST_DISCOVERY', 'SERVICE_DISCOVERY'})
 _VERSION = re.compile(r'^[A-Za-z0-9._+-]{1,64}$')
@@ -50,7 +51,7 @@ class SensorConfig:
     request_timeout: int = 15
     development_mode: bool = False
     platform_name: str = 'linux'
-    version: str = '1.0.0'
+    version: str = RUNTIME_VERSION
     capabilities: tuple[str, ...] = ('HOST_DISCOVERY', 'SERVICE_DISCOVERY')
 
 
@@ -108,7 +109,7 @@ def load_config(path: str | Path | None = None, *, environ=None) -> SensorConfig
     if type(timeout) is not int or not 1 <= timeout <= 60:
         raise RemoteSensorError('request_timeout must be between 1 and 60 seconds.')
     platform_name = raw.get('platform', platform.system().lower())
-    version = raw.get('version', '1.0.0')
+    version = raw.get('version', RUNTIME_VERSION)
     if not isinstance(platform_name, str) or not 1 <= len(platform_name) <= 64:
         raise RemoteSensorError('platform must be 1–64 characters.')
     if not isinstance(version, str) or not _VERSION.fullmatch(version):

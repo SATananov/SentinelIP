@@ -201,6 +201,16 @@ def register_machine_routes(app: FastAPI, store_provider: Callable[[], RemoteSen
         _, sensor, _ = auth
         return public_identity(sensor)
 
+    @route('/sensor/grant', 'GET')
+    def current_grants(auth=Depends(authenticate)):
+        store, sensor, _ = auth
+        try:
+            return {'grants': store.get_sensor_grants(sensor['id'])}
+        except RemoteSensorAuthError as exc:
+            raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'}) from exc
+        except RemoteSensorError as exc:
+            raise HTTPException(409, 'Current sensor grants are unavailable.') from exc
+
     @route('/sensor/heartbeat', 'POST')
     def heartbeat(body: MachineMetadata, auth=Depends(authenticate)):
         store, sensor, credential = auth

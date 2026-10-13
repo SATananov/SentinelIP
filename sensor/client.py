@@ -9,7 +9,7 @@ from urllib.request import HTTPSHandler, HTTPHandler, HTTPRedirectHandler, Reque
 from uuid import UUID
 
 from services.sensor_transport import authenticated_sensor_headers
-from .config import SensorConfig
+from .config import SensorConfig, _validate_core_url
 
 
 class SensorClientError(RuntimeError):
@@ -90,6 +90,9 @@ class CoreClient:
     def get_self(self) -> dict:
         return self._call('GET', '/sensor/self')
 
+    def get_grant(self) -> dict:
+        return self._call('GET', '/sensor/grant')
+
     def heartbeat(self) -> dict:
         return self._call('POST', '/sensor/heartbeat', {
             'platform': self.config.platform_name,
@@ -149,3 +152,58 @@ class CoreClient:
         if error_code not in {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT'}:
             raise ValueError('Unsupported task failure code.')
         return self._call('POST', self._task_path(task_id, 'fail'), {'error_code': error_code})
+
+
+class EnrollmentClient:
+    """One-purpose unauthenticated client for the one-time registration endpoint."""
+    def __init__(self, core_url: str, *, development_mode=False, timeout=15, opener=None):
+        self.core_url = _validate_core_url(core_url, development_mode=development_mode)
+        if type(timeout) is not int or not 1 <= timeout <= 60:
+            raise ValueError('Request timeout must be between 1 and 60 seconds.')
+        self.timeout = timeout
+        self._opener = opener or build_opener(
+            HTTPSHandler(context=ssl.create_default_context()), HTTPHandler(), _NoRedirect())
+
+    def close(self):
+        close = getattr(self._opener, 'close', None)
+        if close is not None:
+            close()
+
+    def register(self, *, enrollment_token: str, sensor_uuid: str, sensor_name: str,
+                 platform: str, version: str, capabilities: list[str]) -> dict:
+        from urllib.parse import urljoin
+        payload = json.dumps({
+            'enrollment_token': enrollment_token, 'sensor_uuid': sensor_uuid,
+            'sensor_name': sensor_name, 'platform': platform, 'version': version,
+            'capabilities': capabilities,
+        }, separators=(',', ':')).encode()
+        if len(payload) > 16 * 1024:
+            raise ValueError('Registration request exceeds its supported bound.')
+        request = Request(urljoin(self.core_url.rstrip('/') + '/', 'sensor-enrollment/register'),
+                          data=payload, headers={'Accept': 'application/json',
+                          'Content-Type': 'application/json'}, method='POST')
+        try:
+            response = self._opener.open(request, timeout=self.timeout)
+            with closing(response):
+                status = getattr(response, 'status', response.getcode())
+                data = response.read(16 * 1024 + 1)
+        except HTTPError as exc:
+            status = exc.code
+            exc.close()
+            raise SensorClientError('ENROLLMENT_REJECTED', status=status) from None
+        except (TimeoutError, URLError, OSError) as exc:
+            reason = getattr(exc, 'reason', None)
+            code = 'CORE_TIMEOUT' if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) else 'CORE_UNAVAILABLE'
+            raise SensorClientError(code) from None
+        if status != 201 or len(data) > 16 * 1024:
+            raise SensorClientError('INVALID_REGISTRATION_RESPONSE', status=status)
+        try:
+            result = json.loads(data)
+            returned_uuid = str(UUID(str(result['sensor_uuid'])))
+            credential = result['credential']
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
+            raise SensorClientError('INVALID_REGISTRATION_RESPONSE', status=status) from None
+        if (returned_uuid != sensor_uuid or not isinstance(credential, str)
+                or not 40 <= len(credential) <= 128):
+            raise SensorClientError('INVALID_REGISTRATION_RESPONSE', status=status)
+        return result

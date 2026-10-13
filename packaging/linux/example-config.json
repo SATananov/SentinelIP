@@ -1,0 +1,10 @@
+{
+  "core_url": "https://sentinelip.example.internal",
+  "sensor_uuid": "00000000-0000-4000-8000-000000000000",
+  "grant_file": "/etc/sentinelip-sensor/grants.json",
+  "poll_interval": 10,
+  "heartbeat_interval": 45,
+  "request_timeout": 15,
+  "platform": "linux",
+  "capabilities": ["HOST_DISCOVERY", "SERVICE_DISCOVERY"]
+}

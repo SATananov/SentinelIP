@@ -12,11 +12,9 @@ arbitrary scanner flags, file upload, or script.
    management API. Register the sensor using the 10B enrollment flow and save
    the returned machine credential in protected sensor-local storage.
 2. Assign the sensor an authorized, confirmed, enabled private network scope.
-   Provision a local grants file from the Core's current assignment records. It
-   must contain the sensor UUID and exact assignment scope ID, `PRIVATE_NETWORK`
-   type, canonical CIDR, and allowed capabilities. Keep it synchronized with
-   administrator assignment changes; stale or missing grants cause tasks to be
-   rejected. The runtime cannot add or edit grants.
+   The Linux provisioning flow in 10F fetches the sensor's current protected
+   grant from Core; the runtime cannot add or edit grants. See
+   [Remote Sensor 10F](remote-sensor-10f.md).
 3. Create a protected JSON config file, for example `/etc/sentinelip/sensor.json`:
 
    ```json
@@ -55,7 +53,8 @@ arbitrary scanner flags, file upload, or script.
    ```
 
    A service manager may run this command under a dedicated unprivileged user.
-   Service-unit packaging and OS-specific installers are not included.
+   See [Remote Sensor 10F](remote-sensor-10f.md) for the Linux service packaging
+   and first-run enrollment flow.
 
 ## Runtime behavior
 
