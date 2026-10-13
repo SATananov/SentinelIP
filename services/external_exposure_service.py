@@ -83,5 +83,8 @@ class ExternalExposureService:
                 extra_info=service.extra_info if service else None,
                 service_confidence=service.confidence if service else None,
             )
-            records.append(exposure_db.record_observation(observation, self.db_path)["exposure"])
+            exposure = exposure_db.record_observation(observation, self.db_path)["exposure"]
+            from services.external_exposure_assessment import assess_exposure
+            assess_exposure(exposure, self.db_path)
+            records.append(exposure)
         return records

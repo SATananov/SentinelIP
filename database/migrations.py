@@ -1425,6 +1425,43 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        38,
+        (
+            """CREATE TABLE external_exposure_policies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id INTEGER NOT NULL UNIQUE REFERENCES authorized_scopes(id) ON DELETE CASCADE,
+                policy_mode TEXT NOT NULL CHECK (policy_mode = 'ALLOWLIST'),
+                expected_tcp_ports_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE external_exposure_assessments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exposure_id INTEGER NOT NULL UNIQUE REFERENCES external_exposures(id) ON DELETE CASCADE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                policy_id INTEGER REFERENCES external_exposure_policies(id) ON DELETE SET NULL,
+                classification TEXT NOT NULL CHECK (classification IN ('EXPECTED','UNEXPECTED','REVIEW')),
+                reason TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                assessed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """INSERT INTO external_exposure_assessments (
+                exposure_id, scope_id, policy_id, classification, reason, rule_id, rule_version,
+                assessed_at, created_at, updated_at
+            )
+            SELECT id, scope_id, NULL, 'REVIEW',
+                   'No explicit expected-port policy exists for this authorized public scope.',
+                   'NO_EXPLICIT_EXPOSURE_POLICY', '12B-1', updated_at, updated_at, updated_at
+            FROM external_exposures""",
+            "CREATE INDEX idx_external_exposure_assessments_scope_class ON external_exposure_assessments(scope_id,classification,assessed_at)",
+            "CREATE INDEX idx_external_exposure_assessments_policy ON external_exposure_assessments(policy_id)",
+        ),
+    ),
+
 )
 
 

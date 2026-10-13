@@ -129,7 +129,7 @@ def test_migration_37_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:36])
     initialize_database(path)
     scope, device = _scope_and_device(path)
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:37])
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:

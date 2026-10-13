@@ -4,6 +4,7 @@ from api.remote_sensors import register_remote_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
 from api.remote_tasks import register_remote_task_routes
 from api.perimeter_ingestion import register_perimeter_ingestion_routes
+from api.external_exposure_assessment import register_external_exposure_assessment_routes
 from database.remote_sensors import RemoteSensorStore
 import io
 import sqlite3
@@ -1388,4 +1389,5 @@ register_remote_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_machine_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_remote_task_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_perimeter_ingestion_routes(app, lambda: RemoteSensorStore(DB_PATH), lambda: DB_PATH)
+register_external_exposure_assessment_routes(app, lambda: DB_PATH)
 app.add_middleware(SensorBodyLimitMiddleware)
