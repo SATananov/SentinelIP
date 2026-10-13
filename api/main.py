@@ -7,6 +7,7 @@ from api.perimeter_ingestion import register_perimeter_ingestion_routes
 from api.external_exposure_assessment import register_external_exposure_assessment_routes
 from api.external_exposure_classification import register_external_exposure_classification_routes
 from api.external_exposure_changes import register_external_exposure_change_routes
+from api.external_exposure_dashboard import register_external_exposure_dashboard_routes
 from database.remote_sensors import RemoteSensorStore
 import io
 import sqlite3
@@ -1394,4 +1395,5 @@ register_perimeter_ingestion_routes(app, lambda: RemoteSensorStore(DB_PATH), lam
 register_external_exposure_assessment_routes(app, lambda: DB_PATH)
 register_external_exposure_classification_routes(app, lambda: DB_PATH)
 register_external_exposure_change_routes(app, lambda: DB_PATH)
+register_external_exposure_dashboard_routes(app, lambda: DB_PATH)
 app.add_middleware(SensorBodyLimitMiddleware)
