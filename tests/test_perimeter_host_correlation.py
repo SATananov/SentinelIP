@@ -142,7 +142,7 @@ def test_migration_36_preserves_11d_data_and_is_fk_clean(tmp_path, monkeypatch):
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 38
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 39
         assert connection.execute("SELECT name FROM sites WHERE id=?", (site["id"],)).fetchone()[0] == "Existing"
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='perimeter_host_correlations'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

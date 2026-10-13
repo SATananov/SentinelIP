@@ -1462,6 +1462,53 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        39,
+        (
+            """CREATE TABLE external_exposure_classifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exposure_id INTEGER NOT NULL UNIQUE REFERENCES external_exposures(id) ON DELETE CASCADE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                service_role TEXT NOT NULL CHECK (service_role IN ('REMOTE_ADMIN','WEB','FILE_SHARING','DATABASE','MAIL','DNS','VPN','OTHER','UNKNOWN')),
+                exposure_profile TEXT NOT NULL CHECK (exposure_profile IN ('COMMON_PUBLIC_SERVICE','SENSITIVE_ADMIN_SERVICE','INTERNAL_STYLE_SERVICE','UNKNOWN_SERVICE')),
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                classified_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """INSERT INTO external_exposure_classifications (
+                exposure_id, scope_id, service_role, exposure_profile, rule_id, rule_version, reason,
+                classified_at, created_at, updated_at
+            )
+            SELECT id, scope_id,
+                CASE
+                    WHEN port_number IN (22,23,3389,5900,5985,5986) THEN 'REMOTE_ADMIN'
+                    WHEN port_number IN (80,443,8080,8443) THEN 'WEB'
+                    WHEN port_number IN (20,21,139,445,2049) THEN 'FILE_SHARING'
+                    WHEN port_number IN (1433,1521,3306,5432,6379,27017) THEN 'DATABASE'
+                    WHEN port_number IN (25,110,143,465,587,993,995) THEN 'MAIL'
+                    WHEN port_number = 53 THEN 'DNS'
+                    WHEN port_number IN (500,1194,1701,1723,4500,51820) THEN 'VPN'
+                    WHEN service_name IS NOT NULL THEN 'OTHER'
+                    ELSE 'UNKNOWN'
+                END,
+                CASE
+                    WHEN port_number IN (22,23,3389,5900,5985,5986) THEN 'SENSITIVE_ADMIN_SERVICE'
+                    WHEN port_number IN (20,21,139,445,2049,1433,1521,3306,5432,6379,27017) THEN 'INTERNAL_STYLE_SERVICE'
+                    WHEN port_number IN (25,53,80,110,143,443,465,500,587,993,995,1194,1701,1723,4500,8080,8443,51820) THEN 'COMMON_PUBLIC_SERVICE'
+                    ELSE 'UNKNOWN_SERVICE'
+                END,
+                'MIGRATION_PORT_ROLE_MAP', '12C-1',
+                'Existing authorized public TCP exposure classified deterministically from persisted port/service identity; this is not a vulnerability finding.',
+                updated_at, updated_at, updated_at
+            FROM external_exposures""",
+            "CREATE INDEX idx_external_exposure_classifications_scope_role ON external_exposure_classifications(scope_id,service_role,classified_at)",
+            "CREATE INDEX idx_external_exposure_classifications_profile ON external_exposure_classifications(exposure_profile,classified_at)",
+        ),
+    ),
+
 )
 
 

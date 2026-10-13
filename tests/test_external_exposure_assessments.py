@@ -175,7 +175,7 @@ def test_migration_38_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
         )
         assert connection.execute("SELECT COUNT(*) FROM external_exposures").fetchone()[0] == 1
 
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:38])
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:

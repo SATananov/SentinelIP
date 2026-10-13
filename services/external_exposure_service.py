@@ -85,6 +85,8 @@ class ExternalExposureService:
             )
             exposure = exposure_db.record_observation(observation, self.db_path)["exposure"]
             from services.external_exposure_assessment import assess_exposure
+            from services.external_exposure_classification import classify_exposure
             assess_exposure(exposure, self.db_path)
+            classify_exposure(exposure, self.db_path)
             records.append(exposure)
         return records
