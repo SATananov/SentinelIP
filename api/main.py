@@ -51,6 +51,7 @@ from database.threats import get_threat, query_threats
 from database.correlations import get_correlation, query_correlations
 from database.incidents import get_incident, query_incidents
 from database.perimeter import get_perimeter_event, query_perimeter_events
+from database.perimeter_detections import get_perimeter_detection, query_perimeter_detections
 from database.networks import (
     create_network,
     delete_network,
@@ -876,6 +877,43 @@ def perimeter_event_detail(event_id: int):
     item = get_perimeter_event(event_id, db_path=DB_PATH)
     if item is None:
         raise HTTPException(status_code=404, detail="Perimeter event not found.")
+    return item
+
+
+@app.get("/perimeter-detections")
+def perimeter_detections(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    site_id: int | None = Query(default=None, ge=1),
+    detection_type: Literal["INBOUND_ATTEMPT", "REPEATED_INBOUND_ATTEMPTS"] | None = None,
+    action: Literal["ALLOW", "BLOCK", "REJECT", "UNKNOWN"] | None = None,
+    protocol: Literal["TCP", "UDP", "ICMP", "OTHER"] | None = None,
+    source_ip: str | None = None,
+    destination_ip: str | None = None,
+    destination_port: int | None = Query(default=None, ge=1, le=65535),
+):
+    result = query_perimeter_detections(
+        limit=limit, offset=offset, site_id=site_id, detection_type=detection_type,
+        action=action, protocol=protocol, source_ip=source_ip, destination_ip=destination_ip,
+        destination_port=destination_port, db_path=DB_PATH,
+    )
+    return {
+        "total": result["total"], "count": len(result["items"]), "limit": limit, "offset": offset,
+        "filters": {
+            "site_id": site_id, "detection_type": detection_type, "action": action, "protocol": protocol,
+            "source_ip": source_ip, "destination_ip": destination_ip, "destination_port": destination_port,
+        },
+        "detections": result["items"],
+    }
+
+
+@app.get("/perimeter-detections/{detection_id}")
+def perimeter_detection_detail(detection_id: int):
+    if detection_id <= 0:
+        raise HTTPException(status_code=422, detail="Perimeter detection ID must be positive.")
+    item = get_perimeter_detection(detection_id, db_path=DB_PATH)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Perimeter detection not found.")
     return item
 
 

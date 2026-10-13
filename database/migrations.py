@@ -1261,6 +1261,43 @@ MIGRATIONS = (
             "CREATE INDEX idx_perimeter_action_direction ON perimeter_events(action, direction, observed_at)",
         ),
     ),
+    (
+        34,
+        (
+            """CREATE TABLE perimeter_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT NOT NULL UNIQUE,
+                detection_type TEXT NOT NULL CHECK (detection_type IN ('INBOUND_ATTEMPT','REPEATED_INBOUND_ATTEMPTS')),
+                state TEXT NOT NULL CHECK (state = 'REVIEW'),
+                confidence TEXT NOT NULL CHECK (confidence = 'HIGH'),
+                site_id INTEGER NOT NULL REFERENCES sites(id),
+                sensor_id INTEGER,
+                primary_event_id INTEGER NOT NULL REFERENCES perimeter_events(id),
+                event_ids_json TEXT NOT NULL,
+                source_ip TEXT NOT NULL,
+                destination_ip TEXT NOT NULL,
+                source_port INTEGER CHECK (source_port IS NULL OR source_port BETWEEN 1 AND 65535),
+                destination_port INTEGER CHECK (destination_port IS NULL OR destination_port BETWEEN 1 AND 65535),
+                protocol TEXT NOT NULL CHECK (protocol IN ('TCP','UDP','ICMP','OTHER')),
+                action TEXT NOT NULL CHECK (action IN ('ALLOW','BLOCK','REJECT','UNKNOWN')),
+                event_count INTEGER NOT NULL CHECK (event_count >= 1),
+                unique_source_count INTEGER NOT NULL CHECK (unique_source_count >= 1),
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (sensor_id, site_id) REFERENCES remote_sensors(id, site_id),
+                CHECK (protocol NOT IN ('TCP','UDP') OR destination_port IS NOT NULL)
+            )""",
+            "CREATE INDEX idx_perimeter_detections_site_seen ON perimeter_detections(site_id,last_seen)",
+            "CREATE INDEX idx_perimeter_detections_source_seen ON perimeter_detections(source_ip,last_seen)",
+            "CREATE INDEX idx_perimeter_detections_destination ON perimeter_detections(destination_ip,destination_port,last_seen)",
+            "CREATE INDEX idx_perimeter_detections_type_action ON perimeter_detections(detection_type,action,last_seen)",
+        ),
+    ),
+
 )
 
 

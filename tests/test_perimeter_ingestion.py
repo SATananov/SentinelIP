@@ -80,6 +80,7 @@ def test_machine_ingestion_derives_site_and_sensor_and_is_idempotent(ingestion):
     assert response.status_code == 202
     assert response.json()['inserted'] == 1
     assert response.json()['idempotent'] == 0
+    assert len(response.json()['detection_ids']) == 1
 
     replay_headers = authenticated_sensor_headers(
         issued.record['sensor_uuid'], issued.secret, now=NOW, nonce='B' * 43)
