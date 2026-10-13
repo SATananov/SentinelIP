@@ -49,6 +49,7 @@ from database.db import DB_PATH
 from database.threats import get_threat, query_threats
 from database.correlations import get_correlation, query_correlations
 from database.incidents import get_incident, query_incidents
+from database.perimeter import get_perimeter_event, query_perimeter_events
 from database.networks import (
     create_network,
     delete_network,
@@ -827,6 +828,55 @@ def export_security_report(
             )
         },
     )
+
+# ---------------------------------------------------------------------------
+# Perimeter evidence read API
+# ---------------------------------------------------------------------------
+
+@app.get("/perimeter-events")
+def perimeter_events(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    site_id: int | None = Query(default=None, ge=1),
+    sensor_id: int | None = Query(default=None, ge=1),
+    source_type: Literal["FIREWALL", "ROUTER", "GATEWAY", "SENSOR", "OTHER"] | None = None,
+    direction: Literal["INBOUND", "OUTBOUND", "LATERAL", "UNKNOWN"] | None = None,
+    action: Literal["ALLOW", "BLOCK", "REJECT", "UNKNOWN"] | None = None,
+    protocol: Literal["TCP", "UDP", "ICMP", "OTHER"] | None = None,
+    source_ip: str | None = None,
+    destination_ip: str | None = None,
+    destination_port: int | None = Query(default=None, ge=1, le=65535),
+):
+    result = query_perimeter_events(
+        limit=limit, offset=offset, site_id=site_id, sensor_id=sensor_id,
+        source_type=source_type, direction=direction, action=action, protocol=protocol,
+        source_ip=source_ip, destination_ip=destination_ip, destination_port=destination_port,
+        db_path=DB_PATH,
+    )
+    return {
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "site_id": site_id, "sensor_id": sensor_id, "source_type": source_type,
+            "direction": direction, "action": action, "protocol": protocol,
+            "source_ip": source_ip, "destination_ip": destination_ip,
+            "destination_port": destination_port,
+        },
+        "events": result["items"],
+    }
+
+
+@app.get("/perimeter-events/{event_id}")
+def perimeter_event_detail(event_id: int):
+    if event_id <= 0:
+        raise HTTPException(status_code=422, detail="Perimeter event ID must be positive.")
+    item = get_perimeter_event(event_id, db_path=DB_PATH)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Perimeter event not found.")
+    return item
+
 
 # ---------------------------------------------------------------------------
 # Deterministic security read API

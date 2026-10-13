@@ -43,7 +43,7 @@ def test_migration_upgrade_idempotent_and_preserves_old_rows(tmp_path):
     initialize_database(path)
     with get_connection(path) as connection:
         assert connection.execute("SELECT browser_session_id, tab_id FROM web_observations").fetchone() == (None, None)
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 32
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 33
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='idx_web_detections_sensor_time'").fetchone()
 
 

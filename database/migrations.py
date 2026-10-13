@@ -1225,6 +1225,42 @@ MIGRATIONS = (
             "CREATE INDEX remote_sensor_tasks_claim ON remote_sensor_tasks(sensor_id, status, expires_at, created_at)",
         ),
     ),
+    (
+        33,
+        (
+            """CREATE TABLE perimeter_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                external_event_id TEXT NOT NULL,
+                site_id INTEGER NOT NULL,
+                sensor_id INTEGER,
+                source_type TEXT NOT NULL CHECK (source_type IN ('FIREWALL','ROUTER','GATEWAY','SENSOR','OTHER')),
+                source_key TEXT NOT NULL,
+                event_type TEXT NOT NULL CHECK (event_type IN ('CONNECTION_ATTEMPT','FLOW','POLICY_DECISION','OTHER')),
+                direction TEXT NOT NULL CHECK (direction IN ('INBOUND','OUTBOUND','LATERAL','UNKNOWN')),
+                action TEXT NOT NULL CHECK (action IN ('ALLOW','BLOCK','REJECT','UNKNOWN')),
+                protocol TEXT NOT NULL CHECK (protocol IN ('TCP','UDP','ICMP','OTHER')),
+                source_ip TEXT NOT NULL,
+                destination_ip TEXT NOT NULL,
+                source_port INTEGER CHECK (source_port IS NULL OR source_port BETWEEN 1 AND 65535),
+                destination_port INTEGER CHECK (destination_port IS NULL OR destination_port BETWEEN 1 AND 65535),
+                interface TEXT,
+                source_reference TEXT,
+                raw_event_hash TEXT,
+                metadata_json TEXT,
+                observed_at TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                UNIQUE (site_id, source_key, external_event_id),
+                FOREIGN KEY (site_id) REFERENCES sites(id),
+                FOREIGN KEY (sensor_id, site_id) REFERENCES remote_sensors(id, site_id),
+                CHECK (protocol NOT IN ('TCP','UDP') OR destination_port IS NOT NULL),
+                CHECK (protocol != 'ICMP' OR (source_port IS NULL AND destination_port IS NULL))
+            )""",
+            "CREATE INDEX idx_perimeter_site_observed ON perimeter_events(site_id, observed_at)",
+            "CREATE INDEX idx_perimeter_source_observed ON perimeter_events(source_ip, observed_at)",
+            "CREATE INDEX idx_perimeter_destination_observed ON perimeter_events(destination_ip, destination_port, observed_at)",
+            "CREATE INDEX idx_perimeter_action_direction ON perimeter_events(action, direction, observed_at)",
+        ),
+    ),
 )
 
 
