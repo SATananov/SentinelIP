@@ -107,7 +107,7 @@ def test_migration_39_backfills_existing_exposure_and_is_idempotent(tmp_path, mo
             ),
         )
     # 12C table does not exist yet; factual 12A + 12B evidence does.
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:39])
     initialize_database(path); initialize_database(path)
     with get_connection(path) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 39

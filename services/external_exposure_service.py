@@ -83,10 +83,22 @@ class ExternalExposureService:
                 extra_info=service.extra_info if service else None,
                 service_confidence=service.confidence if service else None,
             )
-            exposure = exposure_db.record_observation(observation, self.db_path)["exposure"]
+            observation_record = exposure_db.record_observation(observation, self.db_path)
+            exposure = observation_record["exposure"]
             from services.external_exposure_assessment import assess_exposure
             from services.external_exposure_classification import classify_exposure
+            from services.external_exposure_change_detection import process_observation_change
             assess_exposure(exposure, self.db_path)
             classify_exposure(exposure, self.db_path)
+            process_observation_change(observation_record, self.db_path)
             records.append(exposure)
+
+        from services.external_exposure_change_detection import reconcile_completed_scan
+        observed_ids = {record["id"] for record in records}
+        source = result.ports[0].source if result.ports else "authorized-service-scan"
+        reconcile_completed_scan(
+            scope_id=scope_id, device_id=device["id"], observed_exposure_ids=observed_ids,
+            completed_at=result.completed_at.isoformat(timespec="seconds"),
+            source=source, scanner=result.scanner, db_path=self.db_path,
+        )
         return records

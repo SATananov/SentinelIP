@@ -30,7 +30,7 @@ def test_upgrade_from_23_is_additive_and_idempotent(tmp_path, monkeypatch):
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 39
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 40
         assert connection.execute("SELECT COUNT(*) FROM threat_detections").fetchone()[0] == 2
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='idx_correlations_source'").fetchone()

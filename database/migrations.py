@@ -1509,6 +1509,48 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        40,
+        (
+            """CREATE TABLE external_exposure_presence (
+                exposure_id INTEGER PRIMARY KEY REFERENCES external_exposures(id) ON DELETE CASCADE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                presence_state TEXT NOT NULL CHECK (presence_state IN ('PRESENT','ABSENT')),
+                last_present_at TEXT,
+                last_absent_at TEXT,
+                changed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+            """INSERT INTO external_exposure_presence (
+                exposure_id, scope_id, presence_state, last_present_at, last_absent_at,
+                changed_at, created_at, updated_at
+            )
+            SELECT id, scope_id, 'PRESENT', last_seen, NULL, updated_at, updated_at, updated_at
+            FROM external_exposures""",
+            """CREATE TABLE external_exposure_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_key TEXT NOT NULL UNIQUE,
+                exposure_id INTEGER NOT NULL REFERENCES external_exposures(id) ON DELETE CASCADE,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                change_type TEXT NOT NULL CHECK (change_type IN (
+                    'NEW_EXPOSURE','SERVICE_CHANGED','FINGERPRINT_CHANGED',
+                    'EXPOSURE_DISAPPEARED','EXPOSURE_REAPPEARED'
+                )),
+                previous_value TEXT,
+                current_value TEXT,
+                reason TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                scanner TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_external_exposure_presence_scope_state ON external_exposure_presence(scope_id,presence_state,changed_at)",
+            "CREATE INDEX idx_external_exposure_changes_scope_type_seen ON external_exposure_changes(scope_id,change_type,observed_at)",
+            "CREATE INDEX idx_external_exposure_changes_exposure_seen ON external_exposure_changes(exposure_id,observed_at)",
+        ),
+    ),
+
 )
 
 

@@ -34,6 +34,9 @@ def record_observation(observation: ExternalExposureObservation, db_path=DB_PATH
     observation_key = _observation_key(observation)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
+        previous_exposure = connection.execute(
+            "SELECT * FROM external_exposures WHERE stable_key = ?", (observation.stable_key,)
+        ).fetchone()
         connection.execute(
             """
             INSERT INTO external_exposures (
@@ -75,7 +78,7 @@ def record_observation(observation: ExternalExposureObservation, db_path=DB_PATH
         exposure = connection.execute(
             "SELECT * FROM external_exposures WHERE stable_key = ?", (observation.stable_key,)
         ).fetchone()
-        connection.execute(
+        cursor = connection.execute(
             """
             INSERT OR IGNORE INTO external_exposure_observations (
                 observation_key, exposure_id, scope_id, device_id, target_ip,
@@ -95,7 +98,13 @@ def record_observation(observation: ExternalExposureObservation, db_path=DB_PATH
             "SELECT * FROM external_exposure_observations WHERE observation_key = ?",
             (observation_key,),
         ).fetchone()
-    return {"exposure": _row(exposure), "observation": _row(observation_row)}
+    return {
+        "exposure": _row(exposure),
+        "observation": _row(observation_row),
+        "previous_exposure": _row(previous_exposure),
+        "created": previous_exposure is None,
+        "observation_inserted": cursor.rowcount == 1,
+    }
 
 
 def get_external_exposure(exposure_id: int, db_path=DB_PATH):

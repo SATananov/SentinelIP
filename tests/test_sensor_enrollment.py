@@ -287,7 +287,7 @@ def test_initialization_preserves_10a_rows_and_credential(context):
     with get_connection(store.db_path) as c:
         assert {t: c.execute(f'SELECT * FROM "{t}"').fetchall() for t in tables} == before
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
-        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 39
+        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 40
     assert remote.get('/sensor/self', headers=auth({**old_sensor.record, 'credential': old_sensor.secret})).status_code == 200
 
 
@@ -498,7 +498,7 @@ def test_migration_31_preserves_existing_10b_and_09d_data(monkeypatch, tmp_path)
     initialize_database(path)
     with get_connection(path) as c:
         assert {table: c.execute(f'SELECT * FROM "{table}"').fetchall() for table in before} == before
-        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 39
+        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 40
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
         assert c.execute('SELECT COUNT(*) FROM sensor_transport_nonces').fetchone()[0] == 0
     assert store.get_sensor(sensor.record['id'])['sensor_uuid'] == sensor.record['sensor_uuid']
