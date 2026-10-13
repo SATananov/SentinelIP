@@ -50,7 +50,8 @@ for module in __init__ __main__ client config runtime state version platforms; d
 done
 mkdir -p -- "$ROOT/opt/sentinelip-sensor/services/scanner_adapters"
 for module in remote_sensor_executor remote_sensor_models scan_models scanner \
-  host_discovery service_discovery service_models target_policy public_target_policy sensor_transport; do
+  host_discovery service_discovery service_models target_policy public_target_policy sensor_transport \
+  perimeter_ingestion perimeter_models; do
   install -m 0644 "$SOURCE_DIR/services/$module.py" "$ROOT/opt/sentinelip-sensor/services/$module.py"
 done
 install -m 0644 "$SOURCE_DIR/services/__init__.py" "$ROOT/opt/sentinelip-sensor/services/__init__.py"

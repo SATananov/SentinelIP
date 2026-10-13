@@ -148,6 +148,18 @@ class CoreClient:
             raise ValueError('Unsupported result type.')
         return self._call('POST', self._task_path(task_id, 'result'), payload)
 
+    def submit_perimeter_events(self, events: list[Mapping]) -> dict:
+        if not isinstance(events, list) or not 1 <= len(events) <= 32:
+            raise ValueError('Perimeter ingestion requires 1–32 structured events.')
+        required = {
+            'external_event_id', 'source_type', 'source_key', 'observed_at', 'event_type',
+            'direction', 'action', 'protocol', 'source_ip', 'destination_ip', 'source_port',
+            'destination_port', 'interface', 'source_reference', 'raw_event_hash', 'metadata',
+        }
+        if any(not isinstance(item, Mapping) or set(item) != required for item in events):
+            raise ValueError('Perimeter events must use the fixed normalized schema.')
+        return self._call('POST', '/sensor/perimeter-events', {'events': events})
+
     def fail(self, task_id: str, error_code: str) -> dict:
         if error_code not in {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT'}:
             raise ValueError('Unsupported task failure code.')

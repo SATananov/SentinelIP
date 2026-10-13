@@ -12,7 +12,7 @@ from uuid import UUID
 from services.remote_sensor_models import RemoteSensorError
 from .version import RUNTIME_VERSION
 
-_ALLOWED_CAPABILITIES = frozenset({'HOST_DISCOVERY', 'SERVICE_DISCOVERY'})
+_ALLOWED_CAPABILITIES = frozenset({'HOST_DISCOVERY', 'SERVICE_DISCOVERY', 'LOG_COLLECTION'})
 _VERSION = re.compile(r'^[A-Za-z0-9._+-]{1,64}$')
 
 
@@ -121,10 +121,10 @@ def load_config(path: str | Path | None = None, *, environ=None) -> SensorConfig
         raise RemoteSensorError('platform must be 1–64 characters.')
     if not isinstance(version, str) or not _VERSION.fullmatch(version):
         raise RemoteSensorError('version contains unsupported characters.')
-    capabilities = raw.get('capabilities', sorted(_ALLOWED_CAPABILITIES))
+    capabilities = raw.get('capabilities', ['HOST_DISCOVERY', 'SERVICE_DISCOVERY'])
     if (not isinstance(capabilities, list) or not capabilities
             or any(not isinstance(item, str) or item not in _ALLOWED_CAPABILITIES for item in capabilities)
             or len(capabilities) != len(set(capabilities))):
-        raise RemoteSensorError('Only unique HOST_DISCOVERY and SERVICE_DISCOVERY capabilities are supported.')
+        raise RemoteSensorError('Only unique HOST_DISCOVERY, SERVICE_DISCOVERY, and LOG_COLLECTION capabilities are supported.')
     return SensorConfig(core_url, sensor_uuid, credential, grant_file, poll, heartbeat, timeout,
                         development, platform_name, version, tuple(sorted(capabilities)))

@@ -55,3 +55,7 @@ A perimeter event must belong to a persisted Site. If it is attributed to a remo
 - no public-target scanning.
 
 The next phase, 11B, can map authorized router/firewall logs into this model without changing the core evidence semantics.
+
+## Follow-up
+
+11B now provides the authenticated Remote Sensor ingestion boundary and the first bounded adapter contract described above; see `docs/perimeter-monitoring-11b.md`.

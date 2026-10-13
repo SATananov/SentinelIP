@@ -38,7 +38,7 @@ foreach ($directory in @('sensor', 'services', 'services\scanner_adapters')) {
     Set-SensorDirectoryAcl (Join-Path $paths.App $directory) $false
 }
 $sensorModules = @('__init__', '__main__', 'client', 'config', 'runtime', 'state', 'version', 'platforms', 'windows_security', 'windows_service')
-$serviceModules = @('__init__', 'remote_sensor_executor', 'windows_sensor_executor', 'remote_sensor_models', 'scan_models', 'scanner', 'host_discovery', 'service_discovery', 'service_models', 'service_fingerprint', 'target_policy', 'public_target_policy', 'sensor_transport')
+$serviceModules = @('__init__', 'remote_sensor_executor', 'windows_sensor_executor', 'remote_sensor_models', 'scan_models', 'scanner', 'host_discovery', 'service_discovery', 'service_models', 'service_fingerprint', 'target_policy', 'public_target_policy', 'sensor_transport', 'perimeter_ingestion', 'perimeter_models')
 foreach ($name in $sensorModules) {
     Copy-Item -LiteralPath (Join-Path $source "sensor\$name.py") -Destination (Join-Path $paths.App "sensor\$name.py") -Force
 }

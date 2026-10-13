@@ -15,57 +15,84 @@ def _row(row):
     return result
 
 
-def persist_perimeter_event(event: PerimeterEvent, db_path=DB_PATH):
-    if not isinstance(event, PerimeterEvent):
-        raise TypeError("PerimeterEvent is required.")
-    initialize_database(db_path)
+def _event_values(event: PerimeterEvent, received_at: str):
     metadata_json = (
         json.dumps(event.metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         if event.metadata is not None else None
     )
-    received_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    values = (
+    return (
         event.external_event_id, event.site_id, event.sensor_id, event.source_type.value,
         event.source_key, event.event_type.value, event.direction.value, event.action.value,
         event.protocol.value, event.source_ip, event.destination_ip, event.source_port,
         event.destination_port, event.interface, event.source_reference, event.raw_event_hash,
         metadata_json, event.observed_at.isoformat(), received_at,
     )
+
+
+def _persist_with_connection(connection, event: PerimeterEvent, received_at: str):
+    values = _event_values(event, received_at)
+    existing = connection.execute(
+        """SELECT * FROM perimeter_events
+           WHERE site_id=? AND source_key=? AND external_event_id=?""",
+        (event.site_id, event.source_key, event.external_event_id),
+    ).fetchone()
+    if existing is not None:
+        comparable = dict(existing)
+        candidate_columns = (
+            "external_event_id", "site_id", "sensor_id", "source_type", "source_key", "event_type",
+            "direction", "action", "protocol", "source_ip", "destination_ip", "source_port",
+            "destination_port", "interface", "source_reference", "raw_event_hash", "metadata_json", "observed_at",
+        )
+        candidate = dict(zip(candidate_columns, values[:-1]))
+        if any(comparable[column] != candidate[column] for column in candidate_columns):
+            raise sqlite3.IntegrityError("Perimeter event identity conflicts with existing evidence.")
+        result = _row(existing)
+        result["idempotent"] = True
+        return result
+
+    cursor = connection.execute(
+        """INSERT INTO perimeter_events(
+            external_event_id, site_id, sensor_id, source_type, source_key, event_type,
+            direction, action, protocol, source_ip, destination_ip, source_port,
+            destination_port, interface, source_reference, raw_event_hash, metadata_json,
+            observed_at, received_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        values,
+    )
+    row = connection.execute("SELECT * FROM perimeter_events WHERE id=?", (cursor.lastrowid,)).fetchone()
+    result = _row(row)
+    result["idempotent"] = False
+    return result
+
+
+def persist_perimeter_event(event: PerimeterEvent, db_path=DB_PATH):
+    if not isinstance(event, PerimeterEvent):
+        raise TypeError("PerimeterEvent is required.")
+    initialize_database(db_path)
+    received_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN IMMEDIATE")
-        existing = connection.execute(
-            """SELECT * FROM perimeter_events
-               WHERE site_id=? AND source_key=? AND external_event_id=?""",
-            (event.site_id, event.source_key, event.external_event_id),
-        ).fetchone()
-        if existing is not None:
-            comparable = dict(existing)
-            candidate_columns = (
-                "external_event_id", "site_id", "sensor_id", "source_type", "source_key", "event_type",
-                "direction", "action", "protocol", "source_ip", "destination_ip", "source_port",
-                "destination_port", "interface", "source_reference", "raw_event_hash", "metadata_json", "observed_at",
-            )
-            candidate = dict(zip(candidate_columns, values[:-1]))
-            if any(comparable[column] != candidate[column] for column in candidate_columns):
-                raise sqlite3.IntegrityError("Perimeter event identity conflicts with existing evidence.")
-            result = _row(existing)
-            result["idempotent"] = True
-            return result
+        return _persist_with_connection(connection, event, received_at)
 
-        cursor = connection.execute(
-            """INSERT INTO perimeter_events(
-                external_event_id, site_id, sensor_id, source_type, source_key, event_type,
-                direction, action, protocol, source_ip, destination_ip, source_port,
-                destination_port, interface, source_reference, raw_event_hash, metadata_json,
-                observed_at, received_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            values,
-        )
-        row = connection.execute("SELECT * FROM perimeter_events WHERE id=?", (cursor.lastrowid,)).fetchone()
-        result = _row(row)
-        result["idempotent"] = False
-        return result
+
+def persist_perimeter_events(events, db_path=DB_PATH):
+    """Persist one authenticated ingestion batch atomically.
+
+    Exact replays remain idempotent. Any conflicting identity or FK failure rolls the
+    complete batch back so a sensor retry cannot leave a partially accepted batch.
+    """
+    if not isinstance(events, (list, tuple)) or not events:
+        raise TypeError("A non-empty perimeter event batch is required.")
+    if any(not isinstance(event, PerimeterEvent) for event in events):
+        raise TypeError("PerimeterEvent is required for every batch item.")
+    initialize_database(db_path)
+    received_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        results = [_persist_with_connection(connection, event, received_at) for event in events]
+        return results
 
 
 def get_perimeter_event(event_id: int, db_path=DB_PATH):

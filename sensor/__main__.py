@@ -21,7 +21,8 @@ from .platforms import default_paths, select_executor
 
 DEFAULT_CONFIG = Path('/etc/sentinelip-sensor/config.json')
 DEFAULT_GRANTS = Path('/etc/sentinelip-sensor/grants.json')
-_CAPABILITIES = ('HOST_DISCOVERY', 'SERVICE_DISCOVERY')
+_CAPABILITIES = ('HOST_DISCOVERY', 'SERVICE_DISCOVERY', 'LOG_COLLECTION')
+_DEFAULT_CAPABILITIES = ('HOST_DISCOVERY', 'SERVICE_DISCOVERY')
 
 
 def _parser():
@@ -42,7 +43,7 @@ def _parser():
     enroll.add_argument('--name', required=True)
     enroll.add_argument('--platform', default=platform.system().lower())
     enroll.add_argument('--capability', action='append', choices=_CAPABILITIES,
-                        help='repeat to select supported capabilities (defaults to both)')
+                        help='repeat to select supported capabilities (defaults to host and service discovery)')
     enroll.add_argument('--request-timeout', type=int, default=15)
     return parser
 
@@ -66,7 +67,8 @@ def _sync_grants(config, client, *, replace=True):
 def _check_dependencies(config):
     if sys.version_info < (3, 10):
         raise RemoteSensorError('Python 3.10 or newer is required.')
-    _check_nmap()
+    if {'HOST_DISCOVERY', 'SERVICE_DISCOVERY'} & set(config.capabilities):
+        _check_nmap()
     if not config.sensor_credential:
         raise RemoteSensorError('Sensor credential is missing.')
     return True
@@ -107,9 +109,10 @@ def _enroll(args, logger):
         raise RemoteSensorError('Refusing enrollment because a config or grant file already exists.')
     if type(args.request_timeout) is not int or not 1 <= args.request_timeout <= 60:
         raise RemoteSensorError('request-timeout must be between 1 and 60 seconds.')
-    _check_nmap()
+    caps = sorted(set(args.capability or _DEFAULT_CAPABILITIES))
+    if {'HOST_DISCOVERY', 'SERVICE_DISCOVERY'} & set(caps):
+        _check_nmap()
     sensor_uuid = str(UUID(args.sensor_uuid)) if args.sensor_uuid else str(uuid4())
-    caps = sorted(set(args.capability or _CAPABILITIES))
     token = getpass.getpass('One-time enrollment token: ')
     if not 40 <= len(token) <= 128:
         raise RemoteSensorError('Enrollment token is missing or invalid.')
