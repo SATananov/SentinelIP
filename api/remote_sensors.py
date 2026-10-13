@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from database.remote_sensors import RemoteSensorStore
+from database.remote_tasks import RemoteTaskError, RemoteTaskStore
 from services.remote_sensor_models import RemoteSensorError
 
 
@@ -59,6 +60,14 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
             return getattr(store_provider(), method)(*args, **kwargs)
         except RemoteSensorError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    def create_task(sensor_id, scope_id, task_type, device_id=None):
+        try:
+            return RemoteTaskStore(store_provider()).create_task(
+                sensor_id, scope_id, task_type, device_id=device_id
+            )
+        except RemoteTaskError as exc:
+            raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
 
     @route('/sites', method='POST', status_code=201)
     def create_site(body: SiteCreate):
@@ -117,4 +126,21 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
     def unassign(sensor_id: int, scope_id: int):
         call('remove_assignment', sensor_id, scope_id)
         return Response(status_code=204, headers={'Cache-Control': 'no-store'})
+
+    class NetworkTaskCreate(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        scope_id: int = Field(gt=0, strict=True)
+
+    class ServiceTaskCreate(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        scope_id: int = Field(gt=0, strict=True)
+        device_id: int = Field(gt=0, strict=True)
+
+    @route('/sensors/{sensor_id}/tasks/discover-network', method='POST', status_code=201)
+    def create_network_task(sensor_id: int, body: NetworkTaskCreate):
+        return create_task(sensor_id, body.scope_id, 'DISCOVER_NETWORK')
+
+    @route('/sensors/{sensor_id}/tasks/discover-services', method='POST', status_code=201)
+    def create_service_task(sensor_id: int, body: ServiceTaskCreate):
+        return create_task(sensor_id, body.scope_id, 'DISCOVER_SERVICES', body.device_id)
 

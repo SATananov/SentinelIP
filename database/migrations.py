@@ -1195,6 +1195,36 @@ MIGRATIONS = (
             "CREATE INDEX sensor_transport_nonces_sensor_received ON sensor_transport_nonces(sensor_id, received_at)",
         ),
     ),
+    (
+        32,
+        (
+            """CREATE TABLE remote_sensor_tasks (
+                id TEXT PRIMARY KEY,
+                sensor_id INTEGER NOT NULL,
+                site_id INTEGER NOT NULL,
+                scope_id INTEGER NOT NULL REFERENCES authorized_scopes(id),
+                task_type TEXT NOT NULL CHECK (task_type IN ('DISCOVER_NETWORK','DISCOVER_SERVICES')),
+                status TEXT NOT NULL CHECK (status IN ('PENDING','CLAIMED','RUNNING','COMPLETED','FAILED','CANCELLED')),
+                target_device_id INTEGER REFERENCES devices(id),
+                target_ip TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                claimed_at TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                failed_at TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                created_by_source TEXT NOT NULL,
+                result_digest TEXT,
+                FOREIGN KEY (sensor_id, site_id) REFERENCES remote_sensors(id, site_id),
+                CHECK ((task_type = 'DISCOVER_NETWORK' AND target_device_id IS NULL AND target_ip IS NULL)
+                    OR (task_type = 'DISCOVER_SERVICES' AND target_device_id IS NOT NULL AND target_ip IS NOT NULL))
+            )""",
+            "CREATE INDEX remote_sensor_tasks_claim ON remote_sensor_tasks(sensor_id, status, expires_at, created_at)",
+        ),
+    ),
 )
 
 

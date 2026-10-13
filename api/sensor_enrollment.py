@@ -130,6 +130,45 @@ def public_identity(sensor):
     )}
 
 
+def authenticate_sensor_request(request: Request, store_provider: Callable[[], RemoteSensorStore]):
+    authorization = request.headers.get('authorization', '')
+    scheme, _, credential = authorization.partition(' ')
+    sensor_uuid = request.headers.get('x-sensor-uuid', '')
+    if (scheme.lower() != 'bearer' or not 40 <= len(credential) <= 128
+            or len(request.headers.getlist('authorization')) != 1
+            or len(request.headers.getlist('x-sensor-uuid')) != 1):
+        raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'})
+    timestamp_values = request.headers.getlist('x-sentinel-timestamp')
+    nonce_values = request.headers.getlist('x-sentinel-nonce')
+    if len(timestamp_values) != 1 or len(nonce_values) != 1:
+        raise HTTPException(400, 'X-Sentinel-Timestamp and X-Sentinel-Nonce are required exactly once.')
+    if not _TIMESTAMP_PATTERN.fullmatch(timestamp_values[0]):
+        raise HTTPException(400, 'X-Sentinel-Timestamp must be a 10-digit Unix timestamp in seconds.')
+    store = store_provider()
+    try:
+        sensor = store.authorize_transport_request(sensor_uuid, credential,
+                                                   int(timestamp_values[0]), nonce_values[0])
+    except RemoteSensorAuthError as exc:
+        raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'}) from exc
+    except RemoteSensorReplayError as exc:
+        raise HTTPException(409, 'Sensor request rejected.') from exc
+    except RemoteSensorRateLimitError as exc:
+        raise HTTPException(429, 'Sensor request rate limit exceeded.', headers={'Retry-After': '60'}) from exc
+    except RemoteSensorCapacityError as exc:
+        raise HTTPException(503, 'Sensor transport capacity is temporarily exhausted.') from exc
+    except RemoteSensorError as exc:
+        message = str(exc)
+        status = 408 if 'outside the allowed window' in message else 400
+        raise HTTPException(status, message) from exc
+    return store, sensor, credential
+
+
+def sensor_auth_dependency(store_provider: Callable[[], RemoteSensorStore]):
+    def dependency(request: Request):
+        return authenticate_sensor_request(request, store_provider)
+    return dependency
+
+
 def register_machine_routes(app: FastAPI, store_provider: Callable[[], RemoteSensorStore]):
     def route(path, method, status_code=200):
         def register(endpoint):
@@ -141,37 +180,7 @@ def register_machine_routes(app: FastAPI, store_provider: Callable[[], RemoteSen
             return endpoint
         return register
 
-    def authenticate(request: Request):
-        authorization = request.headers.get('authorization', '')
-        scheme, _, credential = authorization.partition(' ')
-        sensor_uuid = request.headers.get('x-sensor-uuid', '')
-        if (scheme.lower() != 'bearer' or not 40 <= len(credential) <= 128
-                or len(request.headers.getlist('authorization')) != 1
-                or len(request.headers.getlist('x-sensor-uuid')) != 1):
-            raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'})
-        timestamp_values = request.headers.getlist('x-sentinel-timestamp')
-        nonce_values = request.headers.getlist('x-sentinel-nonce')
-        if len(timestamp_values) != 1 or len(nonce_values) != 1:
-            raise HTTPException(400, 'X-Sentinel-Timestamp and X-Sentinel-Nonce are required exactly once.')
-        if not _TIMESTAMP_PATTERN.fullmatch(timestamp_values[0]):
-            raise HTTPException(400, 'X-Sentinel-Timestamp must be a 10-digit Unix timestamp in seconds.')
-        store = store_provider()
-        try:
-            sensor = store.authorize_transport_request(sensor_uuid, credential,
-                                                       int(timestamp_values[0]), nonce_values[0])
-        except RemoteSensorAuthError as exc:
-            raise HTTPException(401, 'Sensor credential rejected.', headers={'WWW-Authenticate': 'Bearer'}) from exc
-        except RemoteSensorReplayError as exc:
-            raise HTTPException(409, 'Sensor request rejected.') from exc
-        except RemoteSensorRateLimitError as exc:
-            raise HTTPException(429, 'Sensor request rate limit exceeded.', headers={'Retry-After': '60'}) from exc
-        except RemoteSensorCapacityError as exc:
-            raise HTTPException(503, 'Sensor transport capacity is temporarily exhausted.') from exc
-        except RemoteSensorError as exc:
-            message = str(exc)
-            status = 408 if 'outside the allowed window' in message else 400
-            raise HTTPException(status, message) from exc
-        return store, sensor, credential
+    authenticate = sensor_auth_dependency(store_provider)
 
     @route('/sensor-enrollment/register', 'POST', 201)
     def register(body: Registration):

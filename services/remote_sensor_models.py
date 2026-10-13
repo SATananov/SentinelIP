@@ -100,6 +100,63 @@ class LocalScopeGrant:
 
 
 @dataclass(frozen=True)
+class LocalExecutorGrant:
+    """Sensor-local grant used to validate typed tasks before scanner calls."""
+    sensor_uuid: str
+    scope_id: int
+    cidr: str
+    capabilities: frozenset[str]
+
+    def __post_init__(self):
+        if not self.sensor_uuid or type(self.scope_id) is not int or self.scope_id <= 0:
+            raise RemoteSensorError("Invalid local executor grant identity.")
+        private_lan(self.cidr)
+        object.__setattr__(self, 'capabilities', frozenset(capabilities(tuple(self.capabilities))))
+
+
+@dataclass(frozen=True)
+class RemoteTaskContext:
+    task_id: str
+    sensor_uuid: str
+    scope_id: int
+    scope_type: str
+    task_type: str
+    scope_cidr: str
+    target_ip: str | None = None
+    network_id: int | None = None
+    target_device_id: int | None = None
+
+
+def validate_remote_task(task: RemoteTaskContext, grant: LocalExecutorGrant) -> str | None:
+    if not isinstance(task, RemoteTaskContext) or not isinstance(grant, LocalExecutorGrant):
+        raise RemoteSensorError('A typed remote task and local grant are required.')
+    if (task.sensor_uuid != grant.sensor_uuid or task.scope_id != grant.scope_id
+            or task.scope_type != 'PRIVATE_NETWORK' or task.scope_cidr != grant.cidr):
+        raise RemoteSensorError('Task identity or assignment does not match the local grant.')
+    required = {
+        'DISCOVER_NETWORK': Capability.HOST_DISCOVERY.value,
+        'DISCOVER_SERVICES': Capability.SERVICE_DISCOVERY.value,
+    }.get(task.task_type)
+    if required is None or required not in grant.capabilities:
+        raise RemoteSensorError('Task type or capability is not allowed by the local grant.')
+    if task.task_type == 'DISCOVER_NETWORK':
+        if (task.target_ip is not None or type(task.network_id) is not int or task.network_id <= 0
+                or task.target_device_id is not None):
+            raise RemoteSensorError('Network task cannot carry an individual target.')
+        return None
+    if (task.target_ip is None or type(task.network_id) is not int or task.network_id <= 0
+            or type(task.target_device_id) is not int or task.target_device_id <= 0):
+        raise RemoteSensorError('Service task requires a derived device address.')
+    try:
+        address = ipaddress.IPv4Address(task.target_ip)
+    except (ValueError, TypeError) as exc:
+        raise RemoteSensorError('Service target is invalid.') from exc
+    if str(address) != task.target_ip or address not in private_lan(grant.cidr):
+        raise RemoteSensorError('Service target is outside the local grant.')
+    return str(address)
+
+
+@dataclass(frozen=True)
 class IssuedSecret:
     record: dict
     secret: str = field(repr=False)

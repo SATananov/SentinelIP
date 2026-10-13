@@ -30,7 +30,7 @@ def test_hostname_migration_is_idempotent_and_address_history_is_preserved(tmp_p
         ).fetchone()[0] == 2
         assert connection.execute(
             "SELECT MAX(version) FROM schema_migrations"
-        ).fetchone()[0] == 31
+        ).fetchone()[0] == 32
 
     updated = reauthorize_hostname_scope(
         scope["id"],

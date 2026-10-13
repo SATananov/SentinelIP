@@ -2,6 +2,7 @@ import csv
 
 from api.remote_sensors import register_remote_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
+from api.remote_tasks import register_remote_task_routes
 from database.remote_sensors import RemoteSensorStore
 import io
 import sqlite3
@@ -1145,4 +1146,5 @@ def list_workspace_device_cve_matches(device_id: int):
 # This router exposes local management only; no remote execution/ingestion routes.
 register_remote_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_machine_routes(app, lambda: RemoteSensorStore(DB_PATH))
+register_remote_task_routes(app, lambda: RemoteSensorStore(DB_PATH))
 app.add_middleware(SensorBodyLimitMiddleware)
