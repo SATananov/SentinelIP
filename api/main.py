@@ -1,4 +1,7 @@
 import csv
+
+from api.remote_sensors import register_remote_routes
+from database.remote_sensors import RemoteSensorStore
 import io
 import sqlite3
 from datetime import datetime, timedelta
@@ -1136,3 +1139,7 @@ def list_workspace_device_cve_matches(device_id: int):
         device_id,
         db_path=DB_PATH,
     )
+
+
+# This router exposes local management only; no remote execution/ingestion routes.
+register_remote_routes(app, lambda: RemoteSensorStore(DB_PATH))

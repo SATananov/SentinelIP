@@ -1,0 +1,294 @@
+"""Transactional remote-sensor foundation. No scanner, job or result-ingestion path."""
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
+import sqlite3
+import json
+import uuid
+
+from database.db import DB_PATH, get_connection, initialize_database
+from services.remote_sensor_models import (
+    IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError,
+    capabilities, private_lan, sensor_status,
+)
+from services.scope_authorization import require_private_network_scope
+from services.telemetry_auth import TOKEN_ITERATIONS, hash_sensor_token, verify_sensor_token
+
+
+def _text(value, label, maximum=128, empty=False):
+    if not isinstance(value, str) or len(value) > maximum or (not empty and not value.strip()):
+        raise RemoteSensorError(f"Invalid {label}.")
+    return value.strip()
+
+
+def _boolean(value):
+    if type(value) is not bool:
+        raise RemoteSensorError("Enabled state must be boolean.")
+    return int(value)
+
+
+def _secret_hash(token):
+    if not isinstance(token, str) or not 40 <= len(token) <= 128:
+        raise RemoteSensorAuthError("Enrollment credential rejected.")
+    return hashlib.sha256(("sentinelip-remote-enrollment-v1:" + token).encode()).hexdigest()
+
+
+class RemoteSensorStore:
+    def __init__(self, db_path=DB_PATH, *, clock=None):
+        self.db_path = db_path
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        initialize_database(db_path)
+
+    def _now(self):
+        now = self.clock()
+        if now.tzinfo is None:
+            raise RemoteSensorError("An aware server clock is required.")
+        return now.astimezone(timezone.utc)
+
+    @contextmanager
+    def _connection(self, *, write=False):
+        connection = get_connection(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _site(c, site_id, *, active=False):
+        row = c.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+        if row is None:
+            raise RemoteSensorError("Site not found.")
+        result = dict(row)
+        result['enabled'] = bool(result['enabled'])
+        if active and not result['enabled']:
+            raise RemoteSensorError("Site is disabled.")
+        return result
+
+    def create_site(self, name, description='', enabled=True):
+        name = _text(name, 'site name')
+        description = _text(description, 'description', 1000, True)
+        enabled = _boolean(enabled)
+        now = self._now().isoformat()
+        with self._connection(write=True) as c:
+            site_id = c.execute(
+                "INSERT INTO sites (name,description,enabled,created_at,updated_at) VALUES (?,?,?,?,?)",
+                (name, description, enabled, now, now),
+            ).lastrowid
+            return self._site(c, site_id)
+
+    def get_site(self, site_id):
+        with self._connection() as c:
+            return self._site(c, site_id)
+
+    def list_sites(self, limit=100, offset=0):
+        self._page(limit, offset)
+        with self._connection() as c:
+            return [self._site(c, r[0]) for r in c.execute(
+                "SELECT id FROM sites ORDER BY id LIMIT ? OFFSET ?", (limit, offset)
+            ).fetchall()]
+
+    @staticmethod
+    def _page(limit, offset):
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+            raise RemoteSensorError("Invalid pagination.")
+
+    def set_site_enabled(self, site_id, enabled):
+        enabled = _boolean(enabled)
+        with self._connection(write=True) as c:
+            self._site(c, site_id)
+            c.execute("UPDATE sites SET enabled=?,updated_at=? WHERE id=?", (enabled, self._now().isoformat(), site_id))
+            return self._site(c, site_id)
+
+    @staticmethod
+    def _enrollment(row):
+        return {key: row[key] for key in ('id', 'site_id', 'created_at', 'expires_at', 'revoked_at', 'consumed_at', 'sensor_id')}
+
+    def create_enrollment(self, site_id, ttl_seconds=900):
+        if type(ttl_seconds) is not int or not 60 <= ttl_seconds <= 3600:
+            raise RemoteSensorError("Enrollment lifetime must be 60–3600 seconds.")
+        token = secrets.token_urlsafe(32)
+        now = self._now()
+        with self._connection(write=True) as c:
+            self._site(c, site_id, active=True)
+            enrollment_id = c.execute(
+                "INSERT INTO sensor_enrollment_tokens (site_id,token_hash,created_at,expires_at) VALUES (?,?,?,?)",
+                (site_id, _secret_hash(token), now.isoformat(), (now + timedelta(seconds=ttl_seconds)).isoformat()),
+            ).lastrowid
+            row = c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone()
+            return IssuedSecret(self._enrollment(row), token)
+
+    def list_enrollments(self, site_id, limit=100, offset=0):
+        self._page(limit, offset)
+        with self._connection() as c:
+            self._site(c, site_id)
+            return [self._enrollment(row) for row in c.execute(
+                "SELECT * FROM sensor_enrollment_tokens WHERE site_id=? ORDER BY id LIMIT ? OFFSET ?", (site_id, limit, offset)
+            )]
+
+    def revoke_enrollment(self, enrollment_id):
+        with self._connection(write=True) as c:
+            row = c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone()
+            if row is None:
+                raise RemoteSensorError("Enrollment not found.")
+            c.execute("UPDATE sensor_enrollment_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE id=?", (self._now().isoformat(), enrollment_id))
+            return self._enrollment(c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone())
+
+    def consume_enrollment(self, token, *, name, platform, version, reported_capabilities=()):
+        """Local domain operation. No enrollment transport is exposed in 10A."""
+        token_hash = _secret_hash(token)
+        name = _text(name, 'sensor name')
+        platform = _text(platform, 'platform', 64)
+        version = _text(version, 'version', 64)
+        declared = capabilities(reported_capabilities)
+        credential = secrets.token_urlsafe(32)
+        salt = secrets.token_bytes(16)
+        digest = hash_sensor_token(credential, salt)
+        with self._connection(write=True) as c:
+            now = self._now()
+            row = c.execute("SELECT * FROM sensor_enrollment_tokens WHERE token_hash=?", (token_hash,)).fetchone()
+            if row is None or row['consumed_at'] or row['revoked_at'] or datetime.fromisoformat(row['expires_at']) <= now:
+                raise RemoteSensorAuthError("Enrollment credential rejected.")
+            self._site(c, row['site_id'], active=True)
+            stamp = now.isoformat()
+            sensor_id = c.execute(
+                """INSERT INTO remote_sensors (site_id,sensor_uuid,name,platform,version,capabilities,
+                enabled,credential_salt,credential_hash,credential_iterations,registered_at,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)""",
+                (row['site_id'], str(uuid.uuid4()), name, platform, version, json.dumps(declared),
+                 salt.hex(), digest, TOKEN_ITERATIONS, stamp, stamp, stamp),
+            ).lastrowid
+            c.execute("UPDATE sensor_enrollment_tokens SET consumed_at=?,sensor_id=? WHERE id=?", (stamp, sensor_id, row['id']))
+            return IssuedSecret(self._sensor(c, sensor_id), credential)
+
+    def _sensor(self, c, sensor_id, *, active=False):
+        row = c.execute("SELECT * FROM remote_sensors WHERE id=?", (sensor_id,)).fetchone()
+        if row is None:
+            raise RemoteSensorError("Sensor not found.")
+        site = self._site(c, row['site_id'], active=active)
+        if active and (not row['enabled'] or row['credential_revoked_at']):
+            raise RemoteSensorError("Sensor is disabled.")
+        result = {key: row[key] for key in (
+            'id', 'site_id', 'sensor_uuid', 'name', 'platform', 'version', 'enabled',
+            'last_seen_at', 'registered_at', 'created_at', 'updated_at', 'credential_revoked_at',
+        )}
+        result['enabled'] = bool(result['enabled'])
+        result['capabilities'] = json.loads(row['capabilities'])
+        result['status'] = sensor_status(enabled=result['enabled'] and not row['credential_revoked_at'], site_enabled=site['enabled'], last_seen_at=row['last_seen_at'], now=self._now())
+        return result
+
+    def get_sensor(self, sensor_id):
+        with self._connection() as c:
+            return self._sensor(c, sensor_id)
+
+    def list_sensors(self, site_id, limit=100, offset=0):
+        self._page(limit, offset)
+        with self._connection() as c:
+            self._site(c, site_id)
+            return [self._sensor(c, r[0]) for r in c.execute(
+                "SELECT id FROM remote_sensors WHERE site_id=? ORDER BY id LIMIT ? OFFSET ?", (site_id, limit, offset)
+            ).fetchall()]
+
+    def set_sensor_enabled(self, sensor_id, enabled):
+        enabled = _boolean(enabled)
+        with self._connection(write=True) as c:
+            sensor = self._sensor(c, sensor_id)
+            if enabled and sensor['credential_revoked_at'] is not None:
+                raise RemoteSensorError("Revoked sensors require a new enrollment.")
+            c.execute("UPDATE remote_sensors SET enabled=?,updated_at=? WHERE id=?", (enabled, self._now().isoformat(), sensor_id))
+            return self._sensor(c, sensor_id)
+
+    def revoke_sensor(self, sensor_id):
+        """Invalidate the credential permanently; enabling alone cannot restore it."""
+        salt = secrets.token_bytes(16)
+        digest = hash_sensor_token(secrets.token_urlsafe(32), salt)
+        with self._connection(write=True) as c:
+            self._sensor(c, sensor_id)
+            c.execute("UPDATE remote_sensors SET enabled=0,credential_salt=?,credential_hash=?,credential_revoked_at=COALESCE(credential_revoked_at,?),updated_at=? WHERE id=?",
+                      (salt.hex(), digest, self._now().isoformat(), self._now().isoformat(), sensor_id))
+            return self._sensor(c, sensor_id)
+
+    def _authenticate(self, c, sensor_id, credential):
+        if not isinstance(credential, str) or not 40 <= len(credential) <= 128:
+            raise RemoteSensorAuthError("Sensor credential rejected.")
+        row = c.execute("SELECT * FROM remote_sensors WHERE id=?", (sensor_id,)).fetchone()
+        if row is None or not verify_sensor_token(credential, bytes.fromhex(row['credential_salt']), row['credential_hash'], row['credential_iterations']):
+            raise RemoteSensorAuthError("Sensor credential rejected.")
+        try:
+            return self._sensor(c, sensor_id, active=True)
+        except RemoteSensorError as exc:
+            raise RemoteSensorAuthError("Sensor credential rejected.") from exc
+
+    def heartbeat(self, sensor_id, credential, *, platform, version, reported_capabilities=()):
+        platform = _text(platform, 'platform', 64)
+        version = _text(version, 'version', 64)
+        declared = capabilities(reported_capabilities)
+        with self._connection(write=True) as c:
+            self._authenticate(c, sensor_id, credential)
+            now = self._now().isoformat()
+            c.execute("UPDATE remote_sensors SET platform=?,version=?,capabilities=?,last_seen_at=?,updated_at=? WHERE id=?",
+                      (platform, version, json.dumps(declared), now, now, sensor_id))
+            return self._sensor(c, sensor_id)
+
+    @staticmethod
+    def _scope(c, scope_id):
+        row = c.execute("""SELECT s.*,l.network_id FROM authorized_scopes s
+            LEFT JOIN network_scope_links l ON l.scope_id=s.id WHERE s.id=?""", (scope_id,)).fetchone()
+        if row is None:
+            raise RemoteSensorError("Scope not found.")
+        scope = dict(row)
+        scope['authorized'], scope['enabled'] = bool(scope['authorized']), bool(scope['enabled'])
+        row = c.execute("SELECT * FROM networks WHERE id=?", (scope['network_id'],)).fetchone()
+        network = dict(row) if row else None
+        if network:
+            network['authorized'], network['enabled'] = bool(network['authorized']), bool(network['enabled'])
+        try:
+            require_private_network_scope(network, scope)
+        except ValueError as exc:
+            raise RemoteSensorError("An enabled, confirmed private network scope is required.") from exc
+        private_lan(scope['canonical_target'])
+        return scope
+
+    def assign_scope(self, sensor_id, scope_id):
+        with self._connection(write=True) as c:
+            sensor = self._sensor(c, sensor_id, active=True)
+            scope = self._scope(c, scope_id)
+            binding = c.execute("SELECT site_id FROM remote_scope_sites WHERE scope_id=?", (scope_id,)).fetchone()
+            if binding and binding[0] != sensor['site_id']:
+                raise RemoteSensorError("Scope is already bound to another site.")
+            now = self._now().isoformat()
+            c.execute("INSERT OR IGNORE INTO remote_scope_sites (scope_id,site_id,created_at) VALUES (?,?,?)", (scope_id, sensor['site_id'], now))
+            existing = c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id)).fetchone()
+            if existing and existing['canonical_target'] != scope['canonical_target']:
+                raise RemoteSensorError("Assignment target changed; remove and explicitly reassign.")
+            c.execute("""INSERT OR IGNORE INTO sensor_scope_assignments
+                (sensor_id,scope_id,site_id,canonical_target,created_at) VALUES (?,?,?,?,?)""",
+                (sensor_id, scope_id, sensor['site_id'], scope['canonical_target'], now))
+            return dict(c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id)).fetchone())
+
+    def list_assignments(self, sensor_id, limit=100, offset=0):
+        self._page(limit, offset)
+        with self._connection() as c:
+            self._sensor(c, sensor_id)
+            return [dict(r) for r in c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? ORDER BY scope_id LIMIT ? OFFSET ?", (sensor_id, limit, offset))]
+
+    def remove_assignment(self, sensor_id, scope_id):
+        with self._connection(write=True) as c:
+            self._sensor(c, sensor_id)
+            c.execute("DELETE FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id))
+
+    def validate_assigned_target(self, sensor_id, credential, scope_id, target):
+        """Core policy precondition only; does not authorize a job or ingest evidence."""
+        with self._connection() as c:
+            sensor = self._authenticate(c, sensor_id, credential)
+            scope = self._scope(c, scope_id)
+            assignment = c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=? AND site_id=?", (sensor_id, scope_id, sensor['site_id'])).fetchone()
+            if assignment is None or assignment['canonical_target'] != scope['canonical_target']:
+                raise RemoteSensorError("No current assignment authorizes this target.")
+            return LocalScopeGrant(sensor['sensor_uuid'], scope_id, assignment['canonical_target']).validate_target(sensor['sensor_uuid'], scope_id, target)

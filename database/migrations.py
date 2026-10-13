@@ -1131,6 +1131,56 @@ MIGRATIONS = (
             END""",
         ),
     ),
+    (
+        30,
+        (
+            """CREATE TABLE sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE remote_sensors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL REFERENCES sites(id),
+                sensor_uuid TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                platform TEXT NOT NULL, version TEXT NOT NULL,
+                capabilities TEXT NOT NULL,
+                enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),
+                credential_salt TEXT NOT NULL, credential_hash TEXT NOT NULL,
+                credential_iterations INTEGER NOT NULL,
+                credential_revoked_at TEXT,
+                last_seen_at TEXT, registered_at TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE (id, site_id)
+            )""",
+            """CREATE TABLE sensor_enrollment_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id INTEGER NOT NULL REFERENCES sites(id),
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                revoked_at TEXT, consumed_at TEXT,
+                sensor_id INTEGER UNIQUE REFERENCES remote_sensors(id)
+            )""",
+            """CREATE TABLE remote_scope_sites (
+                scope_id INTEGER PRIMARY KEY REFERENCES authorized_scopes(id),
+                site_id INTEGER NOT NULL REFERENCES sites(id),
+                created_at TEXT NOT NULL,
+                UNIQUE (scope_id, site_id)
+            )""",
+            """CREATE TABLE sensor_scope_assignments (
+                sensor_id INTEGER NOT NULL,
+                scope_id INTEGER NOT NULL,
+                site_id INTEGER NOT NULL,
+                canonical_target TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (sensor_id, scope_id),
+                FOREIGN KEY (sensor_id, site_id) REFERENCES remote_sensors(id, site_id),
+                FOREIGN KEY (scope_id, site_id) REFERENCES remote_scope_sites(scope_id, site_id)
+            )""",
+            "CREATE INDEX remote_sensors_site ON remote_sensors(site_id, id)",
+        ),
+    ),
 )
 
 
