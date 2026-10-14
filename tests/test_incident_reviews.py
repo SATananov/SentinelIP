@@ -66,7 +66,7 @@ def _device_threat(path,device_id,sequence=1):
         return cursor.lastrowid
 
 
-def test_migrations_41_and_42_are_additive_idempotent_and_fk_clean(tmp_path,monkeypatch):
+def test_migrations_41_to_43_are_additive_idempotent_and_fk_clean(tmp_path,monkeypatch):
     path = tmp_path / 'review-migration.db'
     from database import migrations as migration_module
     monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS[:40])
@@ -81,7 +81,9 @@ def test_migrations_41_and_42_are_additive_idempotent_and_fk_clean(tmp_path,monk
         names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {'incident_reviews','incident_review_evidence','incident_review_events',
                 'incident_review_notes','incidents','incident_correlations'} <= names
-        assert max(version for version,_ in MIGRATIONS) == 42
+        columns = {row[1] for row in connection.execute('PRAGMA table_info(incident_reviews)')}
+        assert 'final_summary' in columns
+        assert max(version for version,_ in MIGRATIONS) == 43
 
 
 def test_migration_42_adds_append_only_history_idempotently(tmp_path,monkeypatch):
@@ -102,11 +104,65 @@ def test_migration_42_adds_append_only_history_idempotently(tmp_path,monkeypatch
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 42
+        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 43
         after = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {'incident_review_events','incident_review_notes'} <= after - before
         assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
     assert list_timeline(legacy_review_id,db_path=path)['total'] == 0
+
+
+def test_migration_43_preserves_timeline_rows_constraints_and_triggers(tmp_path,monkeypatch):
+    path = tmp_path / 'review-migration-43.db'
+    from database import migrations as migration_module
+    monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS[:42])
+    initialize_database(path)
+    with get_connection(path) as connection:
+        cursor = connection.execute('''INSERT INTO incident_reviews (
+            incident_key,title,summary,state,priority,confidence,created_at,updated_at,
+            closed_at,disposition) VALUES ('IR-legacy-closed','Legacy closed','','CLOSED',
+            'MEDIUM','MEDIUM','2026-01-01','2026-01-01','2026-01-02','INCONCLUSIVE')''')
+        review_id = cursor.lastrowid
+        note_cursor = connection.execute('''INSERT INTO incident_review_notes (
+            incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)''',
+            (review_id,'Existing note','OPERATOR','2026-01-01T12:00:00+00:00'))
+        event_values = (review_id,'ANALYST_NOTE_ADDED','OPERATOR','2026-01-01T12:00:00+00:00',
+            'analyst_note','old','new','THREAT_DETECTION',77,note_cursor.lastrowid,'Existing history row')
+        event_cursor = connection.execute('''INSERT INTO incident_review_events (
+            incident_review_id,event_type,actor_source,created_at,field_name,old_value,
+            new_value,evidence_type,evidence_id,note_id,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+            event_values)
+        event_id = event_cursor.lastrowid
+        event_cursor = connection.execute('SELECT * FROM incident_review_events WHERE id=?',
+                                          (event_id,))
+        old_row = tuple(event_cursor.fetchone())
+    monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS)
+    initialize_database(path)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        migrated = tuple(connection.execute('SELECT * FROM incident_review_events WHERE id=?',
+                                            (event_id,)).fetchone())
+        review_cursor = connection.execute('SELECT state,final_summary FROM incident_reviews WHERE id=?',
+                                           (review_id,))
+        review = review_cursor.fetchone()
+        assert migrated == old_row
+        assert review == ('CLOSED',None)
+        assert connection.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=43').fetchone()[0] == 1
+        assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_incident_review_events_timeline'").fetchone()
+        index_fields = [row[2] for row in connection.execute('PRAGMA index_info(idx_incident_review_events_timeline)')]
+        assert index_fields == ['incident_review_id','created_at','id']
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name='incident_review_events_no_update'").fetchone()
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name='incident_review_events_no_delete'").fetchone()
+        with pytest.raises(Exception,match='append-only'):
+            connection.execute('UPDATE incident_review_events SET summary=? WHERE id=?',('edit',event_id))
+        with pytest.raises(Exception,match='append-only'):
+            connection.execute('DELETE FROM incident_review_events WHERE id=?',(event_id,))
+        next_event = connection.execute('''INSERT INTO incident_review_events (
+            incident_review_id,event_type,actor_source,created_at,old_value,new_value,summary)
+            VALUES (?,?,?,?,?,?,?)''',(review_id,'FINAL_SUMMARY_CHANGED','OPERATOR',
+                '2026-01-03T00:00:00+00:00',None,'Reviewed','Final analyst summary changed'))
+        assert next_event.lastrowid > event_id
+    assert get_review(review_id,path)['final_summary'] is None
 
 
 def test_review_timeline_and_notes_are_atomic_bounded_and_ordered(tmp_path):
@@ -115,7 +171,7 @@ def test_review_timeline_and_notes_are_atomic_bounded_and_ordered(tmp_path):
     assert [row['event_type'] for row in list_timeline(review['id'],db_path=path)['items']] == ['REVIEW_CREATED']
     update_review(review['id'],{'state':'IN_REVIEW','priority':'HIGH','confidence':'HIGH',
         'disposition':'NEEDS_MONITORING','title':'Updated history review','summary':'Changed'},path)
-    update_review(review['id'],{'state':'CLOSED'},path)
+    update_review(review['id'],{'state':'CLOSED','final_summary':'Review completed.'},path)
     update_review(review['id'],{'state':'OPEN'},path)
     update_review(review['id'],{'state':'OPEN'},path)
     events = list_timeline(review['id'],limit=100,db_path=path)['items']
@@ -277,7 +333,8 @@ def test_create_link_idempotency_time_recomputation_and_detach_preserves_source(
 def test_closed_update_and_strict_enum_and_evidence_validation(tmp_path):
     path = tmp_path / 'review-validation.db'
     review = _review_db(path)
-    closed = update_review(review['id'],{'state':'CLOSED','disposition':'INCONCLUSIVE'},path)
+    closed = update_review(review['id'],{'state':'CLOSED','disposition':'INCONCLUSIVE',
+        'final_summary':'Review completed.'},path)
     assert closed['closed_at'] and closed['state'] == 'CLOSED'
     reopened = update_review(review['id'],{'state':'OPEN'},path)
     assert reopened['closed_at'] is None
@@ -290,6 +347,116 @@ def test_closed_update_and_strict_enum_and_evidence_validation(tmp_path):
     with pytest.raises(IncidentReviewError) as exc:
         add_evidence(review['id'],evidence_type='THREAT_DETECTION',evidence_id=999999,db_path=path)
     assert exc.value.status_code == 404
+
+
+def test_13d_close_requires_resolved_disposition_and_final_summary_atomically(tmp_path):
+    path = tmp_path / 'review-close-rules.db'
+    review = create_review(title='Closure rules',db_path=path)
+    initial_events = list_timeline(review['id'],db_path=path)['total']
+    with pytest.raises(IncidentReviewError,match='cannot be created'):
+        create_review(title='Invalid closed creation',state='CLOSED',
+            disposition='BENIGN',final_summary='Already done',db_path=path)
+    for patch, message in (({'state':'CLOSED'},'disposition'),
+        ({'state':'CLOSED','disposition':'BENIGN'},'summary'),
+        ({'state':'CLOSED','disposition':'BENIGN','final_summary':'   '},'summary')):
+        with pytest.raises(IncidentReviewError,match=message):
+            update_review(review['id'],patch,path)
+        unchanged = get_review(review['id'],path)
+        assert unchanged['state'] == 'OPEN' and unchanged['disposition'] == 'UNREVIEWED'
+        assert unchanged['final_summary'] is None and unchanged['closed_at'] is None
+        assert list_timeline(review['id'],db_path=path)['total'] == initial_events
+
+    with get_connection(path) as connection:
+        connection.execute('''CREATE TRIGGER fail_final_summary_event BEFORE INSERT ON incident_review_events
+            WHEN NEW.event_type='FINAL_SUMMARY_CHANGED'
+            BEGIN SELECT RAISE(ABORT,'injected timeline failure'); END''')
+    with pytest.raises(Exception,match='injected timeline failure'):
+        update_review(review['id'],{'state':'CLOSED','disposition':'BENIGN',
+            'final_summary':'Review completed.'},path)
+    unchanged = get_review(review['id'],path)
+    assert unchanged['state'] == 'OPEN' and unchanged['disposition'] == 'UNREVIEWED'
+    assert unchanged['final_summary'] is None and unchanged['closed_at'] is None
+    assert list_timeline(review['id'],db_path=path)['total'] == initial_events
+    with get_connection(path) as connection:
+        connection.execute('DROP TRIGGER fail_final_summary_event')
+
+    closed = update_review(review['id'],{'state':'CLOSED','disposition':'BENIGN',
+        'final_summary':'  Review completed from available records.  '},path)
+    assert closed['state'] == 'CLOSED' and closed['closed_at']
+    assert closed['disposition'] == 'BENIGN'
+    assert closed['final_summary'] == 'Review completed from available records.'
+    events = list_timeline(review['id'],db_path=path)['items']
+    types = [event['event_type'] for event in events]
+    assert types.count('REVIEW_CLOSED') == 1
+    assert types.count('STATE_CHANGED') == 0
+    assert types.count('DISPOSITION_CHANGED') == 1
+    assert types.count('FINAL_SUMMARY_CHANGED') == 1
+    assert types[:3] == ['FINAL_SUMMARY_CHANGED','DISPOSITION_CHANGED','REVIEW_CLOSED']
+    summary_event = next(event for event in events if event['event_type']=='FINAL_SUMMARY_CHANGED')
+    assert summary_event['old_value'] is None
+    assert summary_event['new_value'] == closed['final_summary']
+
+    event_count = len(events)
+    update_review(review['id'],{'state':'CLOSED'},path)
+    assert list_timeline(review['id'],db_path=path)['total'] == event_count
+    for patch in ({'disposition':'INCONCLUSIVE'},{'final_summary':'Edited while closed'},
+                  {'priority':'HIGH'}):
+        with pytest.raises(IncidentReviewError,match='Reopen'):
+            update_review(review['id'],patch,path)
+    assert get_review(review['id'],path)['final_summary'] == closed['final_summary']
+    assert list_timeline(review['id'],db_path=path)['total'] == event_count
+
+
+def test_13d_reopen_and_reclose_preserve_append_only_resolution_history(tmp_path):
+    path = tmp_path / 'review-reopen-reclose.db'
+    review = create_review(title='Reopen rules',db_path=path)
+    first_summary = 'First review outcome.'
+    update_review(review['id'],{'final_summary':f' {first_summary} '},path)
+    event_count = list_timeline(review['id'],db_path=path)['total']
+    update_review(review['id'],{'final_summary':first_summary},path)
+    assert list_timeline(review['id'],db_path=path)['total'] == event_count
+    update_review(review['id'],{'final_summary':None},path)
+    cleared = [event for event in list_timeline(review['id'],db_path=path)['items']
+               if event['event_type']=='FINAL_SUMMARY_CHANGED'][0]
+    assert cleared['old_value'] == first_summary and cleared['new_value'] is None
+
+    first_closed = update_review(review['id'],{'state':'CLOSED','disposition':'NEEDS_MONITORING',
+        'final_summary':first_summary},path)
+    history_after_first_close = list_timeline(review['id'],db_path=path)['items']
+    reopened = update_review(review['id'],{'state':'IN_REVIEW'},path)
+    assert reopened['state'] == 'IN_REVIEW' and reopened['closed_at'] is None
+    assert reopened['disposition'] == 'NEEDS_MONITORING'
+    assert reopened['final_summary'] == first_summary
+    newest = list_timeline(review['id'],db_path=path)['items']
+    assert newest[0]['event_type'] == 'REVIEW_REOPENED'
+    assert sum(event['event_type']=='STATE_CHANGED' for event in newest) == 0
+    assert len(newest) == len(history_after_first_close) + 1
+
+    second_summary = 'Updated after reopening.'
+    update_review(review['id'],{'final_summary':second_summary},path)
+    second_closed = update_review(review['id'],{'state':'CLOSED'},path)
+    assert second_closed['closed_at']
+    assert datetime.fromisoformat(second_closed['closed_at']) > datetime.fromisoformat(first_closed['closed_at'])
+    final_events = list_timeline(review['id'],db_path=path)['items']
+    assert sum(event['event_type']=='REVIEW_CLOSED' for event in final_events) == 2
+    assert sum(event['event_type']=='REVIEW_REOPENED' for event in final_events) == 1
+    assert sum(event['event_type']=='FINAL_SUMMARY_CHANGED' for event in final_events) == 4
+    assert sum(event['event_type']=='STATE_CHANGED' for event in final_events) == 0
+    assert first_closed['final_summary'] == first_summary
+
+
+def test_13d_final_summary_normalization_limits_and_api_create_state(tmp_path):
+    from pydantic import ValidationError
+    from api.incident_reviews import ReviewCreate
+    path = tmp_path / 'review-final-summary-validation.db'
+    with pytest.raises(IncidentReviewError,match='Final analyst summary'):
+        create_review(title='Too much final summary',final_summary='x' * 4001,db_path=path)
+    with pytest.raises(ValidationError):
+        ReviewCreate(title='Direct closed',state='CLOSED')
+    review = create_review(title='Summary normalization',db_path=path)
+    updated = update_review(review['id'],{'final_summary':'  Analyst summary  '},path)
+    assert updated['final_summary'] == 'Analyst summary'
+    assert update_review(review['id'],{'final_summary':'Analyst summary'},path)['final_summary'] == 'Analyst summary'
 
 
 def test_attribution_consistency_rejects_cross_site_evidence(tmp_path):
@@ -321,8 +488,9 @@ def test_incident_review_api_create_filter_attach_patch_and_source_immutability(
     assert routes[('/incident-reviews','GET')](state='OPEN',priority='HIGH',site_id=None,
         scope_id=None,device_id=None,disposition=None,limit=20,offset=0)['total'] == 1
     changed = routes[('/incident-reviews/{incident_id}','PATCH')](incident_id,
-        ReviewUpdate(state='CLOSED',disposition='NEEDS_MONITORING',analyst_note='Check next week'))
-    assert changed['closed_at']
+        ReviewUpdate(state='CLOSED',disposition='NEEDS_MONITORING',
+            final_summary='Continue monitoring.',analyst_note='Check next week'))
+    assert changed['closed_at'] and changed['final_summary'] == 'Continue monitoring.'
     assert routes[('/incident-reviews/{incident_id}/evidence','GET')](incident_id,limit=100,offset=0)['total'] == 1
     with pytest.raises(Exception) as invalid_type:
         routes[('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}','DELETE')](incident_id,'FAKE',1)

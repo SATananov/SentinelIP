@@ -66,3 +66,33 @@ test('incident review history reads and note creation use explicit bounded API c
     globalThis.fetch = originalFetch
   }
 })
+
+test('review draft, close, and reopen use explicit PATCH mutations and surface server errors', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options })
+    if (calls.length === 4) {
+      return { ok: false, status: 422, json: async () => ({ detail: 'A final analyst summary is required.' }) }
+    }
+    return { ok: true, json: async () => ({ id: 14, state: 'OPEN' }) }
+  }
+  try {
+    await updateIncidentReview(14, { disposition: 'BENIGN', final_summary: 'Reviewed.' })
+    await updateIncidentReview(14, { disposition: 'BENIGN', final_summary: 'Reviewed.', state: 'CLOSED' })
+    await updateIncidentReview(14, { state: 'OPEN' })
+    await assert.rejects(
+      updateIncidentReview(14, { state: 'CLOSED' }),
+      /Security API request failed \(422\): A final analyst summary is required\./,
+    )
+    assert.deepEqual(calls.map(({ options }) => JSON.parse(options.body)), [
+      { disposition: 'BENIGN', final_summary: 'Reviewed.' },
+      { disposition: 'BENIGN', final_summary: 'Reviewed.', state: 'CLOSED' },
+      { state: 'OPEN' },
+      { state: 'CLOSED' },
+    ])
+    assert.ok(calls.every(({ url, options }) => url.endsWith('/incident-reviews/14') && options.method === 'PATCH'))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

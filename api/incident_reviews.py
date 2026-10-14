@@ -10,6 +10,7 @@ EvidenceType = Literal['PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
     'PERIMETER_HOST_CORRELATION','EXTERNAL_EXPOSURE_CHANGE','THREAT_DETECTION',
     'THREAT_CORRELATION','WEB_DETECTION']
 State = Literal['OPEN','IN_REVIEW','CLOSED']
+InitialState = Literal['OPEN','IN_REVIEW']
 Priority = Literal['LOW','MEDIUM','HIGH','CRITICAL']
 Confidence = Literal['LOW','MEDIUM','HIGH']
 Disposition = Literal['UNREVIEWED','EXPECTED_ACTIVITY','BENIGN','NEEDS_MONITORING',
@@ -24,7 +25,7 @@ class Input(BaseModel):
 class ReviewCreate(Input):
     title: StrictStr = Field(min_length=1, max_length=160)
     summary: StrictStr = Field(default='', max_length=4000)
-    state: State = 'OPEN'
+    state: InitialState = 'OPEN'
     priority: Priority = 'MEDIUM'
     confidence: Confidence = 'MEDIUM'
     site_id: StrictInt | None = Field(default=None, ge=1)
@@ -32,6 +33,7 @@ class ReviewCreate(Input):
     device_id: StrictInt | None = Field(default=None, ge=1)
     disposition: Disposition = 'UNREVIEWED'
     analyst_note: StrictStr | None = Field(default=None, max_length=4000)
+    final_summary: StrictStr | None = Field(default=None, max_length=4000)
 
 
 class ReviewUpdate(Input):
@@ -42,6 +44,7 @@ class ReviewUpdate(Input):
     confidence: Confidence | None = None
     disposition: Disposition | None = None
     analyst_note: StrictStr | None = Field(default=None, max_length=4000)
+    final_summary: StrictStr | None = Field(default=None, max_length=4000)
     site_id: StrictInt | None = Field(default=None, ge=1)
     scope_id: StrictInt | None = Field(default=None, ge=1)
     device_id: StrictInt | None = Field(default=None, ge=1)

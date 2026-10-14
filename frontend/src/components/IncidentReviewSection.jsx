@@ -103,6 +103,9 @@ function IncidentReviewSection({ refreshSignal }) {
       if (!requestGuard.current.isCurrent(request)) return
       if (key === 'review' && result) {
         setSelected(result)
+        setReviewDraft({ state: result.state, priority: result.priority,
+          confidence: result.confidence, disposition: result.disposition,
+          final_summary: result.final_summary })
         setReviews((current) => current.map((item) => item.id === result.id ? result : item))
       }
       if (key === 'note') setNoteText('')
@@ -121,10 +124,7 @@ function IncidentReviewSection({ refreshSignal }) {
     event.preventDefault()
     const value = noteText.trim()
     if (!value || !selected) return
-    await perform('note', async () => {
-      await addIncidentReviewNote(selected.id, value)
-      setNoteText('')
-    })
+    await perform('note', () => addIncidentReviewNote(selected.id, value))
   }
 
   return (
@@ -160,8 +160,9 @@ function IncidentReviewSection({ refreshSignal }) {
                 setNoteText('')
                 setBusy(null)
                 setSelected(review)
-        setReviewDraft({ state: review.state, priority: review.priority,
-          confidence: review.confidence, disposition: review.disposition })
+                setReviewDraft({ state: review.state, priority: review.priority,
+                  confidence: review.confidence, disposition: review.disposition,
+                  final_summary: review.final_summary })
                 setDetailLoading(true)
                 setError(null)
               }}
@@ -201,25 +202,64 @@ function IncidentReviewSection({ refreshSignal }) {
             Evidence links and suggestions do not mean causal relationship, attack, compromise, intrusion, exploitation, or vulnerability.
           </p>
 
-          <form className="incident-review-edit-form" onSubmit={async (event) => {
-            event.preventDefault()
-            await perform('review', () => updateIncidentReview(selected.id, reviewDraft))
-          }}>
-            {[
-              ['state', ['OPEN', 'IN_REVIEW', 'CLOSED']],
-              ['priority', ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']],
-              ['confidence', ['LOW', 'MEDIUM', 'HIGH']],
-              ['disposition', ['UNREVIEWED', 'EXPECTED_ACTIVITY', 'BENIGN', 'NEEDS_MONITORING', 'ACTION_REQUIRED', 'FALSE_POSITIVE', 'INCONCLUSIVE']],
-            ].map(([field, options]) => (
-              <label key={field}>{field.replaceAll('_', ' ')}
-                <select value={reviewDraft?.[field] ?? selected[field]}
-                  onChange={(event) => setReviewDraft((current) => ({ ...current, [field]: event.target.value }))}>
-                  {options.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
-                </select>
-              </label>
-            ))}
-            <button className="security-detail-close" type="submit" disabled={Boolean(busy)}>Save Review</button>
-          </form>
+          {selected.state === 'CLOSED' ? (
+            <section className="incident-review-resolution">
+              <p className="panel-kicker">Review closed</p>
+              <p><strong>Disposition:</strong> {selected.disposition.replaceAll('_', ' ')}</p>
+              <p><strong>Final analyst summary</strong></p>
+              <p>{selected.final_summary || 'No final analyst summary was recorded for this legacy closed review.'}</p>
+              <small>Closed at {displayTime(selected.closed_at)}</small>
+              <p className="security-layer-copy">Closure records completion of the analyst review workflow; it does not confirm an attack or compromise.</p>
+              <button className="security-detail-close" type="button" disabled={Boolean(busy)}
+                onClick={() => perform('review', () => updateIncidentReview(selected.id, { state: 'OPEN' }))}>
+                Reopen Review
+              </button>
+            </section>
+          ) : (
+            <>
+              {timeline.some((entry) => entry.event_type === 'REVIEW_REOPENED') && (
+                <p className="security-layer-copy">This review was reopened. Its disposition and final analyst summary are retained from the previous closure until you update them.</p>
+              )}
+              <form className="incident-review-edit-form" onSubmit={async (event) => {
+                event.preventDefault()
+                await perform('review', () => updateIncidentReview(selected.id, reviewDraft))
+              }}>
+                {[
+                  ['state', ['OPEN', 'IN_REVIEW']],
+                  ['priority', ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']],
+                  ['confidence', ['LOW', 'MEDIUM', 'HIGH']],
+                  ['disposition', ['UNREVIEWED', 'EXPECTED_ACTIVITY', 'BENIGN', 'NEEDS_MONITORING', 'ACTION_REQUIRED', 'FALSE_POSITIVE', 'INCONCLUSIVE']],
+                ].map(([field, options]) => (
+                  <label key={field}>{field.replaceAll('_', ' ')}
+                    <select value={reviewDraft?.[field] ?? selected[field]}
+                      onChange={(event) => setReviewDraft((current) => ({ ...current, [field]: event.target.value }))}>
+                      {options.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
+                    </select>
+                  </label>
+                ))}
+                <label>Final analyst summary
+                  <textarea aria-label="Final analyst summary" maxLength={4000} rows={4}
+                    value={reviewDraft?.final_summary ?? ''}
+                    onChange={(event) => setReviewDraft((current) => ({ ...current, final_summary: event.target.value }))}
+                    placeholder="Summarize the review outcome" />
+                </label>
+                <button className="security-detail-close" type="submit" disabled={Boolean(busy)}>Save Draft</button>
+                <button className="security-detail-close" type="button" disabled={Boolean(busy)} onClick={() => {
+                  if (reviewDraft?.disposition === 'UNREVIEWED') {
+                    setError('Choose a review disposition before closing.')
+                    return
+                  }
+                  if (!reviewDraft?.final_summary?.trim()) {
+                    setError('Add a final analyst summary before closing.')
+                    return
+                  }
+                  perform('review', () => updateIncidentReview(selected.id, {
+                    ...reviewDraft, state: 'CLOSED',
+                  }))
+                }}>Close Review</button>
+              </form>
+            </>
+          )}
 
           <section className="incident-review-history">
             <h4>Analyst Notes</h4>
@@ -247,6 +287,7 @@ function IncidentReviewSection({ refreshSignal }) {
                   <small>{displayTime(entry.created_at)} · {entry.actor_source}</small>
                   {entry.summary && <span>{entry.summary}</span>}
                   {entry.field_name && <small>{entry.field_name}: {entry.old_value ?? '—'} → {entry.new_value ?? '—'}</small>}
+                  {entry.event_type === 'FINAL_SUMMARY_CHANGED' && <small>Final analyst summary: {entry.old_value ?? '—'} → {entry.new_value ?? '—'}</small>}
                   {entry.evidence_type && <small>{entry.evidence_type} #{entry.evidence_id}</small>}
                 </div>)}
               </div>

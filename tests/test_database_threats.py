@@ -37,7 +37,7 @@ def test_migration_additive_idempotent_and_indexed(tmp_path):
     initialize_database(path)
     with get_connection(path) as connection:
         assert connection.execute("SELECT message FROM events WHERE id=1").fetchone()[0] == "original"
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 42
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='idx_events_threat_window'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 

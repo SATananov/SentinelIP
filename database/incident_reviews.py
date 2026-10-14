@@ -44,7 +44,8 @@ RELATED_EVIDENCE_BATCH_SIZE = 100
 RELATED_EVIDENCE_SCAN_LIMIT = 1000
 REVIEW_EVENT_TYPES = frozenset({'REVIEW_CREATED','STATE_CHANGED','REVIEW_CLOSED','REVIEW_REOPENED',
     'PRIORITY_CHANGED','CONFIDENCE_CHANGED','DISPOSITION_CHANGED','REVIEW_FIELD_CHANGED',
-    'ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED','EVIDENCE_ATTACHED','EVIDENCE_DETACHED'})
+    'FINAL_SUMMARY_CHANGED','ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED',
+    'EVIDENCE_ATTACHED','EVIDENCE_DETACHED'})
 REVIEW_FIELD_NAMES = frozenset({'title','summary','site_id','scope_id','device_id'})
 REVIEW_HISTORY_MAX_OFFSET = 100000
 
@@ -56,13 +57,35 @@ class IncidentReviewError(ValueError):
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds')
+
+
+def _closure_time(connection, incident_id):
+    value = datetime.now(timezone.utc)
+    previous = connection.execute('''SELECT created_at FROM incident_review_events
+        WHERE incident_review_id=? AND event_type='REVIEW_CLOSED'
+        ORDER BY created_at DESC,id DESC LIMIT 1''',(incident_id,)).fetchone()
+    if previous is not None:
+        previous_time = datetime.fromisoformat(previous['created_at'])
+        if previous_time.tzinfo is None:
+            previous_time = previous_time.replace(tzinfo=timezone.utc)
+        if value <= previous_time:
+            value = previous_time + timedelta(microseconds=1)
+    return value.isoformat(timespec='microseconds')
 
 
 def _valid_text(value, name, maximum, *, required=False):
     if not isinstance(value, str) or len(value) > maximum or (required and not value.strip()):
         raise IncidentReviewError(f'{name} is invalid.')
     return value.strip() if required else value
+
+
+def _normalize_final_summary(value):
+    if value is None:
+        return None
+    normalized = _valid_text(value,'Final analyst summary',4000)
+    normalized = normalized.strip()
+    return normalized or None
 
 
 def _validate_attribution(connection, *, site_id, scope_id, device_id):
@@ -178,25 +201,31 @@ def _field_event(connection, incident_id, field, old, new, now):
         event_type = 'CONFIDENCE_CHANGED'
     elif field == 'disposition':
         event_type = 'DISPOSITION_CHANGED'
+    elif field == 'final_summary':
+        event_type = 'FINAL_SUMMARY_CHANGED'
     elif field == 'analyst_note':
         event_type = 'ANALYST_NOTE_CLEARED' if new is None or new == '' else 'ANALYST_NOTE_ADDED'
     else:
         event_type = 'REVIEW_FIELD_CHANGED'
-    _record_event(connection,incident_id,event_type,now=now,field_name=field,
+    _record_event(connection,incident_id,event_type,now=now,
+                  field_name=None if field == 'final_summary' else field,
                   old_value=old,new_value=new,summary=f'{field.replace("_"," ").title()} changed')
 
 
 def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confidence='MEDIUM',
                   site_id=None, scope_id=None, device_id=None, disposition='UNREVIEWED',
-                  analyst_note=None, db_path=DB_PATH):
+                  analyst_note=None, final_summary=None, db_path=DB_PATH):
     initialize_database(db_path)
     title = _valid_text(title, 'Title', 160, required=True)
     summary = _valid_text(summary, 'Summary', 4000)
     analyst_note = None if analyst_note is None else _valid_text(analyst_note, 'Analyst note', 4000)
-    if state not in STATES or priority not in PRIORITIES or confidence not in CONFIDENCES or disposition not in DISPOSITIONS:
+    final_summary = _normalize_final_summary(final_summary)
+    if state == 'CLOSED':
+        raise IncidentReviewError('New incident reviews cannot be created CLOSED.')
+    if state not in {'OPEN','IN_REVIEW'} or priority not in PRIORITIES or confidence not in CONFIDENCES or disposition not in DISPOSITIONS:
         raise IncidentReviewError('Incident review state, priority, confidence, or disposition is unsupported.')
     now = _now()
-    closed_at = now if state == 'CLOSED' else None
+    closed_at = None
     incident_key = f'IR-{uuid4().hex}'
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
@@ -204,10 +233,10 @@ def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confide
         _validate_attribution(connection, site_id=site_id, scope_id=scope_id, device_id=device_id)
         cursor = connection.execute('''INSERT INTO incident_reviews (
             incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
-            created_at,updated_at,closed_at,disposition,analyst_note)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            created_at,updated_at,closed_at,disposition,analyst_note,final_summary)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
-             now,now,closed_at,disposition,analyst_note))
+             now,now,closed_at,disposition,analyst_note,final_summary))
         incident_id = cursor.lastrowid
         _record_event(connection,incident_id,'REVIEW_CREATED',now=now,
                       summary='Incident review created')
@@ -297,7 +326,7 @@ def list_reviews(*, limit=20, offset=0, state=None, priority=None, site_id=None,
 
 def update_review(incident_id, updates, db_path=DB_PATH):
     allowed = {'title','summary','state','priority','confidence','disposition','analyst_note',
-               'site_id','scope_id','device_id'}
+               'final_summary','site_id','scope_id','device_id'}
     if not isinstance(updates, dict) or not updates or set(updates) - allowed:
         raise IncidentReviewError('Update fields are unsupported or empty.')
     values = dict(updates)
@@ -307,6 +336,8 @@ def update_review(incident_id, updates, db_path=DB_PATH):
         if field in values and values[field] is not None:
             values[field] = _valid_text(values[field], field.replace('_',' ').title(), maximum,
                                         required=(field == 'title'))
+    if 'final_summary' in values:
+        values['final_summary'] = _normalize_final_summary(values['final_summary'])
     for field, allowed_values in (('state',STATES),('priority',PRIORITIES),('confidence',CONFIDENCES),('disposition',DISPOSITIONS)):
         if field in values and values[field] not in allowed_values:
             raise IncidentReviewError(f'{field.replace("_"," ").title()} is unsupported.')
@@ -320,7 +351,18 @@ def update_review(incident_id, updates, db_path=DB_PATH):
         attribution = {field: values.get(field,current[field]) for field in ('site_id','scope_id','device_id')}
         _validate_attribution(connection,**attribution)
         state = values.get('state', current['state'])
-        now = _now()
+        disposition = values.get('disposition',current['disposition'])
+        final_summary = values.get('final_summary',current['final_summary'])
+        if state == 'CLOSED' and current['state'] != 'CLOSED':
+            if disposition == 'UNREVIEWED':
+                raise IncidentReviewError('A review disposition is required before closing.')
+            if final_summary is None or not final_summary.strip():
+                raise IncidentReviewError('A final analyst summary is required before closing.')
+        if current['state'] == 'CLOSED' and any(
+                field != 'state' and current[field] != value
+                for field,value in values.items()):
+            raise IncidentReviewError('Reopen the review before editing it.')
+        now = _closure_time(connection,incident_id) if state == 'CLOSED' and current['state'] != 'CLOSED' else _now()
         changed = [(field,current[field],value) for field,value in values.items()
                    if field not in {'closed_at','updated_at'} and current[field] != value]
         closed_at = current['closed_at']
@@ -332,7 +374,7 @@ def update_review(incident_id, updates, db_path=DB_PATH):
         assignments = ','.join(f'{key}=?' for key in values)
         connection.execute(f'UPDATE incident_reviews SET {assignments} WHERE id=?', (*values.values(),incident_id))
         # Stable field ordering makes events from a multi-field patch deterministic.
-        field_order = ('state','priority','confidence','disposition','title','summary',
+        field_order = ('state','priority','confidence','disposition','final_summary','title','summary',
                        'site_id','scope_id','device_id','analyst_note')
         changes = {field:(old,new) for field,old,new in changed}
         for field in field_order:
