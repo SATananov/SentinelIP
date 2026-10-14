@@ -1,6 +1,6 @@
 """Manual incident review containers over immutable persisted evidence."""
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from database.db import DB_PATH, get_connection, initialize_database
@@ -25,6 +25,23 @@ EVIDENCE_QUERIES = {
     'THREAT_CORRELATION': "SELECT id,NULL site_id,NULL scope_id,device_id,first_seen observed_at FROM correlations WHERE id=?",
     'WEB_DETECTION': "SELECT id,NULL site_id,NULL scope_id,device_id,first_seen observed_at FROM web_detections WHERE id=?",
 }
+
+RELATED_EVIDENCE_QUERIES = {
+    'PERIMETER_DETECTION': "SELECT id,site_id,NULL scope_id,NULL device_id,first_seen observed_at FROM perimeter_detections",
+    'PERIMETER_POLICY_CORRELATION': "SELECT id,site_id,NULL scope_id,NULL device_id,first_seen observed_at FROM perimeter_policy_correlations",
+    'PERIMETER_HOST_CORRELATION': "SELECT id,site_id,scope_id,device_id,observed_at FROM perimeter_host_correlations",
+    'EXTERNAL_EXPOSURE_CHANGE': """SELECT c.id,rss.site_id,c.scope_id,e.device_id,c.observed_at
+        FROM external_exposure_changes c
+        JOIN external_exposures e ON e.id=c.exposure_id
+        LEFT JOIN remote_scope_sites rss ON rss.scope_id=c.scope_id""",
+    'THREAT_DETECTION': "SELECT id,NULL site_id,NULL scope_id,device_id,first_seen observed_at FROM threat_detections",
+    'THREAT_CORRELATION': "SELECT id,NULL site_id,NULL scope_id,device_id,first_seen observed_at FROM correlations",
+    'WEB_DETECTION': "SELECT id,NULL site_id,NULL scope_id,device_id,first_seen observed_at FROM web_detections",
+}
+
+RELATED_EVIDENCE_WINDOW = timedelta(minutes=30)
+RELATED_EVIDENCE_BATCH_SIZE = 100
+RELATED_EVIDENCE_SCAN_LIMIT = 1000
 
 
 class IncidentReviewError(ValueError):
@@ -259,6 +276,124 @@ def _recompute_evidence_times(connection, incident_id):
         first = last = None
     connection.execute('UPDATE incident_reviews SET first_evidence_at=?,last_evidence_at=? WHERE id=?',
                        (first,last,incident_id))
+
+
+def _as_utc(value):
+    instant = datetime.fromisoformat(value.replace('Z','+00:00'))
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc)
+
+
+def _match_reason(review, evidence, anchors):
+    """Return the strongest exact attribution match, or None if unsafe."""
+    matches = []
+    anchor_matches = []
+    for field, label in (('device_id','device'),('scope_id','scope'),('site_id','site')):
+        actual = evidence.get(field)
+        expected = review.get(field)
+        if expected is not None and actual is None:
+            return None
+        if expected is not None and expected != actual:
+            return None
+        if expected is not None:
+            matches.append(label)
+        for context in anchors:
+            expected = context.get(field)
+            if expected is not None and actual is None:
+                return None
+            if expected is not None and expected != actual:
+                return None
+            if expected is not None:
+                anchor_matches.append(label)
+    if not matches and not anchor_matches:
+        return None
+    return f"Same {(matches or anchor_matches)[0]} within review time window"
+
+
+def list_related_evidence(incident_id, *, limit=100, evidence_type=None, db_path=DB_PATH):
+    """Return bounded read-only suggestions compatible with a review."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise IncidentReviewError('Related evidence limit must be between 1 and 100.')
+    if evidence_type is not None and evidence_type not in EVIDENCE_QUERIES:
+        raise IncidentReviewError('Evidence type is unsupported.')
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        review = _review(connection, incident_id)
+        if review is None:
+            raise IncidentReviewError('Incident review not found.',404)
+        if not review['first_evidence_at'] or not review['last_evidence_at']:
+            return {'total':0,'items':[]}
+
+        first = _as_utc(review['first_evidence_at']) - RELATED_EVIDENCE_WINDOW
+        last = _as_utc(review['last_evidence_at']) + RELATED_EVIDENCE_WINDOW
+        start, end = first.isoformat(), last.isoformat()
+        linked = {(row['evidence_type'],row['evidence_id']) for row in connection.execute(
+            'SELECT evidence_type,evidence_id FROM incident_review_evidence WHERE incident_id=?',
+            (incident_id,)).fetchall()}
+        anchors = []
+        for kind, source_id in linked:
+            try:
+                anchors.append(_resolve_evidence_attribution(
+                    connection,_evidence(connection,kind,source_id)))
+            except IncidentReviewError as exc:
+                if exc.status_code != 404:
+                    # Invalid or ambiguous persisted attribution cannot anchor
+                    # suggestions. Keep the stale link visible through 13A.
+                    continue
+        candidates = []
+        evidence_types = (evidence_type,) if evidence_type else tuple(EVIDENCE_QUERIES)
+        for kind in evidence_types:
+            query = RELATED_EVIDENCE_QUERIES[kind]
+            # Pull bounded pages. Scanning stops after 100 compatible rows per
+            # type, which is sufficient to compute the global top 100.
+            scanned = 0
+            offset = 0
+            while scanned < RELATED_EVIDENCE_SCAN_LIMIT:
+                page_size = min(RELATED_EVIDENCE_BATCH_SIZE,
+                                RELATED_EVIDENCE_SCAN_LIMIT - scanned)
+                rows = connection.execute(
+                    f"SELECT * FROM ({query.rstrip(';')}) WHERE julianday(observed_at) >= julianday(?) "
+                    "AND julianday(observed_at) <= julianday(?) "
+                    "ORDER BY julianday(observed_at) DESC,id ASC LIMIT ? OFFSET ?",
+                    (start,end,page_size,offset)).fetchall()
+                if not rows:
+                    break
+                scanned += len(rows)
+                offset += len(rows)
+                for row in rows:
+                    try:
+                        source = _resolve_evidence_attribution(connection,dict(row))
+                    except IncidentReviewError:
+                        continue
+                    if kind == 'EXTERNAL_EXPOSURE_CHANGE' and source['scope_id'] is not None:
+                        site_count = connection.execute(
+                            'SELECT COUNT(DISTINCT site_id) FROM remote_scope_sites WHERE scope_id=?',
+                            (source['scope_id'],)).fetchone()[0]
+                        if site_count != 1:
+                            continue
+                    reason = _match_reason(review,source,anchors)
+                    if reason is None:
+                        continue
+                    key = (kind,source['id'])
+                    candidates.append({
+                        'evidence_type':kind,
+                        'evidence_id':source['id'],
+                        'observed_at':source['observed_at'],
+                        'source_status':'AVAILABLE',
+                        'already_linked':key in linked,
+                        'match_reason':reason,
+                    })
+                if len([item for item in candidates if item['evidence_type']==kind]) >= 100:
+                    break
+                if len(rows) < page_size:
+                    break
+        # Stable passes preserve ascending type/ID ties under descending time.
+        candidates.sort(key=lambda item:(item['evidence_type'],item['evidence_id']))
+        candidates.sort(key=lambda item:_as_utc(item['observed_at']),reverse=True)
+        bounded = candidates[:100]
+        return {'total':len(bounded),'items':bounded[:limit]}
 
 
 def add_evidence(incident_id, *, evidence_type, evidence_id, reason=None, db_path=DB_PATH):

@@ -7,7 +7,7 @@ import api.main as api
 from database.db import get_connection, initialize_database
 from database.incident_reviews import (
     IncidentReviewError, add_evidence, create_review, get_review, list_evidence,
-    list_reviews, remove_evidence, update_review,
+    list_related_evidence, list_reviews, remove_evidence, update_review,
 )
 from database.inventory import create_device, create_scope_device
 from database.migrations import MIGRATIONS
@@ -268,3 +268,168 @@ def test_deleted_external_exposure_cascade_is_visible_and_detachable(tmp_path,mo
     with get_connection(path) as connection:
         assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence WHERE incident_id=?',
                                   (review['id'],)).fetchone()[0] == 0
+
+
+def _insert_review_threat(path, device_id, observed_at, stable_key):
+    at = observed_at.isoformat()
+    with get_connection(path) as connection:
+        cursor = connection.execute('''INSERT INTO threat_detections (
+            stable_key,threat_type,state,severity,confidence,device_id,source_ip,sensor_id,hostname,
+            primary_evidence_type,primary_evidence_id,anchor_id,reason,recommendation,rule_id,rule_version,
+            first_seen,last_seen,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (stable_key,'SUSPICIOUS_AUTH_ACTIVITY','ANOMALOUS','LOW','MEDIUM',device_id,
+             '203.0.113.20',None,None,'SSH_EVENT',1,1,'review signal','review evidence',
+             'review.test','1',at,at,at,at))
+        return cursor.lastrowid
+
+
+def _linked_threat_review(path, *, attribution='site'):
+    site,scope,device = _private_device(path,'Related','192.168.70.0/24')
+    threat_id = _insert_review_threat(path,device['id'],AT,'related-anchor')
+    review_attribution = {'site_id':site['id']}
+    if attribution == 'scope':
+        review_attribution = {'scope_id':scope}
+    elif attribution == 'device':
+        review_attribution = {'site_id':site['id'],'scope_id':scope,'device_id':device['id']}
+    elif attribution != 'site':
+        raise AssertionError('Unsupported review fixture attribution.')
+    review = create_review(title='Related evidence review',**review_attribution,db_path=path)
+    add_evidence(review['id'],evidence_type='THREAT_DETECTION',evidence_id=threat_id,db_path=path)
+    return site,scope,device,threat_id,review
+
+
+def test_related_evidence_exact_device_scope_and_site_matches(tmp_path):
+    path = tmp_path / 'related-match.db'
+    site,scope,device,anchor,review = _linked_threat_review(path,attribution='device')
+    device_candidate = _insert_review_threat(path,device['id'],AT+timedelta(minutes=1),'device-candidate')
+    exact_device = list_related_evidence(review['id'],db_path=path)
+    device_item = next(item for item in exact_device['items'] if item['evidence_id']==device_candidate)
+    assert device_item['match_reason'] == 'Same device within review time window'
+
+    # A scope-only review matches through the unique device-to-scope relationship.
+    scope_review = create_review(title='Scope review',scope_id=scope,db_path=path)
+    add_evidence(scope_review['id'],evidence_type='THREAT_DETECTION',evidence_id=anchor,db_path=path)
+    scope_candidate = _insert_review_threat(path,device['id'],AT+timedelta(minutes=2),'scope-candidate')
+    scope_item = next(item for item in list_related_evidence(scope_review['id'],db_path=path)['items']
+                      if item['evidence_id']==scope_candidate)
+    assert scope_item['match_reason'] == 'Same scope within review time window'
+
+    # A site-only review can match a device source only through its unique
+    # authorized-scope/site relationship.
+    site_review = create_review(title='Site review',site_id=site['id'],db_path=path)
+    add_evidence(site_review['id'],evidence_type='THREAT_DETECTION',evidence_id=anchor,db_path=path)
+    site_candidate = _insert_review_threat(path,device['id'],AT+timedelta(minutes=3),'site-candidate')
+    site_item = next(item for item in list_related_evidence(site_review['id'],db_path=path)['items']
+                     if item['evidence_id']==site_candidate)
+    assert site_item['match_reason'] == 'Same site within review time window'
+
+
+def test_related_evidence_no_wildcards_and_ambiguous_device_scope_is_excluded(tmp_path,monkeypatch):
+    path = tmp_path / 'related-fail-closed.db'
+    site,scope,device,anchor,review = _linked_threat_review(path,attribution='device')
+    # This site-only source has no device attribution; shared site cannot
+    # fill the missing device field required by the review.
+    perimeter = _detection(path,site['id'],6)
+    results = list_related_evidence(review['id'],db_path=path)['items']
+    assert not any(item['evidence_type']=='PERIMETER_DETECTION' and item['evidence_id']==perimeter['id']
+                   for item in results)
+
+    ambiguous_review = create_review(title='Ambiguous scope review',scope_id=scope,db_path=path)
+    add_evidence(ambiguous_review['id'],evidence_type='THREAT_DETECTION',
+                 evidence_id=anchor,db_path=path)
+    update_review(ambiguous_review['id'],{'site_id':site['id']},path)
+    # Force the existing device-to-scope resolver to report ambiguity; its
+    # fail-closed path must not turn a device-only source into a scope match.
+    import database.incident_reviews as review_db
+    monkeypatch.setattr(review_db,'_device_scope_ids',lambda _connection,_device:{scope,scope+1})
+    ambiguous_candidate = _insert_review_threat(path,device['id'],AT+timedelta(minutes=4),'ambiguous-candidate')
+    assert not any(item['evidence_id']==ambiguous_candidate
+                   for item in list_related_evidence(ambiguous_review['id'],db_path=path)['items'])
+
+
+def test_related_evidence_time_boundaries_order_and_linked_state(tmp_path):
+    path = tmp_path / 'related-window.db'
+    site,scope,device,anchor,review = _linked_threat_review(path,attribution='device')
+    at_start = _insert_review_threat(path,device['id'],AT-timedelta(minutes=30),'at-start')
+    at_end = _insert_review_threat(path,device['id'],AT+timedelta(minutes=30),'at-end')
+    outside = _insert_review_threat(path,device['id'],AT+timedelta(minutes=30,seconds=1),'outside')
+    same_time_b = _insert_review_threat(path,device['id'],AT+timedelta(minutes=5),'same-b')
+    same_time_a = _insert_review_threat(path,device['id'],AT+timedelta(minutes=5),'same-a')
+    offset_equivalent = _insert_review_threat(
+        path,device['id'],AT.astimezone(timezone(timedelta(hours=2))),'offset-equivalent')
+    naive_utc = _insert_review_threat(path,device['id'],AT.replace(tzinfo=None),'naive-utc')
+    result = list_related_evidence(review['id'],db_path=path)
+    ids = [item['evidence_id'] for item in result['items']]
+    assert at_start in ids and at_end in ids and outside not in ids
+    assert offset_equivalent in ids and naive_utc in ids
+    assert result['items'][0]['evidence_id'] == at_end
+    linked = next(item for item in result['items'] if item['evidence_id']==anchor)
+    assert linked['already_linked'] is True
+    tied = [item['evidence_id'] for item in result['items'] if item['observed_at']==(AT+timedelta(minutes=5)).isoformat()]
+    assert tied == sorted(tied)
+    assert same_time_a in tied and same_time_b in tied
+
+
+def test_related_evidence_no_anchor_missing_source_limit_and_filter(tmp_path):
+    path = tmp_path / 'related-bounds.db'
+    site,scope,device,anchor,review = _linked_threat_review(path,attribution='device')
+    no_anchor = create_review(title='No time anchor',device_id=device['id'],db_path=path)
+    assert list_related_evidence(no_anchor['id'],db_path=path)['items'] == []
+    missing = _insert_review_threat(path,device['id'],AT+timedelta(minutes=1),'missing-source')
+    add_evidence(review['id'],evidence_type='THREAT_DETECTION',evidence_id=missing,db_path=path)
+    with get_connection(path) as connection:
+        connection.execute('DELETE FROM threat_detections WHERE id=?',(missing,))
+    # A stale 13A link stays visible, but cannot become an attachable suggestion.
+    assert any(item['evidence_id']==missing and item['source_status']=='MISSING'
+               for item in list_evidence(review['id'],db_path=path)['items'])
+    assert missing not in [item['evidence_id'] for item in list_related_evidence(review['id'],db_path=path)['items']]
+    candidate_ids = [_insert_review_threat(path,device['id'],AT+timedelta(minutes=10),f'limited-{i}') for i in range(105)]
+    assert len(list_related_evidence(review['id'],limit=100,db_path=path)['items']) == 100
+    filtered = list_related_evidence(review['id'],limit=5,evidence_type='THREAT_DETECTION',db_path=path)
+    assert len(filtered['items']) == 5 and filtered['total'] == 100
+    with pytest.raises(IncidentReviewError):
+        list_related_evidence(review['id'],evidence_type='devices',db_path=path)
+    assert all(item['evidence_type']=='THREAT_DETECTION' for item in filtered['items'])
+    assert candidate_ids[0] in [item['evidence_id'] for item in list_related_evidence(review['id'],db_path=path)['items']]
+
+
+def test_related_evidence_api_is_read_only_strict_and_legacy_incidents_unchanged(tmp_path,monkeypatch):
+    path = tmp_path / 'related-api.db'
+    initialize_database(path)
+    monkeypatch.setattr(api,'DB_PATH',path)
+    site,scope,device,anchor,review = _linked_threat_review(path)
+    with get_connection(path) as connection:
+        before = (connection.execute('SELECT updated_at FROM incident_reviews WHERE id=?',(review['id'],)).fetchone()[0],
+            connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0],
+            connection.execute('SELECT COUNT(*) FROM threat_detections').fetchone()[0])
+    routes = {route.path:route.endpoint for route in api.app.routes if hasattr(route,'endpoint')}
+    related_route = routes['/incident-reviews/{incident_id}/related-evidence']
+    body = related_route(review['id'],limit=100)
+    assert set(body['items'][0]) == {'evidence_type','evidence_id','observed_at','source_status','already_linked','match_reason'}
+    assert body['items'][0]['source_status'] == 'AVAILABLE'
+    route_schema = api.app.openapi()['paths']['/incident-reviews/{incident_id}/related-evidence']['get']
+    parameters = {item['name']:item for item in route_schema['parameters']}
+    assert parameters['limit']['schema']['minimum'] == 1
+    assert parameters['limit']['schema']['maximum'] == 100
+    assert set(parameters['evidence_type']['schema']['anyOf'][0]['enum']) == {
+        'PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION','PERIMETER_HOST_CORRELATION',
+        'EXTERNAL_EXPOSURE_CHANGE','THREAT_DETECTION','THREAT_CORRELATION','WEB_DETECTION',
+    }
+    with pytest.raises(ValueError):
+        list_related_evidence(review['id'],limit=101,db_path=path)
+    with pytest.raises(ValueError):
+        list_related_evidence(review['id'],evidence_type='unknown',db_path=path)
+    legacy_route = routes['/incidents']
+    legacy_before = legacy_route(limit=20,offset=0)
+    assert legacy_before['total'] == 0
+    wrong_site = RemoteSensorStore(path).create_site('Wrong site')
+    foreign = _detection(path,wrong_site['id'],8)
+    with pytest.raises(IncidentReviewError):
+        add_evidence(review['id'],evidence_type='PERIMETER_DETECTION',evidence_id=foreign['id'],db_path=path)
+    assert legacy_route(limit=20,offset=0) == legacy_before
+    with get_connection(path) as connection:
+        after = (connection.execute('SELECT updated_at FROM incident_reviews WHERE id=?',(review['id'],)).fetchone()[0],
+            connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0],
+            connection.execute('SELECT COUNT(*) FROM threat_detections').fetchone()[0])
+    assert after == before

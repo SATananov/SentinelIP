@@ -876,6 +876,78 @@ h2 {
   font-weight: 700;
 }
 
+.incident-review-workflow {
+  margin-top: 16px;
+  padding: 18px;
+}
+
+.incident-review-workflow h4 {
+  margin: 18px 0 9px;
+  color: #dce1e9;
+  font-size: 12px;
+}
+
+.incident-review-detail {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #374150;
+  border-radius: 10px;
+  background: #12161c;
+}
+
+.incident-review-disclaimer {
+  margin: 0 0 12px;
+  color: #98a3b4;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.incident-review-items {
+  display: grid;
+  gap: 7px;
+}
+
+.incident-review-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 10px;
+  padding: 10px;
+  border: 1px solid #29313c;
+  border-radius: 8px;
+  background: #171b22;
+  color: #cbd1dc;
+  font-size: 11px;
+}
+
+.incident-review-item small {
+  grid-column: 1;
+  color: #8993a4;
+  font-size: 10px;
+}
+
+.incident-review-item button,
+.incident-review-item > span:last-child {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.incident-review-linked,
+.incident-review-missing {
+  color: #9aa5b6;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.incident-review-missing {
+  color: #e4b778;
+}
+
+.incident-review-item button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .security-detail-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

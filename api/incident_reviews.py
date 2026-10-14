@@ -107,6 +107,15 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
+    @app.get('/incident-reviews/{incident_id}/related-evidence')
+    def get_related_incident_review_evidence(incident_id: int,
+        limit: int = Query(default=100,ge=1,le=100), evidence_type: EvidenceType | None = None):
+        try:
+            return {**reviews_db.list_related_evidence(incident_id,limit=limit,
+                evidence_type=evidence_type,db_path=db_path_provider()),'limit':limit}
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
     @app.post('/incident-reviews/{incident_id}/evidence',status_code=201)
     def attach_incident_review_evidence(incident_id: int,payload: EvidenceCreate):
         try:

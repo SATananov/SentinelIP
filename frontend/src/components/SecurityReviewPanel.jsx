@@ -4,6 +4,7 @@ import {
   loadSecurityDetail,
   loadSecurityOverview,
 } from '../services/securityApi.js'
+import IncidentReviewSection from './IncidentReviewSection.jsx'
 
 const KIND_LABELS = {
   threat: 'Threat',
@@ -432,6 +433,8 @@ function SecurityReviewPanel({ refreshSignal }) {
           )}
         </article>
       </div>
+
+      <IncidentReviewSection refreshSignal={refreshSignal} />
 
       <SecurityDetail
         selection={selection}
