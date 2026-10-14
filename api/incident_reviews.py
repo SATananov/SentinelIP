@@ -52,6 +52,10 @@ class EvidenceCreate(Input):
     reason: StrictStr | None = Field(default=None, max_length=500)
 
 
+class NoteCreate(Input):
+    note_text: StrictStr = Field(min_length=1, max_length=4000)
+
+
 def _raise(exc):
     raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -95,6 +99,31 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             raise HTTPException(422,'Incident review ID must be positive.')
         try:
             return reviews_db.update_review(incident_id,payload.model_dump(exclude_unset=True),db_path_provider())
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-reviews/{incident_id}/timeline')
+    def get_incident_review_timeline(incident_id: int,
+        limit: int = Query(default=100,ge=1,le=100),offset: int = Query(default=0,ge=0,le=100000)):
+        try:
+            return {**reviews_db.list_timeline(incident_id,limit=limit,offset=offset,
+                db_path=db_path_provider()),'limit':limit,'offset':offset}
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-reviews/{incident_id}/notes')
+    def get_incident_review_notes(incident_id: int,
+        limit: int = Query(default=100,ge=1,le=100),offset: int = Query(default=0,ge=0,le=100000)):
+        try:
+            return {**reviews_db.list_notes(incident_id,limit=limit,offset=offset,
+                db_path=db_path_provider()),'limit':limit,'offset':offset}
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.post('/incident-reviews/{incident_id}/notes',status_code=201)
+    def add_incident_review_note(incident_id: int,payload: NoteCreate):
+        try:
+            return reviews_db.add_note(incident_id,payload.note_text,db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 

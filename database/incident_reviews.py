@@ -42,6 +42,11 @@ RELATED_EVIDENCE_QUERIES = {
 RELATED_EVIDENCE_WINDOW = timedelta(minutes=30)
 RELATED_EVIDENCE_BATCH_SIZE = 100
 RELATED_EVIDENCE_SCAN_LIMIT = 1000
+REVIEW_EVENT_TYPES = frozenset({'REVIEW_CREATED','STATE_CHANGED','REVIEW_CLOSED','REVIEW_REOPENED',
+    'PRIORITY_CHANGED','CONFIDENCE_CHANGED','DISPOSITION_CHANGED','REVIEW_FIELD_CHANGED',
+    'ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED','EVIDENCE_ATTACHED','EVIDENCE_DETACHED'})
+REVIEW_FIELD_NAMES = frozenset({'title','summary','site_id','scope_id','device_id'})
+REVIEW_HISTORY_MAX_OFFSET = 100000
 
 
 class IncidentReviewError(ValueError):
@@ -144,6 +149,43 @@ def _review(connection, incident_id):
     return dict(row) if row is not None else None
 
 
+def _record_event(connection, incident_id, event_type, *, now=None, field_name=None,
+                  old_value=None, new_value=None, evidence_type=None, evidence_id=None,
+                  note_id=None, summary=None):
+    if event_type not in REVIEW_EVENT_TYPES:
+        raise IncidentReviewError('Review event type is unsupported.')
+    if field_name is not None and field_name not in REVIEW_FIELD_NAMES | {
+            'state','priority','confidence','disposition','analyst_note'}:
+        raise IncidentReviewError('Review event field is unsupported.')
+    connection.execute('''INSERT INTO incident_review_events (
+        incident_review_id,event_type,actor_source,created_at,field_name,old_value,new_value,
+        evidence_type,evidence_id,note_id,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+        (incident_id,event_type,'OPERATOR',now or _now(),field_name,
+         None if old_value is None else str(old_value),
+         None if new_value is None else str(new_value),
+         evidence_type,evidence_id,note_id,summary))
+
+
+def _field_event(connection, incident_id, field, old, new, now):
+    if old == new:
+        return
+    if field == 'state':
+        event_type = ('REVIEW_CLOSED' if new == 'CLOSED' else 'REVIEW_REOPENED') \
+            if old == 'CLOSED' or new == 'CLOSED' else 'STATE_CHANGED'
+    elif field == 'priority':
+        event_type = 'PRIORITY_CHANGED'
+    elif field == 'confidence':
+        event_type = 'CONFIDENCE_CHANGED'
+    elif field == 'disposition':
+        event_type = 'DISPOSITION_CHANGED'
+    elif field == 'analyst_note':
+        event_type = 'ANALYST_NOTE_CLEARED' if new is None or new == '' else 'ANALYST_NOTE_ADDED'
+    else:
+        event_type = 'REVIEW_FIELD_CHANGED'
+    _record_event(connection,incident_id,event_type,now=now,field_name=field,
+                  old_value=old,new_value=new,summary=f'{field.replace("_"," ").title()} changed')
+
+
 def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confidence='MEDIUM',
                   site_id=None, scope_id=None, device_id=None, disposition='UNREVIEWED',
                   analyst_note=None, db_path=DB_PATH):
@@ -166,7 +208,10 @@ def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confide
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
              now,now,closed_at,disposition,analyst_note))
-        return _review(connection, cursor.lastrowid)
+        incident_id = cursor.lastrowid
+        _record_event(connection,incident_id,'REVIEW_CREATED',now=now,
+                      summary='Incident review created')
+        return _review(connection, incident_id)
 
 
 def get_review(incident_id, db_path=DB_PATH):
@@ -174,6 +219,59 @@ def get_review(incident_id, db_path=DB_PATH):
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         return _review(connection, incident_id)
+
+
+def add_note(incident_id, note_text, db_path=DB_PATH):
+    note_text = _valid_text(note_text,'Note',4000,required=True)
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('BEGIN IMMEDIATE')
+        if _review(connection,incident_id) is None:
+            raise IncidentReviewError('Incident review not found.',404)
+        now = _now()
+        cursor = connection.execute('''INSERT INTO incident_review_notes
+            (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)''',
+            (incident_id,note_text,'OPERATOR',now))
+        note_id = cursor.lastrowid
+        _record_event(connection,incident_id,'ANALYST_NOTE_ADDED',now=now,
+                      note_id=note_id,new_value=note_text,summary='Analyst note added')
+        return dict(connection.execute('SELECT * FROM incident_review_notes WHERE id=?',
+                                       (note_id,)).fetchone())
+
+
+def list_notes(incident_id, *, limit=100, offset=0, db_path=DB_PATH):
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int \
+            or not 0 <= offset <= REVIEW_HISTORY_MAX_OFFSET:
+        raise IncidentReviewError('Note pagination is invalid.')
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        if _review(connection,incident_id) is None:
+            raise IncidentReviewError('Incident review not found.',404)
+        total = connection.execute('SELECT COUNT(*) FROM incident_review_notes WHERE incident_review_id=?',
+                                   (incident_id,)).fetchone()[0]
+        rows = connection.execute('''SELECT * FROM incident_review_notes WHERE incident_review_id=?
+            ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?''',
+            (incident_id,limit,offset)).fetchall()
+        return {'total':total,'items':[dict(row) for row in rows]}
+
+
+def list_timeline(incident_id, *, limit=100, offset=0, db_path=DB_PATH):
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int \
+            or not 0 <= offset <= REVIEW_HISTORY_MAX_OFFSET:
+        raise IncidentReviewError('Timeline pagination is invalid.')
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        if _review(connection,incident_id) is None:
+            raise IncidentReviewError('Incident review not found.',404)
+        total = connection.execute('SELECT COUNT(*) FROM incident_review_events WHERE incident_review_id=?',
+                                   (incident_id,)).fetchone()[0]
+        rows = connection.execute('''SELECT * FROM incident_review_events WHERE incident_review_id=?
+            ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?''',
+            (incident_id,limit,offset)).fetchall()
+        return {'total':total,'items':[dict(row) for row in rows]}
 
 
 def list_reviews(*, limit=20, offset=0, state=None, priority=None, site_id=None,
@@ -220,6 +318,8 @@ def update_review(incident_id, updates, db_path=DB_PATH):
         _validate_attribution(connection,**attribution)
         state = values.get('state', current['state'])
         now = _now()
+        changed = [(field,current[field],value) for field,value in values.items()
+                   if field not in {'closed_at','updated_at'} and current[field] != value]
         closed_at = current['closed_at']
         if state == 'CLOSED' and current['state'] != 'CLOSED':
             closed_at = now
@@ -228,6 +328,14 @@ def update_review(incident_id, updates, db_path=DB_PATH):
         values.update({'closed_at':closed_at, 'updated_at':now})
         assignments = ','.join(f'{key}=?' for key in values)
         connection.execute(f'UPDATE incident_reviews SET {assignments} WHERE id=?', (*values.values(),incident_id))
+        # Stable field ordering makes events from a multi-field patch deterministic.
+        field_order = ('state','priority','confidence','disposition','title','summary',
+                       'site_id','scope_id','device_id','analyst_note')
+        changes = {field:(old,new) for field,old,new in changed}
+        for field in field_order:
+            if field in changes:
+                old,new = changes[field]
+                _field_event(connection,incident_id,field,old,new,now)
         return _review(connection, incident_id)
 
 
@@ -418,6 +526,10 @@ def add_evidence(incident_id, *, evidence_type, evidence_id, reason=None, db_pat
                                     (incident_id,evidence_type,evidence_id)).fetchone()
         _recompute_evidence_times(connection,incident_id)
         connection.execute('UPDATE incident_reviews SET updated_at=? WHERE id=?',(now,incident_id))
+        if cursor.rowcount:
+            _record_event(connection,incident_id,'EVIDENCE_ATTACHED',now=now,
+                          evidence_type=evidence_type,evidence_id=evidence_id,
+                          summary='Evidence attached to review')
         result = dict(linked)
         result['idempotent'] = cursor.rowcount == 0
         return result
@@ -461,5 +573,9 @@ def remove_evidence(incident_id, evidence_type, evidence_id, db_path=DB_PATH):
         if cursor.rowcount == 0:
             raise IncidentReviewError('Incident evidence link not found.',404)
         _recompute_evidence_times(connection,incident_id)
-        connection.execute('UPDATE incident_reviews SET updated_at=? WHERE id=?',(_now(),incident_id))
+        now = _now()
+        connection.execute('UPDATE incident_reviews SET updated_at=? WHERE id=?',(now,incident_id))
+        _record_event(connection,incident_id,'EVIDENCE_DETACHED',now=now,
+                       evidence_type=evidence_type,evidence_id=evidence_id,
+                       summary='Evidence detached from review')
         return {'removed':True}

@@ -1,13 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database.db import get_connection, initialize_database
 from database.incident_reviews import (
-    IncidentReviewError, add_evidence, create_review, get_review, list_evidence,
-    list_related_evidence, list_reviews, remove_evidence, update_review,
+    IncidentReviewError, add_evidence, add_note, create_review, get_review, list_evidence,
+    list_notes, list_related_evidence, list_reviews, list_timeline, remove_evidence, update_review,
 )
 from database.inventory import create_device, create_scope_device
 from database.migrations import MIGRATIONS
@@ -67,7 +66,7 @@ def _device_threat(path,device_id,sequence=1):
         return cursor.lastrowid
 
 
-def test_migration_41_is_additive_idempotent_and_fk_clean(tmp_path,monkeypatch):
+def test_migrations_41_and_42_are_additive_idempotent_and_fk_clean(tmp_path,monkeypatch):
     path = tmp_path / 'review-migration.db'
     from database import migrations as migration_module
     monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS[:40])
@@ -77,11 +76,131 @@ def test_migration_41_is_additive_idempotent_and_fk_clean(tmp_path,monkeypatch):
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=41').fetchone()[0] == 1
+        assert connection.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=42').fetchone()[0] == 1
         assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
         names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {'incident_reviews','incident_review_evidence','incidents','incident_correlations'} <= names
-        assert max(version for version,_ in MIGRATIONS) == 41
+        assert {'incident_reviews','incident_review_evidence','incident_review_events',
+                'incident_review_notes','incidents','incident_correlations'} <= names
+        assert max(version for version,_ in MIGRATIONS) == 42
+
+
+def test_migration_42_adds_append_only_history_idempotently(tmp_path,monkeypatch):
+    path = tmp_path / 'review-migration-42.db'
+    from database import migrations as migration_module
+    monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS[:41])
+    initialize_database(path)
+    with get_connection(path) as connection:
+        cursor = connection.execute('''INSERT INTO incident_reviews (
+            incident_key,title,summary,state,priority,confidence,created_at,updated_at,
+            disposition) VALUES ('IR-pre13c','Pre-13C review','','OPEN','MEDIUM','MEDIUM',
+            '2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','UNREVIEWED')''')
+        legacy_review_id = cursor.lastrowid
+    with get_connection(path) as connection:
+        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 41
+        before = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    monkeypatch.setattr(migration_module,'MIGRATIONS',MIGRATIONS)
+    initialize_database(path)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 42
+        after = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {'incident_review_events','incident_review_notes'} <= after - before
+        assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
+    assert list_timeline(legacy_review_id,db_path=path)['total'] == 0
+
+
+def test_review_timeline_and_notes_are_atomic_bounded_and_ordered(tmp_path):
+    path = tmp_path / 'review-history.db'
+    review = create_review(title='History review',db_path=path)
+    assert [row['event_type'] for row in list_timeline(review['id'],db_path=path)['items']] == ['REVIEW_CREATED']
+    update_review(review['id'],{'state':'IN_REVIEW','priority':'HIGH','confidence':'HIGH',
+        'disposition':'NEEDS_MONITORING','title':'Updated history review','summary':'Changed'},path)
+    update_review(review['id'],{'state':'CLOSED'},path)
+    update_review(review['id'],{'state':'OPEN'},path)
+    update_review(review['id'],{'state':'OPEN'},path)
+    events = list_timeline(review['id'],limit=100,db_path=path)['items']
+    types = [row['event_type'] for row in events]
+    assert types.count('REVIEW_CLOSED') == 1 and types.count('REVIEW_REOPENED') == 1
+    assert types.count('STATE_CHANGED') == 1
+    assert types.count('PRIORITY_CHANGED') == 1 and types.count('CONFIDENCE_CHANGED') == 1
+    assert types.count('DISPOSITION_CHANGED') == 1 and types.count('REVIEW_FIELD_CHANGED') == 2
+    changed_fields = [row['field_name'] for row in events if row['field_name'] is not None]
+    assert changed_fields[:8] == ['state','state','summary','title','disposition','confidence',
+                                  'priority','state']
+    count = len(events)
+    update_review(review['id'],{'state':'OPEN','priority':'HIGH'},path)
+    assert len(list_timeline(review['id'],db_path=path)['items']) == count
+    update_review(review['id'],{'analyst_note':'Old note'},path)
+    update_review(review['id'],{'analyst_note':'New note'},path)
+    update_review(review['id'],{'analyst_note':None},path)
+    note_events = [row['event_type'] for row in list_timeline(review['id'],db_path=path)['items']]
+    assert note_events.count('ANALYST_NOTE_ADDED') == 2
+    assert note_events.count('ANALYST_NOTE_CLEARED') == 1
+    with pytest.raises(IncidentReviewError):
+        add_note(review['id'],'   ',path)
+    with pytest.raises(IncidentReviewError):
+        add_note(review['id'],'x' * 4001,path)
+    first = add_note(review['id'],'A factual analyst note',path)
+    second = add_note(review['id'],'A second factual analyst note',path)
+    assert first['note_text'] and second['id'] > first['id']
+    with get_connection(path) as connection:
+        with pytest.raises(Exception,match='append-only'):
+            connection.execute('UPDATE incident_review_notes SET note_text=? WHERE id=?',
+                               ('Changed',first['id']))
+        with pytest.raises(Exception,match='append-only'):
+            connection.execute('DELETE FROM incident_review_notes WHERE id=?',(first['id'],))
+        event_id = connection.execute('SELECT id FROM incident_review_events WHERE incident_review_id=? LIMIT 1',
+                                      (review['id'],)).fetchone()[0]
+        with pytest.raises(Exception,match='append-only'):
+            connection.execute('UPDATE incident_review_events SET summary=? WHERE id=?',
+                               ('Changed',event_id))
+    notes = list_notes(review['id'],limit=1,db_path=path)
+    assert notes['total'] == 2 and notes['items'][0]['id'] == second['id']
+    history = list_timeline(review['id'],limit=2,db_path=path)
+    assert history['total'] > 2 and len(history['items']) == 2
+    assert history['items'][0]['id'] > history['items'][1]['id']
+
+
+def test_evidence_review_history_is_idempotent_and_detaches_stale_link(tmp_path):
+    path = tmp_path / 'review-evidence-history.db'
+    site = RemoteSensorStore(path).create_site('History site')
+    source = _detection(path,site['id'],30)
+    review = create_review(title='Evidence history',site_id=site['id'],db_path=path)
+    add_evidence(review['id'],evidence_type='PERIMETER_DETECTION',evidence_id=source['id'],db_path=path)
+    add_evidence(review['id'],evidence_type='PERIMETER_DETECTION',evidence_id=source['id'],db_path=path)
+    with get_connection(path) as connection:
+        connection.execute('DELETE FROM perimeter_detections WHERE id=?',(source['id'],))
+    remove_evidence(review['id'],'PERIMETER_DETECTION',source['id'],path)
+    kinds = [row['event_type'] for row in list_timeline(review['id'],db_path=path)['items']]
+    assert kinds.count('EVIDENCE_ATTACHED') == 1
+    assert kinds.count('EVIDENCE_DETACHED') == 1
+
+
+def test_timeline_and_notes_api_are_bounded_and_review_scoped(tmp_path,monkeypatch):
+    path = tmp_path / 'review-history-api.db'
+    monkeypatch.setattr(api,'DB_PATH',path)
+    initialize_database(path)
+    review = create_review(title='History API review',db_path=path)
+    routes = {route.path:route.endpoint for route in api.app.routes if hasattr(route,'endpoint')}
+    add_note_route = routes['/incident-reviews/{incident_id}/notes']
+    note_route = routes['/incident-reviews/{incident_id}/timeline']
+    notes_route = [route.endpoint for route in api.app.routes
+                   if getattr(route,'path',None)=='/incident-reviews/{incident_id}/notes'
+                   and 'GET' in route.methods][0]
+    from api.incident_reviews import NoteCreate
+    made = add_note_route(review['id'],NoteCreate(note_text='Operator checked the available record.'))
+    assert made['actor_source'] == 'OPERATOR'
+    assert notes_route(review['id'],limit=1,offset=0)['total'] == 1
+    assert note_route(review['id'],limit=1,offset=0)['items'][0]['event_type'] == 'ANALYST_NOTE_ADDED'
+    with pytest.raises(Exception) as invalid_limit:
+        note_route(review['id'],limit=101,offset=0)
+    assert getattr(invalid_limit.value,'status_code',None) == 422
+    for endpoint, args, kwargs in ((note_route,(999999,),{'limit':100,'offset':0}),
+        (notes_route,(999999,),{'limit':100,'offset':0}),
+        (add_note_route,(999999,NoteCreate(note_text='No review')),{})):
+        with pytest.raises(Exception) as not_found:
+            endpoint(*args,**kwargs)
+        assert getattr(not_found.value,'status_code',None) == 404
 
 
 def test_create_link_idempotency_time_recomputation_and_detach_preserves_source(tmp_path):
@@ -143,25 +262,34 @@ def test_incident_review_api_create_filter_attach_patch_and_source_immutability(
     site = RemoteSensorStore(path).create_site('API review site')
     source = _detection(path,site['id'],3)
     before = get_perimeter_detection(source['id'],path)
-    with TestClient(api.app) as client:
-        made = client.post('/incident-reviews',json={'title':'Analyst review','site_id':site['id'],
-            'priority':'HIGH','confidence':'MEDIUM'})
-        assert made.status_code == 201, made.text
-        incident_id = made.json()['id']
-        attached = client.post(f'/incident-reviews/{incident_id}/evidence',json={
-            'evidence_type':'PERIMETER_DETECTION','evidence_id':source['id'],'reason':'Review queue'})
-        assert attached.status_code == 201 and attached.json()['observed_at'] == before['first_seen']
-        assert client.get('/incident-reviews?state=OPEN&priority=HIGH').json()['total'] == 1
-        changed = client.patch(f'/incident-reviews/{incident_id}',json={
-            'state':'CLOSED','disposition':'NEEDS_MONITORING','analyst_note':'Check next week'})
-        assert changed.status_code == 200 and changed.json()['closed_at']
-        assert client.get(f'/incident-reviews/{incident_id}/evidence').json()['total'] == 1
-        assert client.delete(f'/incident-reviews/{incident_id}/evidence/FAKE/1').status_code == 422
-        assert client.delete(f'/incident-reviews/{incident_id}/evidence/PERIMETER_DETECTION/{source["id"]}').status_code == 200
-        assert get_perimeter_detection(source['id'],path) == before
-        assert client.post(f'/incident-reviews/{incident_id}/evidence',json={
-            'evidence_type':'PERIMETER_DETECTION','evidence_id':999999}).status_code == 404
-        assert client.post('/incident-reviews',json={'title':'bad','table':'events'}).status_code == 422
+    from api.incident_reviews import EvidenceCreate, ReviewCreate, ReviewUpdate
+    routes = {(route.path,next(iter(route.methods))):route.endpoint for route in api.app.routes
+              if hasattr(route,'endpoint') and route.methods}
+    made = routes[('/incident-reviews','POST')](ReviewCreate(title='Analyst review',site_id=site['id'],
+        priority='HIGH',confidence='MEDIUM'))
+    incident_id = made['id']
+    attached = routes[('/incident-reviews/{incident_id}/evidence','POST')](incident_id,
+        EvidenceCreate(evidence_type='PERIMETER_DETECTION',evidence_id=source['id'],reason='Review queue'))
+    assert attached['observed_at'] == before['first_seen']
+    assert routes[('/incident-reviews','GET')](state='OPEN',priority='HIGH',site_id=None,
+        scope_id=None,device_id=None,disposition=None,limit=20,offset=0)['total'] == 1
+    changed = routes[('/incident-reviews/{incident_id}','PATCH')](incident_id,
+        ReviewUpdate(state='CLOSED',disposition='NEEDS_MONITORING',analyst_note='Check next week'))
+    assert changed['closed_at']
+    assert routes[('/incident-reviews/{incident_id}/evidence','GET')](incident_id,limit=100,offset=0)['total'] == 1
+    with pytest.raises(Exception) as invalid_type:
+        routes[('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}','DELETE')](incident_id,'FAKE',1)
+    assert getattr(invalid_type.value,'status_code',None) == 422
+    assert routes[('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}','DELETE')](
+        incident_id,'PERIMETER_DETECTION',source['id']) == {'removed':True}
+    assert get_perimeter_detection(source['id'],path) == before
+    with pytest.raises(Exception) as missing_source:
+        routes[('/incident-reviews/{incident_id}/evidence','POST')](incident_id,
+            EvidenceCreate(evidence_type='PERIMETER_DETECTION',evidence_id=999999))
+    assert getattr(missing_source.value,'status_code',None) == 404
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ReviewCreate(title='bad',table='events')
 
 
 def test_source_attribution_must_be_consistent_across_links(tmp_path):
@@ -258,13 +386,14 @@ def test_deleted_external_exposure_cascade_is_visible_and_detachable(tmp_path,mo
     with get_connection(path) as connection:
         connection.execute('DELETE FROM external_exposures WHERE id=?',(exposure_id,))
         assert connection.execute('SELECT 1 FROM external_exposure_changes WHERE id=?',(change_id,)).fetchone() is None
-    with TestClient(api.app) as client:
-        response = client.get(f'/incident-reviews/{review["id"]}/evidence')
-        assert response.status_code == 200
-        assert response.json()['items'][0]['source_status'] == 'MISSING'
-        detached = client.delete(f'/incident-reviews/{review["id"]}/evidence/EXTERNAL_EXPOSURE_CHANGE/{change_id}')
-        assert detached.status_code == 200
-        assert client.get(f'/incident-reviews/{review["id"]}/evidence').json()['total'] == 0
+    routes = {(route.path,next(iter(route.methods))):route.endpoint for route in api.app.routes
+              if hasattr(route,'endpoint') and route.methods}
+    read_evidence = routes[('/incident-reviews/{incident_id}/evidence','GET')]
+    assert read_evidence(review['id'],limit=100,offset=0)['items'][0]['source_status'] == 'MISSING'
+    detached = routes[('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}','DELETE')](
+        review['id'],'EXTERNAL_EXPOSURE_CHANGE',change_id)
+    assert detached == {'removed':True}
+    assert read_evidence(review['id'],limit=100,offset=0)['total'] == 0
     with get_connection(path) as connection:
         assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence WHERE incident_id=?',
                                   (review['id'],)).fetchone()[0] == 0

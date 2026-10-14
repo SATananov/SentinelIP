@@ -65,6 +65,7 @@ def test_migration_is_idempotent(tmp_path):
         (39,),
         (40,),
         (41,),
+        (42,),
     ]
 
 

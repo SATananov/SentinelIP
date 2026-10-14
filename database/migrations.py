@@ -1599,6 +1599,49 @@ MIGRATIONS = (
         ),
     ),
 
+    (
+        42,
+        (
+            """CREATE TABLE incident_review_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_review_id INTEGER NOT NULL REFERENCES incident_reviews(id) ON DELETE CASCADE,
+                note_text TEXT NOT NULL CHECK (length(note_text) BETWEEN 1 AND 4000),
+                actor_source TEXT NOT NULL CHECK (actor_source = 'OPERATOR'),
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE incident_review_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_review_id INTEGER NOT NULL REFERENCES incident_reviews(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL CHECK (event_type IN (
+                    'REVIEW_CREATED','STATE_CHANGED','REVIEW_CLOSED','REVIEW_REOPENED',
+                    'PRIORITY_CHANGED','CONFIDENCE_CHANGED','DISPOSITION_CHANGED',
+                    'REVIEW_FIELD_CHANGED','ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED',
+                    'EVIDENCE_ATTACHED','EVIDENCE_DETACHED')),
+                actor_source TEXT NOT NULL CHECK (actor_source = 'OPERATOR'),
+                created_at TEXT NOT NULL,
+                field_name TEXT CHECK (field_name IS NULL OR field_name IN (
+                    'state','priority','confidence','disposition','analyst_note',
+                    'title','summary','site_id','scope_id','device_id')),
+                old_value TEXT CHECK (old_value IS NULL OR length(old_value) <= 4000),
+                new_value TEXT CHECK (new_value IS NULL OR length(new_value) <= 4000),
+                evidence_type TEXT CHECK (evidence_type IS NULL OR evidence_type IN (
+                    'PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
+                    'PERIMETER_HOST_CORRELATION','EXTERNAL_EXPOSURE_CHANGE',
+                    'THREAT_DETECTION','THREAT_CORRELATION','WEB_DETECTION')),
+                evidence_id INTEGER CHECK (evidence_id IS NULL OR evidence_id > 0),
+                note_id INTEGER REFERENCES incident_review_notes(id),
+                summary TEXT CHECK (summary IS NULL OR length(summary) <= 240),
+                CHECK ((evidence_type IS NULL) = (evidence_id IS NULL))
+            )""",
+            "CREATE INDEX idx_incident_review_events_timeline ON incident_review_events(incident_review_id,created_at,id)",
+            "CREATE INDEX idx_incident_review_notes_timeline ON incident_review_notes(incident_review_id,created_at,id)",
+            "CREATE TRIGGER incident_review_events_no_update BEFORE UPDATE ON incident_review_events BEGIN SELECT RAISE(ABORT,'incident review events are append-only'); END",
+            "CREATE TRIGGER incident_review_events_no_delete BEFORE DELETE ON incident_review_events BEGIN SELECT RAISE(ABORT,'incident review events are append-only'); END",
+            "CREATE TRIGGER incident_review_notes_no_update BEFORE UPDATE ON incident_review_notes BEGIN SELECT RAISE(ABORT,'incident review notes are append-only'); END",
+            "CREATE TRIGGER incident_review_notes_no_delete BEFORE DELETE ON incident_review_notes BEGIN SELECT RAISE(ABORT,'incident review notes are append-only'); END",
+        ),
+    ),
+
 )
 
 

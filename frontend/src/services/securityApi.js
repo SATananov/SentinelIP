@@ -43,6 +43,22 @@ export function loadRelatedIncidentEvidence(id, signal) {
   return getJson(`/incident-reviews/${id}/related-evidence?limit=100`, signal)
 }
 
+export function loadIncidentReviewTimeline(id, signal) {
+  return getJson(`/incident-reviews/${id}/timeline?limit=100&offset=0`, signal)
+}
+
+export function loadIncidentReviewNotes(id, signal) {
+  return getJson(`/incident-reviews/${id}/notes?limit=100&offset=0`, signal)
+}
+
+export function addIncidentReviewNote(id, noteText) {
+  return mutateJson(`/incident-reviews/${id}/notes`, 'POST', { note_text: noteText })
+}
+
+export function updateIncidentReview(id, updates) {
+  return mutateJson(`/incident-reviews/${id}`, 'PATCH', updates)
+}
+
 export function attachIncidentEvidence(id, suggestion) {
   return mutateJson(`/incident-reviews/${id}/evidence`, 'POST', {
     evidence_type: suggestion.evidence_type,
