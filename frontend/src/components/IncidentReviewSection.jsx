@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   attachIncidentEvidence,
@@ -11,6 +11,7 @@ import {
   loadRelatedIncidentEvidence,
   updateIncidentReview,
 } from '../services/securityApi.js'
+import { createIncidentReviewRequestGuard } from '../services/incidentReviewRequestGuard.js'
 
 function displayTime(value) {
   return value ? value.replace('T', ' ').replace('+00:00', 'Z') : '—'
@@ -26,45 +27,55 @@ function IncidentReviewSection({ refreshSignal }) {
   const [noteText, setNoteText] = useState('')
   const [reviewDraft, setReviewDraft] = useState(null)
   const [error, setError] = useState(null)
+  const [listError, setListError] = useState(null)
   const [busy, setBusy] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const requestGuard = useRef(createIncidentReviewRequestGuard())
+  const reviewListGeneration = useRef(0)
 
-  const loadReviewData = useCallback(async (reviewId) => {
+  const loadReviewData = useCallback(async (reviewId, request) => {
     const [linked, related, history, analystNotes] = await Promise.all([
       loadIncidentReviewEvidence(reviewId),
       loadRelatedIncidentEvidence(reviewId),
       loadIncidentReviewTimeline(reviewId),
       loadIncidentReviewNotes(reviewId),
     ])
+    if (!requestGuard.current.isCurrent(request)) return false
     setEvidence(linked.items)
     setSuggestions(related.items)
     setTimeline(history.items)
     setNotes(analystNotes.items)
+    return true
   }, [])
 
   useEffect(() => {
-    let active = true
+    reviewListGeneration.current += 1
+    const generation = reviewListGeneration.current
     loadIncidentReviews()
       .then((result) => {
-        if (active) setReviews(result.items)
+        if (reviewListGeneration.current === generation) {
+          setReviews(result.items)
+          setListError(null)
+        }
       })
       .catch((err) => {
-        if (active) setError(err.message)
+        if (reviewListGeneration.current === generation) setListError(err.message)
       })
-    return () => { active = false }
+    return () => { reviewListGeneration.current += 1 }
   }, [refreshSignal])
 
+  const selectedId = selected?.id
   useEffect(() => {
-    if (!selected) return undefined
-    let active = true
+    if (!selectedId) return undefined
+    const request = requestGuard.current.begin(selectedId)
     Promise.all([
-      loadIncidentReviewEvidence(selected.id),
-      loadRelatedIncidentEvidence(selected.id),
-      loadIncidentReviewTimeline(selected.id),
-      loadIncidentReviewNotes(selected.id),
+      loadIncidentReviewEvidence(selectedId),
+      loadRelatedIncidentEvidence(selectedId),
+      loadIncidentReviewTimeline(selectedId),
+      loadIncidentReviewNotes(selectedId),
     ])
       .then(([linked, related, history, analystNotes]) => {
-        if (!active) return
+        if (!requestGuard.current.isCurrent(request)) return
         setEvidence(linked.items)
         setSuggestions(related.items)
         setTimeline(history.items)
@@ -72,26 +83,37 @@ function IncidentReviewSection({ refreshSignal }) {
         setError(null)
       })
       .catch((err) => {
-        if (active) setError(err.message)
+        if (requestGuard.current.isCurrent(request)) setError(err.message)
       })
       .finally(() => {
-        if (active) setDetailLoading(false)
+        if (requestGuard.current.isCurrent(request)) setDetailLoading(false)
       })
-    return () => { active = false }
-  }, [selected, refreshSignal])
+    return undefined
+  }, [selectedId, refreshSignal])
 
   async function perform(key, action) {
+    if (!selectedId) return
+    const reviewId = selectedId
+    const request = requestGuard.current.begin(reviewId)
     setBusy(key)
     setDetailLoading(true)
     setError(null)
     try {
-      await action()
-      await loadReviewData(selected.id)
+      const result = await action()
+      if (!requestGuard.current.isCurrent(request)) return
+      if (key === 'review' && result) {
+        setSelected(result)
+        setReviews((current) => current.map((item) => item.id === result.id ? result : item))
+      }
+      if (key === 'note') setNoteText('')
+      await loadReviewData(reviewId, request)
     } catch (err) {
-      setError(err.message)
+      if (requestGuard.current.isCurrent(request)) setError(err.message)
     } finally {
-      setBusy(null)
-      setDetailLoading(false)
+      if (requestGuard.current.isCurrent(request)) {
+        setBusy(null)
+        setDetailLoading(false)
+      }
     }
   }
 
@@ -118,6 +140,7 @@ function IncidentReviewSection({ refreshSignal }) {
         Reviews group observations for investigation. Suggestions are review aids and do not establish a cause or confirm an attack or compromise.
       </p>
       {error && <p className="security-detail-error">{error}</p>}
+      {listError && <p className="security-detail-error">{listError}</p>}
       {reviews.length === 0 ? (
         <p className="security-empty">No analyst incident reviews.</p>
       ) : (
@@ -128,6 +151,14 @@ function IncidentReviewSection({ refreshSignal }) {
               key={review.id}
               type="button"
               onClick={() => {
+                if (selected?.id === review.id) return
+                requestGuard.current.select(review.id)
+                setEvidence([])
+                setSuggestions([])
+                setTimeline([])
+                setNotes([])
+                setNoteText('')
+                setBusy(null)
                 setSelected(review)
         setReviewDraft({ state: review.state, priority: review.priority,
           confidence: review.confidence, disposition: review.disposition })
@@ -153,7 +184,13 @@ function IncidentReviewSection({ refreshSignal }) {
               <h3>{selected.title}</h3>
             </div>
             <button className="security-detail-close" type="button" onClick={() => {
+              requestGuard.current.invalidate()
               setSelected(null)
+              setEvidence([])
+              setSuggestions([])
+              setTimeline([])
+              setNotes([])
+              setBusy(null)
               setReviewDraft(null)
               setDetailLoading(false)
             }}>
@@ -166,11 +203,7 @@ function IncidentReviewSection({ refreshSignal }) {
 
           <form className="incident-review-edit-form" onSubmit={async (event) => {
             event.preventDefault()
-            await perform('review', async () => {
-              const updated = await updateIncidentReview(selected.id, reviewDraft)
-              setSelected(updated)
-              setReviews((current) => current.map((item) => item.id === updated.id ? updated : item))
-            })
+            await perform('review', () => updateIncidentReview(selected.id, reviewDraft))
           }}>
             {[
               ['state', ['OPEN', 'IN_REVIEW', 'CLOSED']],
@@ -197,7 +230,7 @@ function IncidentReviewSection({ refreshSignal }) {
               <button className="security-detail-close" type="submit"
                 disabled={Boolean(busy) || !noteText.trim()}>Add Note</button>
             </form>
-            {notes.length === 0 ? <p className="security-empty">No analyst notes.</p> : (
+            {detailLoading ? <p className="security-empty">Loading analyst notes…</p> : notes.length === 0 ? <p className="security-empty">No analyst notes.</p> : (
               <div className="incident-review-items">
                 {notes.map((note) => <div className="incident-review-item" key={note.id}>
                   <small>{displayTime(note.created_at)} · {note.actor_source}</small>
@@ -207,7 +240,7 @@ function IncidentReviewSection({ refreshSignal }) {
             )}
 
             <h4>Investigation History</h4>
-            {timeline.length === 0 ? <p className="security-empty">No post-13C review history yet.</p> : (
+            {detailLoading ? <p className="security-empty">Loading investigation history…</p> : timeline.length === 0 ? <p className="security-empty">No post-13C review history yet.</p> : (
               <div className="incident-review-items">
                 {timeline.map((entry) => <div className="incident-review-item" key={entry.id}>
                   <span><strong>{entry.event_type.replaceAll('_', ' ')}</strong></span>

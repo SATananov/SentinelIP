@@ -9,7 +9,7 @@ import IncidentReviewSection from './IncidentReviewSection.jsx'
 const KIND_LABELS = {
   threat: 'Threat',
   correlation: 'Correlation',
-  incident: 'Incident Review',
+  incident: 'Security Incident',
 }
 
 function humanize(value) {
@@ -333,7 +333,7 @@ function SecurityReviewPanel({ refreshSignal }) {
       <div className="security-layer-heading">
         <div>
           <p className="panel-kicker">Deterministic Security Pipeline</p>
-          <h2>Threats, Correlations & Incident Reviews</h2>
+          <h2>Threats, Correlations & Security Incidents</h2>
           <p className="security-layer-copy">
             Persisted backend interpretations only. The dashboard does not
             run detection, correlation, or incident creation.
@@ -364,7 +364,7 @@ function SecurityReviewPanel({ refreshSignal }) {
         />
         <SummaryCard
           className="security-summary-incident"
-          label="Incident Reviews"
+          label="Security Incidents"
           value={data.incidents.total}
           note="Open investigation records"
         />
@@ -417,7 +417,7 @@ function SecurityReviewPanel({ refreshSignal }) {
           <div className="panel-heading">
             <div>
               <p className="panel-kicker">Investigation</p>
-              <h3>Incident Reviews</h3>
+              <h3>Security Incidents</h3>
             </div>
             <span className="panel-count">{data.incidents.total}</span>
           </div>

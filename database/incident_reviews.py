@@ -276,6 +276,9 @@ def list_timeline(incident_id, *, limit=100, offset=0, db_path=DB_PATH):
 
 def list_reviews(*, limit=20, offset=0, state=None, priority=None, site_id=None,
                  scope_id=None, device_id=None, disposition=None, db_path=DB_PATH):
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int \
+            or not 0 <= offset <= REVIEW_HISTORY_MAX_OFFSET:
+        raise IncidentReviewError('Incident review pagination is invalid.')
     initialize_database(db_path)
     clauses, params = [], []
     for column, value in (('state',state),('priority',priority),('site_id',site_id),
@@ -536,6 +539,9 @@ def add_evidence(incident_id, *, evidence_type, evidence_id, reason=None, db_pat
 
 
 def list_evidence(incident_id, *, limit=100, offset=0, db_path=DB_PATH):
+    if type(limit) is not int or not 1 <= limit <= 500 or type(offset) is not int \
+            or not 0 <= offset <= REVIEW_HISTORY_MAX_OFFSET:
+        raise IncidentReviewError('Incident evidence pagination is invalid.')
     initialize_database(db_path)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row

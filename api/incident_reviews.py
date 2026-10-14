@@ -14,6 +14,7 @@ Priority = Literal['LOW','MEDIUM','HIGH','CRITICAL']
 Confidence = Literal['LOW','MEDIUM','HIGH']
 Disposition = Literal['UNREVIEWED','EXPECTED_ACTIVITY','BENIGN','NEEDS_MONITORING',
     'ACTION_REQUIRED','FALSE_POSITIVE','INCONCLUSIVE']
+MAX_INCIDENT_REVIEW_OFFSET = 100000
 
 
 class Input(BaseModel):
@@ -70,7 +71,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         device_id: int | None = Query(default=None, ge=1),
         disposition: Disposition | None = None,
         limit: int = Query(default=20, ge=1, le=100),
-        offset: int = Query(default=0, ge=0),
+        offset: int = Query(default=0, ge=0, le=MAX_INCIDENT_REVIEW_OFFSET),
     ):
         result = reviews_db.list_reviews(state=state,priority=priority,site_id=site_id,
             scope_id=scope_id,device_id=device_id,disposition=disposition,
@@ -129,7 +130,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
 
     @app.get('/incident-reviews/{incident_id}/evidence')
     def get_incident_review_evidence(incident_id: int,
-        limit: int = Query(default=100,ge=1,le=500),offset: int = Query(default=0,ge=0)):
+        limit: int = Query(default=100,ge=1,le=500),
+        offset: int = Query(default=0,ge=0,le=MAX_INCIDENT_REVIEW_OFFSET)):
         try:
             return {**reviews_db.list_evidence(incident_id,limit=limit,offset=offset,db_path=db_path_provider()),
                     'limit':limit,'offset':offset}

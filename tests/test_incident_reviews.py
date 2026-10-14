@@ -203,6 +203,53 @@ def test_timeline_and_notes_api_are_bounded_and_review_scoped(tmp_path,monkeypat
         assert getattr(not_found.value,'status_code',None) == 404
 
 
+def test_incident_review_offsets_are_bounded_by_api_schema_and_helpers(tmp_path):
+    from typing import Annotated
+    from fastapi import FastAPI, Query
+    from pydantic import TypeAdapter, ValidationError
+    from api.incident_reviews import register_incident_review_routes
+
+    path = tmp_path / 'review-offset-api.db'
+    initialize_database(path)
+    first = create_review(title='Offset page one',db_path=path)
+    create_review(title='Offset page two',db_path=path)
+    add_note(first['id'],'Offset fixture',path)
+    test_app = FastAPI()
+    register_incident_review_routes(test_app,lambda:path)
+    routes = test_app.openapi()['paths']
+    for route in ('/incident-reviews','/incident-reviews/{incident_id}/evidence',
+                  '/incident-reviews/{incident_id}/timeline','/incident-reviews/{incident_id}/notes'):
+        params = routes[route]['get']['parameters']
+        offset_schema = next(param['schema'] for param in params if param['name']=='offset')
+        assert offset_schema['minimum'] == 0
+        assert offset_schema['maximum'] == 100000
+
+    offset_adapter = TypeAdapter(Annotated[int,Query(ge=0,le=100000)])
+    assert offset_adapter.validate_python(0) == 0
+    assert offset_adapter.validate_python(100000) == 100000
+    for invalid in (100001,10**100,'9' * 200):
+        with pytest.raises(ValidationError):
+            offset_adapter.validate_python(invalid)
+    # Endpoint pagination remains usable at both ends and after multiple rows.
+    assert len(list_reviews(limit=1,offset=0,db_path=path)['items']) == 1
+    assert list_reviews(limit=1,offset=100000,db_path=path)['items'] == []
+    assert list_evidence(first['id'],offset=100000,db_path=path)['items'] == []
+    assert list_timeline(first['id'],offset=100000,db_path=path)['items'] == []
+    assert list_notes(first['id'],offset=100000,db_path=path)['items'] == []
+
+
+@pytest.mark.parametrize('function,args,kwargs', [
+    (list_reviews,(),{'limit':1,'offset':100001}),
+    (list_evidence,(1,),{'limit':1,'offset':100001}),
+    (list_reviews,(),{'limit':1,'offset':10**100}),
+    (list_evidence,(1,),{'limit':1,'offset':10**100}),
+])
+def test_incident_review_database_helpers_reject_oversized_offsets(
+        tmp_path,function,args,kwargs):
+    with pytest.raises(IncidentReviewError):
+        function(*args,db_path=tmp_path/'offset-helper.db',**kwargs)
+
+
 def test_create_link_idempotency_time_recomputation_and_detach_preserves_source(tmp_path):
     path = tmp_path / 'review.db'
     site = RemoteSensorStore(path).create_site('Review site')
