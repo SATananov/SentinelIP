@@ -49,6 +49,12 @@ _ACTIVITY_FIELD_NAMES = {
     'DISPOSITION_CHANGED': 'disposition',
 }
 _SAFE_REVIEW_FIELD_NAMES = frozenset({'title', 'summary', 'site_id', 'scope_id', 'device_id'})
+TREND_WINDOWS = {
+    '24h': (timedelta(hours=24), '1h', 24),
+    '7d': (timedelta(days=7), '1d', 7),
+    '30d': (timedelta(days=30), '1d', 30),
+    '90d': (timedelta(days=90), '1d', 90),
+}
 
 
 def _activity_timestamp(value, name):
@@ -172,6 +178,126 @@ def build_incident_review_activity(*, event_type=None, incident_review_id=None,
             'evidence_id': evidence_id,
         })
     return {'activity': activity, 'pagination': {'limit': limit, 'offset': offset, 'total': total}}
+
+
+def _trend_timestamp(value):
+    parsed = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith(('Z', 'z')) else value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def build_incident_review_trends(*, window='30d', now=None, db_path=DB_PATH, explain=False):
+    """Return bounded rolling workload event series and a current-state snapshot."""
+    if not isinstance(window, str) or window not in TREND_WINDOWS:
+        raise IncidentReviewError('Unsupported incident review trends window.')
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise IncidentReviewError('Trends clock must be timezone-aware.')
+    now = now.astimezone(timezone.utc)
+    duration, bucket_label, bucket_count = TREND_WINDOWS[window]
+    window_start = now - duration
+    bucket_duration = duration / bucket_count
+    boundaries = [
+        (window_start + bucket_duration * index,
+         window_start + bucket_duration * (index + 1))
+        for index in range(bucket_count)
+    ]
+    start_text = window_start.isoformat(timespec='microseconds')
+    end_text = now.isoformat(timespec='microseconds')
+    # SQLite julianday has sub-millisecond precision limits. A one-second SQL margin
+    # captures boundary candidates; Python applies the exact UTC half-open contract.
+    coarse_time_clause = '''julianday(created_at)>=julianday(?) - (1.0/86400.0)
+        AND julianday(created_at)<=julianday(?) + (1.0/86400.0)'''
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        created_sql = f'''SELECT created_at,COUNT(*) count FROM incident_reviews
+            WHERE {coarse_time_clause} GROUP BY created_at'''
+        event_sql = f'''SELECT created_at,event_type,COUNT(*) count FROM incident_review_events
+            WHERE event_type IN ('REVIEW_CLOSED','REVIEW_REOPENED')
+              AND {coarse_time_clause} GROUP BY created_at,event_type'''
+        created_groups = connection.execute(created_sql, (start_text, end_text)).fetchall()
+        event_groups = connection.execute(event_sql, (start_text, end_text)).fetchall()
+        created_counts = [0] * bucket_count
+        event_counts = [{'review_close_events': 0, 'review_reopen_events': 0}
+                        for _ in range(bucket_count)]
+        for row in created_groups:
+            timestamp = _trend_timestamp(row['created_at'])
+            if window_start <= timestamp < now:
+                index = int((timestamp - window_start) // bucket_duration)
+                created_counts[index] += row['count']
+        for row in event_groups:
+            timestamp = _trend_timestamp(row['created_at'])
+            if window_start <= timestamp < now:
+                index = int((timestamp - window_start) // bucket_duration)
+                key = 'review_close_events' if row['event_type'] == 'REVIEW_CLOSED' else 'review_reopen_events'
+                event_counts[index][key] += row['count']
+
+        now_text = now.isoformat(timespec='microseconds')
+        inactivity_cutoff = (now - timedelta(days=7)).isoformat(timespec='microseconds')
+        cte = _review_rollup_cte()
+        cte_params = [now_text] * 5 + [inactivity_cutoff] * 2
+        snapshot_sql = f'''{cte}
+            SELECT COALESCE(SUM(state='OPEN'),0) open_count,
+                COALESCE(SUM(state='IN_REVIEW'),0) in_review_count,
+                COALESCE(SUM(state='CLOSED'),0) closed_count,
+                COALESCE(SUM(state!='CLOSED'),0) unresolved_count,
+                COALESCE(SUM(has_attention),0) reviews_needing_attention,
+                COALESCE(SUM(state IN ('OPEN','IN_REVIEW') AND age_bucket='LT_1H'),0) LT_1H,
+                COALESCE(SUM(state IN ('OPEN','IN_REVIEW') AND age_bucket='H1_24'),0) H1_24,
+                COALESCE(SUM(state IN ('OPEN','IN_REVIEW') AND age_bucket='D1_3'),0) D1_3,
+                COALESCE(SUM(state IN ('OPEN','IN_REVIEW') AND age_bucket='D3_7'),0) D3_7,
+                COALESCE(SUM(state IN ('OPEN','IN_REVIEW') AND age_bucket='GT_7D'),0) GT_7D,
+                CASE WHEN MIN(CASE WHEN state IN ('OPEN','IN_REVIEW') THEN created_at END) IS NULL
+                  THEN NULL ELSE CAST((julianday(?) - julianday(
+                    MIN(CASE WHEN state IN ('OPEN','IN_REVIEW') THEN created_at END)))*86400 AS INTEGER)
+                END oldest_active_age_seconds
+            FROM review_rows'''
+        snapshot_params = [*cte_params, now_text]
+        snapshot_row = connection.execute(snapshot_sql, snapshot_params).fetchone()
+        current_snapshot = {
+            'as_of': now_text,
+            'open_count': snapshot_row['open_count'],
+            'in_review_count': snapshot_row['in_review_count'],
+            'closed_count': snapshot_row['closed_count'],
+            'unresolved_count': snapshot_row['unresolved_count'],
+            'reviews_needing_attention': snapshot_row['reviews_needing_attention'],
+            'age_buckets': {key: snapshot_row[key] for key in AGE_BUCKETS},
+            'oldest_active_age_seconds': snapshot_row['oldest_active_age_seconds'],
+        }
+        query_plans = None
+        if explain:
+            query_plans = {
+                'reviews_created': [dict(row) for row in connection.execute(
+                    'EXPLAIN QUERY PLAN ' + created_sql, (start_text, end_text)).fetchall()],
+                'review_events': [dict(row) for row in connection.execute(
+                    'EXPLAIN QUERY PLAN ' + event_sql, (start_text, end_text)).fetchall()],
+                'current_snapshot': [dict(row) for row in connection.execute(
+                    'EXPLAIN QUERY PLAN ' + snapshot_sql, snapshot_params).fetchall()],
+            }
+
+    series = []
+    for index, (bucket_start, bucket_end) in enumerate(boundaries):
+        series.append({
+            'bucket_start': bucket_start.isoformat(timespec='microseconds'),
+            'bucket_end': bucket_end.isoformat(timespec='microseconds'),
+            'reviews_created': created_counts[index],
+            'review_close_events': event_counts[index]['review_close_events'],
+            'review_reopen_events': event_counts[index]['review_reopen_events'],
+        })
+    result = {
+        'window': window,
+        'bucket': bucket_label,
+        'window_start': window_start.isoformat(timespec='microseconds'),
+        'window_end': now.isoformat(timespec='microseconds'),
+        'series': series,
+        'current_snapshot': current_snapshot,
+    }
+    if explain:
+        result['query_plans'] = query_plans
+    return result
 
 
 def _review_rollup_cte(review_filter_sql=''):

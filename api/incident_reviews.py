@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
 from services.incident_review_operations import (
-    build_incident_review_operations, build_incident_review_activity, build_incident_review_site_workload,
+    build_incident_review_operations, build_incident_review_activity,
+    build_incident_review_trends, build_incident_review_site_workload,
     build_incident_review_scope_workload, build_incident_review_device_workload,
 )
 
@@ -25,6 +26,7 @@ ActivityEventType = Literal['REVIEW_CREATED','STATE_CHANGED','REVIEW_CLOSED','RE
     'PRIORITY_CHANGED','CONFIDENCE_CHANGED','DISPOSITION_CHANGED','REVIEW_FIELD_CHANGED',
     'FINAL_SUMMARY_CHANGED','ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED',
     'EVIDENCE_ATTACHED','EVIDENCE_DETACHED']
+TrendsWindow = Literal['24h','7d','30d','90d']
 MAX_INCIDENT_REVIEW_OFFSET = 100000
 
 
@@ -129,6 +131,13 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
                 since=since, until=until, limit=limit, offset=offset,
                 db_path=db_path_provider(),
             )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-review-operations/trends')
+    def incident_review_trends(window: TrendsWindow = '30d'):
+        try:
+            return build_incident_review_trends(window=window, db_path=db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 

@@ -8,6 +8,8 @@ import {
   loadIncidentReviewOperations,
   loadIncidentReviewActivity,
   buildIncidentReviewActivityQuery,
+  buildIncidentReviewTrendsQuery,
+  loadIncidentReviewTrends,
   loadIncidentReviewSites,
   buildIncidentReviewSitesQuery,
   buildIncidentReviewScopesQuery,
@@ -83,6 +85,26 @@ test('activity feed request exposes only the explicit filters and bounded pagina
     assert.match(calls[0], /offset=20/)
     globalThis.fetch = async () => ({ ok: false, status: 422 })
     await assert.rejects(loadIncidentReviewActivity(), /Security API request failed \(422\)/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('workload trends request supports the four fixed windows and propagates errors', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ window: '30d', series: [], current_snapshot: {} }) }
+  }
+  try {
+    assert.equal(buildIncidentReviewTrendsQuery(), 'window=30d')
+    for (const window of ['24h', '7d', '30d', '90d']) {
+      assert.equal(buildIncidentReviewTrendsQuery(window), `window=${window}`)
+    }
+    assert.throws(() => buildIncidentReviewTrendsQuery('all'), /Unsupported incident review trends window/)
+    await loadIncidentReviewTrends('24h')
+    assert.match(calls[0], /\/incident-review-operations\/trends\?window=24h/)
+    globalThis.fetch = async () => ({ ok: false, status: 422 })
+    await assert.rejects(loadIncidentReviewTrends('7d'), /Security API request failed \(422\)/)
   } finally { globalThis.fetch = originalFetch }
 })
 

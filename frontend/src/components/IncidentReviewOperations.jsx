@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
 
 import {
   loadIncidentReviewDevices,
@@ -6,6 +9,7 @@ import {
   loadIncidentReviewOperations,
   loadIncidentReviewScopes,
   loadIncidentReviewSites,
+  loadIncidentReviewTrends,
 } from '../services/securityApi.js'
 import { formatReviewAge, formatSiteWorkloadAge } from '../services/incidentReviewFormat.js'
 import {
@@ -30,6 +34,15 @@ const ACTIVITY_EVENT_TYPES = [
   'FINAL_SUMMARY_CHANGED', 'ANALYST_NOTE_ADDED', 'ANALYST_NOTE_CLEARED',
   'EVIDENCE_ATTACHED', 'EVIDENCE_DETACHED',
 ]
+const TREND_AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
+
+function formatTrendTick(value, window) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return window === '24h'
+    ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(date)
+    : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(date)
+}
 
 function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [filters, setFilters] = useState({ sort: 'oldest_open', limit: 20, offset: 0 })
@@ -54,6 +67,10 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [activityData, setActivityData] = useState(null)
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityError, setActivityError] = useState(null)
+  const [trendWindow, setTrendWindow] = useState('30d')
+  const [trendData, setTrendData] = useState(null)
+  const [trendLoading, setTrendLoading] = useState(false)
+  const [trendError, setTrendError] = useState(null)
   const query = useMemo(() => ({ ...filters }), [filters])
 
   useEffect(() => {
@@ -122,6 +139,18 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
       .finally(() => { if (!controller.signal.aborted) setActivityLoading(false) })
     return () => controller.abort()
   }, [activityOptions, refreshSignal])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) { setTrendLoading(true); setTrendError(null) }
+      return loadIncidentReviewTrends(trendWindow, controller.signal)
+    })
+      .then((result) => { if (!controller.signal.aborted) setTrendData(result) })
+      .catch((err) => { if (err.name !== 'AbortError') setTrendError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setTrendLoading(false) })
+    return () => controller.abort()
+  }, [trendWindow, refreshSignal])
 
   function updateFilter(key, value) {
     if (key === 'site_id') {
@@ -193,6 +222,44 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <div><strong>Disposition</strong>{Object.entries(summary.disposition_distribution).map(([key, count]) => <span key={key}>{key.replaceAll('_',' ')}: {count}</span>)}</div>
         <div><strong>Reviews by Site</strong>{summary.reviews_by_site.map(({ site_id, count }) => <span key={site_id ?? 'unattributed'}>{site_id === null ? 'Unattributed' : `Site ${site_id}`}: {count}</span>)}</div>
       </div>}
+      <section className="review-workload-trends" aria-labelledby="review-workload-trends-title">
+        <div className="review-site-workload-heading"><div><h3 id="review-workload-trends-title">Workload Trends</h3>
+          <p className="security-layer-copy">Closure and reopen series reflect recorded workflow events. Current workload and aging are present-state values.</p></div>
+          <label><span>Time window</span><select value={trendWindow} onChange={(event) => setTrendWindow(event.target.value)}>
+            {['24h','7d','30d','90d'].map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+        </div>
+        {trendError && <div className="error-box">{trendError}</div>}
+        {trendLoading && !trendData ? <p className="security-empty">Loading workload trends…</p>
+          : trendError && !trendData ? null : trendData && <>
+            <p className="security-layer-copy">Historical activity · {trendData.window_start.replace('T',' ').replace('+00:00','Z')} to {trendData.window_end.replace('T',' ').replace('+00:00','Z')} UTC</p>
+            <div className="review-trend-chart" role="img" aria-label={`Historical review workload trends for ${trendData.window}`}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData.series} margin={{ top: 8, right: 18, bottom: 4, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#303642" />
+                  <XAxis dataKey="bucket_start" tickFormatter={(value) => formatTrendTick(value, trendData.window)} minTickGap={24} stroke="#8d95a5" />
+                  <YAxis allowDecimals={false} width={36} stroke="#8d95a5" />
+                  <Tooltip labelFormatter={(value) => `${formatTrendTick(value, trendData.window)} UTC`} />
+                  <Legend />
+                  <Line type="monotone" dataKey="reviews_created" name="Reviews Created" stroke="#70a7ff" dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="review_close_events" name="Review Closures" stroke="#64c9a5" dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="review_reopen_events" name="Review Reopens" stroke="#d6ae62" dot={false} isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="review-trend-current">
+              <section aria-labelledby="review-current-workload-title"><h4 id="review-current-workload-title">Current Workload</h4>
+                <div className="review-trend-cards">
+                  {[["Open",'open_count'],["In Review",'in_review_count'],["Closed",'closed_count'],["Unresolved",'unresolved_count'],["Needs Attention",'reviews_needing_attention'],["Oldest Active Review",'oldest_active_age_seconds']].map(([label,key]) => <article key={key}><span>{label}</span><strong>{key === 'oldest_active_age_seconds' ? (trendData.current_snapshot[key] === null ? '—' : formatSiteWorkloadAge(trendData.current_snapshot[key])) : trendData.current_snapshot[key]}</strong></article>)}
+                </div>
+                {trendData.current_snapshot.open_count + trendData.current_snapshot.in_review_count + trendData.current_snapshot.closed_count === 0 && <p className="security-empty">No reviews in the current workload snapshot.</p>}
+              </section>
+              <section aria-labelledby="review-current-aging-title"><h4 id="review-current-aging-title">Current Aging</h4>
+                <div className="review-trend-aging">{Object.entries(trendData.current_snapshot.age_buckets).map(([key,count]) => <article key={key}><span>{TREND_AGE_LABELS[key]}</span><strong>{count}</strong></article>)}</div>
+              </section>
+            </div>
+          </>}
+      </section>
       <section className="review-site-workload" aria-labelledby="review-site-workload-title">
         <div className="review-site-workload-heading"><h3 id="review-site-workload-title">Site Workload</h3>
           <label><span>Sort sites</span><select value={siteOptions.sort} onChange={(event) => setSiteOptions((current) => ({ ...current, sort: event.target.value, offset: 0 }))}>

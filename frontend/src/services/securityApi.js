@@ -110,6 +110,17 @@ export function loadIncidentReviewActivity(filters = {}, signal) {
   return getJson(`/incident-review-operations/activity?${buildIncidentReviewActivityQuery(filters)}`, signal)
 }
 
+export function buildIncidentReviewTrendsQuery(window = '30d') {
+  if (!['24h', '7d', '30d', '90d'].includes(window)) {
+    throw new Error('Unsupported incident review trends window.')
+  }
+  return new URLSearchParams({ window }).toString()
+}
+
+export function loadIncidentReviewTrends(window = '30d', signal) {
+  return getJson(`/incident-review-operations/trends?${buildIncidentReviewTrendsQuery(window)}`, signal)
+}
+
 export function loadIncidentReview(id, signal) {
   return getJson(`/incident-reviews/${id}`, signal)
 }
