@@ -6,7 +6,7 @@ import pytest
 from database.db import get_connection, initialize_database
 from database.migrations import apply_migrations, MIGRATIONS
 from database.telemetry import create_web_observation, provision_sensor
-from database.web_detections import get_web_detection, list_web_detections, upsert_detections
+from database.web_detections import get_web_detection, list_web_detections, query_web_detections, upsert_detections
 from services.telemetry_models import WebObservation
 from services.web_detection_models import WebEvidence, WebDetectionError
 from services.web_detection_rules import evaluate_rules
@@ -123,3 +123,26 @@ def test_concurrent_equivalent_evaluation_has_one_record(tmp_path):
         results = list(pool.map(lambda _: upsert_detections((review,), path), range(4)))
     assert len({result[0]["id"] for result in results}) == 1
     assert len(list_web_detections(db_path=path)) == 1
+
+
+def test_bounded_web_detection_projection_omits_evidence_payload_and_is_read_only(tmp_path):
+    path = tmp_path / "web.db"
+    detection = candidate(path)
+    upsert_detections((detection,), path)
+    before = len(list_web_detections(db_path=path))
+
+    result = query_web_detections(limit=1, offset=0, db_path=path)
+    assert result["total"] == 1
+    assert result["items"] == [{
+        "id": 1,
+        "detection_type": detection.detection_type.value,
+        "state": detection.state.value,
+        "device_id": detection.device_id,
+        "hostname": detection.hostname,
+        "first_seen": detection.first_seen.isoformat(),
+        "last_seen": detection.last_seen.isoformat(),
+    }]
+    assert len(list_web_detections(db_path=path)) == before
+    for kwargs in ({"limit": 0}, {"limit": 101}, {"offset": -1}, {"offset": 100001}):
+        with pytest.raises(ValueError):
+            query_web_detections(db_path=path, **kwargs)

@@ -25,6 +25,7 @@ import {
   loadIncidentReviewNotes,
   loadIncidentReviews,
   loadIncidentReviewTimeline,
+  loadWebDetections,
   loadRelatedIncidentEvidence,
   updateIncidentReview,
 } from '../src/services/securityApi.js'
@@ -59,6 +60,22 @@ test('operations request uses explicit bounded filters, sort, and pagination', a
     assert.match(calls[0], /\/incident-review-operations\?/)
     assert.match(calls[0], /sort=priority/)
     assert.match(calls[0], /limit=10/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('web detection intake surface uses only bounded pagination and propagates errors', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ detections: [{ id: 9 }], total: 1 }) }
+  }
+  try {
+    const result = await loadWebDetections({ limit: 8, offset: 0 })
+    assert.equal(result.detections[0].id, 9)
+    assert.match(calls[0], /\/web-detections\?limit=8&offset=0$/)
+    globalThis.fetch = async () => ({ ok: false, status: 422 })
+    await assert.rejects(loadWebDetections(), /Security API request failed \(422\)/)
   } finally { globalThis.fetch = originalFetch }
 })
 

@@ -10,7 +10,8 @@ import {
   YAxis,
 } from 'recharts'
 
-import { loadPerimeterDashboard } from '../services/perimeterApi.js'
+import { loadPerimeterDashboard, loadPerimeterHostCorrelations } from '../services/perimeterApi.js'
+import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 
 function formatObserved(value) {
   if (!value) return '—'
@@ -21,13 +22,26 @@ function formatBucket(value) {
   return value ? value.slice(5, 13).replace('T', ' ') : ''
 }
 
-function ExternalActivityDashboard({ refreshSignal }) {
+function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState(null)
   const [siteId, setSiteId] = useState('')
   const [sourceType, setSourceType] = useState('')
   const [timeRange, setTimeRange] = useState('24h')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [hostResult, setHostResult] = useState(null)
+  const [hostError, setHostError] = useState(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadPerimeterHostCorrelations({ siteId, limit: 8, offset: 0 }, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) {
+        setHostResult({ siteId, correlations: result.correlations })
+        setHostError(null)
+      } })
+      .catch((err) => { if (!controller.signal.aborted && err.name !== 'AbortError') setHostError({ siteId, message: err.message }) })
+    return () => controller.abort()
+  }, [siteId])
 
   const filters = useMemo(() => ({
     siteId,
@@ -56,6 +70,8 @@ function ExternalActivityDashboard({ refreshSignal }) {
 
   const summary = data?.summary || {}
   const options = data?.options || { sites: [], source_types: [] }
+  const hostLoading = hostResult?.siteId !== siteId && hostError?.siteId !== siteId
+  const hostCorrelations = hostResult?.siteId === siteId ? hostResult.correlations : []
 
   return (
     <section className="panel external-activity-panel">
@@ -169,6 +185,9 @@ function ExternalActivityDashboard({ refreshSignal }) {
                 <span className="mono">{item.source_ip} → {item.destination_ip}:{item.destination_port || '—'}</span>
                 <strong>{item.event_count} events</strong>
                 <small>{item.site_name} · {item.action}</small>
+                {Number.isSafeInteger(item.id) && item.id > 0 && <button className="security-detail-close" type="button"
+                  disabled={reviewIntakeSubmitting}
+                  onClick={() => onStartReview?.(buildReviewEvidenceContext('PERIMETER_DETECTION', item))}>Start Review</button>}
               </div>
             )) : <p className="empty-state">No repeated-attempt review signals.</p>}
           </div>
@@ -182,9 +201,29 @@ function ExternalActivityDashboard({ refreshSignal }) {
                 <span>{item.correlation_type.replaceAll('_', ' ')}</span>
                 <span className="mono">{item.source_ip} → {item.destination_ip}:{item.destination_port || '—'}</span>
                 <small>{item.site_name} · {item.allow_count} allowed · {item.blocked_count} blocked</small>
+                {Number.isSafeInteger(item.id) && item.id > 0 && <button className="security-detail-close" type="button"
+                  disabled={reviewIntakeSubmitting}
+                  onClick={() => onStartReview?.(buildReviewEvidenceContext('PERIMETER_POLICY_CORRELATION', item))}>Start Review</button>}
               </div>
             )) : <p className="empty-state">No policy-transition correlations.</p>}
           </div>
+        </article>
+
+        <article className="external-subpanel external-wide">
+          <h3>Host correlations</h3>
+          {hostError?.siteId === siteId && <div className="error-box" role="alert">{hostError.message}</div>}
+          {hostLoading ? <p className="empty-state">Loading host correlations…</p>
+            : hostCorrelations.length === 0 ? <p className="empty-state">No host correlations.</p>
+              : <div className="external-list">
+                {hostCorrelations.map((item) => <div className="external-list-row" key={item.id}>
+                  <span>Site #{item.site_id} · Device #{item.device_id}</span>
+                  <strong>{item.correlation_type.replaceAll('_', ' ')}</strong>
+                  <small>{item.destination_ip}:{item.destination_port || '—'} · {formatObserved(item.observed_at)}</small>
+                  {Number.isSafeInteger(item.id) && item.id > 0 && <button className="security-detail-close" type="button"
+                    disabled={reviewIntakeSubmitting}
+                    onClick={() => onStartReview?.(buildReviewEvidenceContext('PERIMETER_HOST_CORRELATION', item))}>Start Review</button>}
+                </div>)}
+              </div>}
         </article>
 
         <article className="external-subpanel external-wide">

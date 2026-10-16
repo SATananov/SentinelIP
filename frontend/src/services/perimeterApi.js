@@ -26,3 +26,13 @@ export async function loadPerimeterDashboard(filters = {}, signal) {
 
   return response.json()
 }
+
+export async function loadPerimeterHostCorrelations({ siteId = '', limit = 8, offset = 0 } = {}, signal) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (siteId) params.set('site_id', String(siteId))
+  const response = await fetch(`${API_BASE}/perimeter-host-correlations?${params.toString()}`, { signal })
+  if (!response.ok) {
+    throw new Error(`Perimeter host correlation request failed (${response.status})`)
+  }
+  return response.json()
+}

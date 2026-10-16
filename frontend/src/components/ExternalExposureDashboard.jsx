@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { loadExternalExposureDashboard } from '../services/externalExposureApi.js'
+import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 
 function label(value) {
   return value ? value.replaceAll('_', ' ') : '—'
@@ -11,7 +12,7 @@ function observed(value) {
   return value.replace('T', ' ').replace('+00:00', ' UTC')
 }
 
-function ExternalExposureDashboard({ refreshSignal }) {
+function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState(null)
   const [scopeId, setScopeId] = useState('')
   const [timeRange, setTimeRange] = useState('7d')
@@ -156,7 +157,7 @@ function ExternalExposureDashboard({ refreshSignal }) {
           <h3>Recent exposure changes</h3>
           <div className="exposure-table-wrap">
             <table className="exposure-table">
-              <thead><tr><th>Time</th><th>Target</th><th>Change</th><th>Assessment</th><th>Role</th><th>Presence</th></tr></thead>
+              <thead><tr><th>Time</th><th>Target</th><th>Change</th><th>Assessment</th><th>Role</th><th>Presence</th><th>Review</th></tr></thead>
               <tbody>
                 {data?.recent_changes?.map((item) => (
                   <tr key={item.id}>
@@ -166,6 +167,9 @@ function ExternalExposureDashboard({ refreshSignal }) {
                     <td>{item.classification || 'REVIEW'}</td>
                     <td>{label(item.service_role)}</td>
                     <td>{item.presence_state || '—'}</td>
+                    <td>{Number.isSafeInteger(item.id) && item.id > 0 && <button className="security-detail-close" type="button"
+                      disabled={reviewIntakeSubmitting}
+                      onClick={() => onStartReview?.(buildReviewEvidenceContext('EXTERNAL_EXPOSURE_CHANGE', item))}>Start Review</button>}</td>
                   </tr>
                 ))}
               </tbody>

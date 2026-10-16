@@ -6,6 +6,7 @@ import {
   createIncidentReviewFromEvidence,
 } from '../services/securityApi.js'
 import { createIncidentReviewAttemptGuard } from '../services/incidentReviewCreationState.js'
+import { isValidPromotedReviewResponse } from '../services/reviewEvidenceContext.js'
 
 const INITIAL_FORM = {
   title: '',
@@ -17,7 +18,8 @@ const INITIAL_FORM = {
   device_id: '',
 }
 
-function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, initiatingEvidence = null }) {
+function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, onSubmittingChange,
+  initiatingEvidence = null }) {
   const [form, setForm] = useState(INITIAL_FORM)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -41,11 +43,15 @@ function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, in
     const attempt = attemptGuard.current.begin(selectionVersion)
     if (!attempt) return
     setSubmitting(true)
+    onSubmittingChange?.(true)
     setError(null)
     try {
       const result = initiatingEvidence
         ? await createIncidentReviewFromEvidence(payload, initiatingEvidence)
         : await createIncidentReview(payload)
+      if (initiatingEvidence && !isValidPromotedReviewResponse(result, initiatingEvidence)) {
+        throw new Error('Promotion response did not match the initiating evidence or expected review state.')
+      }
       const review = initiatingEvidence ? result.review : result
       if (!attemptGuard.current.isCurrent(attempt)) return
       await onCreated(review, attempt)
@@ -59,6 +65,7 @@ function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, in
       if (attemptGuard.current.isCurrent(attempt)) {
         attemptGuard.current.finish(attempt)
         setSubmitting(false)
+        onSubmittingChange?.(false)
       }
     }
   }
@@ -84,7 +91,9 @@ function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, in
       </p>
       {initiatingEvidence && <div className="incident-review-evidence-context" aria-label="Initiating Evidence">
         <strong>Initiating Evidence</strong>
-        <span>{initiatingEvidence.evidence_type} · Reference {initiatingEvidence.evidence_id}</span>
+        <span>{initiatingEvidence.label || initiatingEvidence.evidence_type} · Reference {initiatingEvidence.evidence_id}</span>
+        {Object.entries(initiatingEvidence.sourceContext || {}).filter(([, value]) => value !== null && value !== undefined && value !== '')
+          .map(([key, value]) => <small key={key}>Source {key.replaceAll('_', ' ')}: {String(value)}</small>)}
       </div>}
       {error && <p className="security-detail-error" role="alert">{error}</p>}
 

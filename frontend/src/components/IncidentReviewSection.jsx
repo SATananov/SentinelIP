@@ -25,7 +25,8 @@ function displayTime(value) {
 }
 
 function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null,
-  getSelectionVersion = null, onReviewCreated = null, initiatingEvidence = null }) {
+  getSelectionVersion = null, onReviewCreated = null, intakeRequest = null,
+  onClearIntakeRequest = null, onPromotionSubmitting = null }) {
   const [reviews, setReviews] = useState([])
   const [selected, setSelected] = useState(null)
   const [evidence, setEvidence] = useState([])
@@ -39,10 +40,10 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
   const [busy, setBusy] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [createFormOpen, setCreateFormOpen] = useState(false)
-  const [dismissedInitiatingEvidenceKey, setDismissedInitiatingEvidenceKey] = useState(null)
   const requestGuard = useRef(createIncidentReviewRequestGuard())
   const reviewListGuard = useRef(createIncidentReviewListGuard())
   const localSelectionVersion = useRef(0)
+  const createFormContainer = useRef(null)
 
   function currentSelectionVersion() {
     return `${getSelectionVersion?.() ?? 0}:${localSelectionVersion.current}`
@@ -79,10 +80,14 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
     return () => { listGuard.invalidate() }
   }, [refreshSignal])
 
-  const initiatingEvidenceKey = initiatingEvidence?.evidence_type && initiatingEvidence?.evidence_id != null
-    ? `${initiatingEvidence.evidence_type}:${initiatingEvidence.evidence_id}` : null
-  const createFormVisible = createFormOpen
-    || Boolean(initiatingEvidenceKey && dismissedInitiatingEvidenceKey !== initiatingEvidenceKey)
+  const initiatingEvidence = intakeRequest?.evidence ?? null
+  const createFormVisible = createFormOpen || Boolean(initiatingEvidence)
+
+  const intakeToken = intakeRequest?.token
+  useEffect(() => {
+    if (intakeToken === undefined) return
+    createFormContainer.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }, [intakeToken])
 
   async function handleCreatedReview(review, attempt) {
     reviewListGuard.current.invalidate()
@@ -213,15 +218,19 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
       </p>
       {error && <p className="security-detail-error">{error}</p>}
       {listError && <p className="security-detail-error">{listError}</p>}
-      {createFormVisible && <CreateIncidentReviewForm
+      {createFormVisible && <div ref={createFormContainer}>
+        <CreateIncidentReviewForm
+        key={intakeRequest ? `promotion-${intakeRequest.token}` : 'manual'}
         getSelectionVersion={currentSelectionVersion}
         onCreated={handleCreatedReview}
+        onSubmittingChange={(value) => onPromotionSubmitting?.(Boolean(initiatingEvidence && value))}
         onCancel={() => {
           setCreateFormOpen(false)
-          if (initiatingEvidenceKey) setDismissedInitiatingEvidenceKey(initiatingEvidenceKey)
+          if (intakeRequest) onClearIntakeRequest?.(intakeRequest.token)
         }}
         initiatingEvidence={initiatingEvidence}
-      />}
+        />
+      </div>}
       {selectedReviewId && selectedReviewId !== selected?.id && !error && <p className="security-empty" role="status">Loading selected Incident Review…</p>}
       {reviews.length === 0 ? (
         <p className="security-empty">No analyst incident reviews.</p>

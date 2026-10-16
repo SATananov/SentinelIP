@@ -110,6 +110,39 @@ def test_correlations_collection_is_paginated(api_db):
     assert len(data["correlations"]) == 1
 
 
+def test_web_detections_are_bounded_compact_and_newest_first(api_db):
+    seed_security_pipeline(api_db)
+    before = table_counts(api_db)
+    with get_connection(api_db) as connection:
+        web_count_before = connection.execute("SELECT COUNT(*) FROM web_detections").fetchone()[0]
+    response = client.get("/web-detections?limit=1&offset=0")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] >= 2
+    assert data["count"] == 1
+    assert data["limit"] == 1
+    assert data["offset"] == 0
+    assert set(data["detections"][0]) == {
+        "id", "detection_type", "state", "device_id", "hostname", "first_seen", "last_seen",
+    }
+    assert "evidence" not in data["detections"][0]
+    all_rows = client.get("/web-detections?limit=100&offset=0").json()["detections"]
+    assert all_rows == sorted(all_rows, key=lambda row: (row["last_seen"], row["id"]), reverse=True)
+    assert table_counts(api_db) == before
+    with get_connection(api_db) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM web_detections").fetchone()[0] == web_count_before
+
+
+@pytest.mark.parametrize("url", [
+    "/web-detections?limit=0",
+    "/web-detections?limit=101",
+    "/web-detections?offset=-1",
+    "/web-detections?offset=100001",
+])
+def test_web_detections_reject_out_of_bounds_pagination(api_db, url):
+    assert client.get(url).status_code == 422
+
+
 def test_correlations_support_context_filters(api_db):
     seeded = seed_security_pipeline(api_db)
     ssh = client.get(

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -19,12 +20,20 @@ import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
 import NetworkWorkspace from './components/NetworkWorkspace.jsx'
 import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
+import {
+  clearReviewIntakeRequest,
+  createReviewIntakeRequest,
+  isValidReviewEvidenceContext,
+} from './services/reviewEvidenceContext.js'
 
 import './App.css'
 
 const API_BASE = 'http://127.0.0.1:8000'
 
 function App() {
+  const reviewIntakeToken = useRef(0)
+  const [reviewIntakeRequest, setReviewIntakeRequest] = useState(null)
+  const [reviewIntakeSubmitting, setReviewIntakeSubmitting] = useState(false)
   const [health, setHealth] = useState(null)
 
   const [overview, setOverview] = useState({
@@ -47,6 +56,16 @@ function App() {
   const [error, setError] = useState(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
+
+  const startReviewFromEvidence = useCallback((evidence) => {
+    if (reviewIntakeSubmitting || !isValidReviewEvidenceContext(evidence)) return
+    reviewIntakeToken.current += 1
+    setReviewIntakeRequest(createReviewIntakeRequest(reviewIntakeToken.current, evidence))
+  }, [reviewIntakeSubmitting])
+
+  const clearReviewIntake = useCallback((token) => {
+    setReviewIntakeRequest((current) => clearReviewIntakeRequest(current, token))
+  }, [])
 
   const [severityFilter, setSeverityFilter] = useState('ALL')
   const [ipFilter, setIpFilter] = useState('ALL')
@@ -341,14 +360,23 @@ function App() {
 
       <SecurityReviewPanel
         refreshSignal={lastUpdated}
+        reviewIntakeRequest={reviewIntakeRequest}
+        onStartReview={startReviewFromEvidence}
+        onClearReviewIntake={clearReviewIntake}
+        onReviewIntakeSubmitting={setReviewIntakeSubmitting}
+        reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
       <ExternalActivityDashboard
         refreshSignal={lastUpdated}
+        onStartReview={startReviewFromEvidence}
+        reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
       <ExternalExposureDashboard
         refreshSignal={lastUpdated}
+        onStartReview={startReviewFromEvidence}
+        reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
       <section className="panel">

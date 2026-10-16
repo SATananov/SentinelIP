@@ -73,3 +73,21 @@ def list_web_detections(sensor_id: int | None = None, db_path=DB_PATH):
             (sensor_id, sensor_id),
         ).fetchall()
     return [_row(row) for row in rows]
+
+
+def query_web_detections(*, limit=20, offset=0, db_path=DB_PATH):
+    """Bounded, compact read projection for analyst review intake."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Web detection limit must be between 1 and 100.")
+    if type(offset) is not int or not 0 <= offset <= 100000:
+        raise ValueError("Web detection offset must be between 0 and 100000.")
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        total = connection.execute("SELECT COUNT(*) FROM web_detections").fetchone()[0]
+        rows = connection.execute(
+            """SELECT id, detection_type, state, device_id, hostname, first_seen, last_seen
+               FROM web_detections ORDER BY last_seen DESC, id DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+    return {"total": total, "items": [dict(row) for row in rows]}

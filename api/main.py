@@ -54,6 +54,7 @@ from database.db import (
 from database.db import DB_PATH
 from database.threats import get_threat, query_threats
 from database.correlations import get_correlation, query_correlations
+from database.web_detections import query_web_detections
 from database.incidents import get_incident, query_incidents
 from database.perimeter import get_perimeter_event, query_perimeter_events
 from database.perimeter_detections import get_perimeter_detection, query_perimeter_detections
@@ -1194,6 +1195,21 @@ def correlation_detail(correlation_id: int):
         raise HTTPException(status_code=404, detail="Correlation not found.")
 
     return item
+
+
+@app.get("/web-detections")
+def web_detections(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=100000),
+):
+    result = query_web_detections(limit=limit, offset=offset, db_path=DB_PATH)
+    return {
+        "total": result["total"],
+        "count": len(result["items"]),
+        "limit": limit,
+        "offset": offset,
+        "detections": result["items"],
+    }
 
 
 @app.get("/incidents")

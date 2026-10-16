@@ -227,6 +227,11 @@ export function detachIncidentEvidence(id, evidence) {
   )
 }
 
+export function loadWebDetections({ limit = 20, offset = 0 } = {}, signal) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  return getJson(`/web-detections?${params.toString()}`, signal)
+}
+
 export async function loadSecurityOverview(signal) {
   const [threats, correlations, incidents] = await Promise.all([
     getJson('/threats?limit=5&offset=0', signal),

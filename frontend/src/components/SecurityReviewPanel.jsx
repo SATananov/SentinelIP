@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   loadSecurityDetail,
   loadSecurityOverview,
+  loadWebDetections,
 } from '../services/securityApi.js'
+import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 import IncidentReviewSection from './IncidentReviewSection.jsx'
 import IncidentReviewOperations from './IncidentReviewOperations.jsx'
 
@@ -140,6 +142,8 @@ function SecurityDetail({
   loading,
   error,
   onClose,
+  onStartReview,
+  reviewIntakeSubmitting,
 }) {
   if (!selection) return null
 
@@ -165,6 +169,15 @@ function SecurityDetail({
         >
           Close
         </button>
+        {(selection.kind === 'threat' || selection.kind === 'correlation')
+          && Number.isSafeInteger(detail?.id) && detail.id > 0 && (
+          <button className="security-detail-close" type="button" disabled={reviewIntakeSubmitting}
+            onClick={() => onStartReview?.(buildReviewEvidenceContext(
+              selection.kind === 'threat' ? 'THREAT_DETECTION' : 'THREAT_CORRELATION', detail,
+            ))}>
+            Start Review
+          </button>
+        )}
       </div>
 
       {loading && (
@@ -269,7 +282,8 @@ function SecurityDetail({
   )
 }
 
-function SecurityReviewPanel({ refreshSignal }) {
+function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, onStartReview,
+  onClearReviewIntake, onReviewIntakeSubmitting, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState({
     threats: { total: 0, threats: [] },
     correlations: { total: 0, correlations: [] },
@@ -283,6 +297,9 @@ function SecurityReviewPanel({ refreshSignal }) {
   const [detailError, setDetailError] = useState(null)
   const [selectedReviewId, setSelectedReviewId] = useState(null)
   const [reviewOperationsRefreshSignal, setReviewOperationsRefreshSignal] = useState(0)
+  const [webDetections, setWebDetections] = useState([])
+  const [webLoading, setWebLoading] = useState(true)
+  const [webError, setWebError] = useState(null)
   const reviewSelectionVersion = useRef(0)
 
   const selectIncidentReview = useCallback((reviewId) => {
@@ -319,6 +336,15 @@ function SecurityReviewPanel({ refreshSignal }) {
     return () => controller.abort()
   }, [refreshSignal])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    loadWebDetections({ limit: 8, offset: 0 }, controller.signal)
+      .then((result) => setWebDetections(result.detections))
+      .catch((err) => { if (err.name !== 'AbortError') setWebError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setWebLoading(false) })
+    return () => controller.abort()
+  }, [])
+
   async function selectRecord(kind, id) {
     setSelection({ kind, id })
     setDetail(null)
@@ -350,7 +376,9 @@ function SecurityReviewPanel({ refreshSignal }) {
         reviewDetail={<IncidentReviewSection refreshSignal={refreshSignal}
           selectedReviewId={selectedReviewId} onSelectReview={selectIncidentReview}
           getSelectionVersion={getReviewSelectionVersion}
-          onReviewCreated={refreshIncidentReviewOperations} />}
+          onReviewCreated={refreshIncidentReviewOperations}
+          intakeRequest={reviewIntakeRequest} onClearIntakeRequest={onClearReviewIntake}
+          onPromotionSubmitting={onReviewIntakeSubmitting} />}
       />
       <div className="security-layer-heading">
         <div>
@@ -462,7 +490,34 @@ function SecurityReviewPanel({ refreshSignal }) {
         loading={detailLoading}
         error={detailError}
         onClose={closeDetail}
+        onStartReview={onStartReview}
+        reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
+
+      <article className="panel security-column web-detection-panel">
+        <div className="panel-heading">
+          <div><p className="panel-kicker">Web Detection</p><h3>Recent Web Detections</h3></div>
+          <span className="panel-count">{webDetections.length}</span>
+        </div>
+        <p className="security-layer-copy">Bounded read-only source records. Starting a review does not change the detection.</p>
+        {webError && <p className="security-detail-error" role="alert">{webError}</p>}
+        {webLoading ? <EmptyState>Loading web detections…</EmptyState>
+          : webDetections.length === 0 ? <EmptyState>No web detections.</EmptyState>
+            : <div className="security-record-list">
+              {webDetections.map((item) => (
+                <div className="security-record web-detection-record" key={item.id}>
+                  <span className="security-record-id">#{item.id}</span>
+                  <span className="security-record-main">
+                    <strong>{humanize(item.detection_type)}</strong>
+                    <small>{compactTime(item.last_seen)} · {item.hostname || (item.device_id ? `Device #${item.device_id}` : 'Device unattributed')}</small>
+                  </span>
+                  {Number.isSafeInteger(item.id) && item.id > 0 && <button className="security-detail-close" type="button"
+                    disabled={reviewIntakeSubmitting}
+                    onClick={() => onStartReview?.(buildReviewEvidenceContext('WEB_DETECTION', item))}>Start Review</button>}
+                </div>
+              ))}
+            </div>}
+      </article>
     </section>
   )
 }
