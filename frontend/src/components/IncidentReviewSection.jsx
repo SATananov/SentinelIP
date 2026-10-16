@@ -25,7 +25,7 @@ function displayTime(value) {
 }
 
 function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null,
-  getSelectionVersion = null, onReviewCreated = null }) {
+  getSelectionVersion = null, onReviewCreated = null, initiatingEvidence = null }) {
   const [reviews, setReviews] = useState([])
   const [selected, setSelected] = useState(null)
   const [evidence, setEvidence] = useState([])
@@ -39,6 +39,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
   const [busy, setBusy] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [createFormOpen, setCreateFormOpen] = useState(false)
+  const [dismissedInitiatingEvidenceKey, setDismissedInitiatingEvidenceKey] = useState(null)
   const requestGuard = useRef(createIncidentReviewRequestGuard())
   const reviewListGuard = useRef(createIncidentReviewListGuard())
   const localSelectionVersion = useRef(0)
@@ -77,6 +78,11 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
       })
     return () => { listGuard.invalidate() }
   }, [refreshSignal])
+
+  const initiatingEvidenceKey = initiatingEvidence?.evidence_type && initiatingEvidence?.evidence_id != null
+    ? `${initiatingEvidence.evidence_type}:${initiatingEvidence.evidence_id}` : null
+  const createFormVisible = createFormOpen
+    || Boolean(initiatingEvidenceKey && dismissedInitiatingEvidenceKey !== initiatingEvidenceKey)
 
   async function handleCreatedReview(review, attempt) {
     reviewListGuard.current.invalidate()
@@ -198,7 +204,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
         </div>
         <div className="incident-review-heading-actions">
           <span className="panel-count">{reviews.length}</span>
-          {!createFormOpen && <button className="security-detail-close" type="button"
+          {!createFormVisible && <button className="security-detail-close" type="button"
             onClick={() => setCreateFormOpen(true)}>Create Review</button>}
         </div>
       </div>
@@ -207,10 +213,14 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
       </p>
       {error && <p className="security-detail-error">{error}</p>}
       {listError && <p className="security-detail-error">{listError}</p>}
-      {createFormOpen && <CreateIncidentReviewForm
+      {createFormVisible && <CreateIncidentReviewForm
         getSelectionVersion={currentSelectionVersion}
         onCreated={handleCreatedReview}
-        onCancel={() => setCreateFormOpen(false)}
+        onCancel={() => {
+          setCreateFormOpen(false)
+          if (initiatingEvidenceKey) setDismissedInitiatingEvidenceKey(initiatingEvidenceKey)
+        }}
+        initiatingEvidence={initiatingEvidence}
       />}
       {selectedReviewId && selectedReviewId !== selected?.id && !error && <p className="security-empty" role="status">Loading selected Incident Review…</p>}
       {reviews.length === 0 ? (

@@ -6,9 +6,11 @@ import pytest
 from fastapi import HTTPException
 
 import api.main as api
+from api.incident_reviews import ReviewCreate, ReviewFromEvidenceCreate
 from database.db import get_connection, initialize_database
 from database.incident_reviews import (
-    IncidentReviewError, add_evidence, add_note, create_review, get_review, list_evidence,
+    IncidentReviewError, add_evidence, add_note, create_review, create_review_from_evidence,
+    get_review, list_evidence,
     list_notes, list_related_evidence, list_reviews, list_timeline, remove_evidence, update_review,
 )
 from database.inventory import create_device, create_scope_device
@@ -719,6 +721,134 @@ def test_create_link_idempotency_time_recomputation_and_detach_preserves_source(
     assert get_perimeter_detection(first['id'],path) is not None
     remove_evidence(review['id'],'PERIMETER_DETECTION',second['id'],path)
     assert get_review(review['id'],path)['first_evidence_at'] is None
+
+
+def test_create_review_from_evidence_is_atomic_and_reuses_existing_link_semantics(tmp_path):
+    path = tmp_path / 'review-from-evidence.db'
+    site = RemoteSensorStore(path).create_site('Promotion site')
+    source = _detection(path,site['id'],81)
+    source_before = get_perimeter_detection(source['id'],path)
+
+    result = create_review_from_evidence(
+        title='Analyst-selected review', evidence_type='PERIMETER_DETECTION',
+        evidence_id=source['id'], site_id=site['id'], db_path=path)
+    review = result['review']
+    assert result['evidence'] == {
+        'evidence_type': 'PERIMETER_DETECTION', 'evidence_id': source['id'],
+    }
+    assert review['state'] == 'OPEN' and review['disposition'] == 'UNREVIEWED'
+    assert review['priority'] == 'MEDIUM' and review['confidence'] == 'MEDIUM'
+    assert review['first_evidence_at'] == source['first_seen']
+    assert review['last_evidence_at'] == source['first_seen']
+    links = list_evidence(review['id'],db_path=path)
+    assert links['total'] == 1
+    assert links['items'][0]['evidence_id'] == source['id']
+    events = list_timeline(review['id'],db_path=path)['items']
+    assert [event['event_type'] for event in reversed(events)] == [
+        'REVIEW_CREATED', 'EVIDENCE_ATTACHED',
+    ]
+    assert get_perimeter_detection(source['id'],path) == source_before
+
+    # Evidence references are reusable across reviews; uniqueness is per review.
+    second = create_review_from_evidence(
+        title='Second review', evidence_type='PERIMETER_DETECTION',
+        evidence_id=source['id'], site_id=site['id'], priority='HIGH',
+        confidence='LOW', db_path=path)
+    assert second['review']['priority'] == 'HIGH'
+    assert second['review']['confidence'] == 'LOW'
+    assert list_evidence(second['review']['id'],db_path=path)['total'] == 1
+    with get_connection(path) as connection:
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence '
+            'WHERE evidence_type=? AND evidence_id=?',
+            ('PERIMETER_DETECTION',source['id'])).fetchone()[0] == 2
+
+
+def test_create_review_from_evidence_rolls_back_after_review_insert(tmp_path):
+    path = tmp_path / 'review-from-evidence-rollback.db'
+    site = RemoteSensorStore(path).create_site('Rollback site')
+    source = _detection(path,site['id'],82)
+    with get_connection(path) as connection:
+        connection.execute('''CREATE TRIGGER abort_initial_review_evidence
+            BEFORE INSERT ON incident_review_evidence
+            BEGIN SELECT RAISE(ABORT,'forced promotion rollback'); END''')
+
+    with pytest.raises(sqlite3.IntegrityError,match='forced promotion rollback'):
+        create_review_from_evidence(
+            title='Must roll back', evidence_type='PERIMETER_DETECTION',
+            evidence_id=source['id'], site_id=site['id'], db_path=path)
+
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM incident_reviews "
+            "WHERE title='Must roll back'").fetchone()[0] == 0
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0] == 0
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM incident_reviews "
+            "WHERE first_evidence_at IS NOT NULL OR last_evidence_at IS NOT NULL").fetchone()[0] == 0
+    assert get_perimeter_detection(source['id'],path) is not None
+
+
+def test_create_review_from_threat_evidence_does_not_infer_review_attribution(tmp_path):
+    path = tmp_path / 'review-from-threat-evidence.db'
+    _, _, device = _private_device(path,'Threat source site','10.181.0.0/24')
+    evidence_id = _device_threat(path,device['id'],sequence=85)
+    result = create_review_from_evidence(
+        title='Threat source review', evidence_type='THREAT_DETECTION',
+        evidence_id=evidence_id, db_path=path)
+    assert result['review']['site_id'] is None
+    assert result['review']['scope_id'] is None
+    assert result['review']['device_id'] is None
+    assert list_evidence(result['review']['id'],db_path=path)['total'] == 1
+
+
+def test_create_review_from_evidence_rejects_invalid_source_and_attribution(tmp_path):
+    path = tmp_path / 'review-from-evidence-invalid.db'
+    site_a = RemoteSensorStore(path).create_site('Source site')
+    site_b = RemoteSensorStore(path).create_site('Other site')
+    source = _detection(path,site_a['id'],83)
+    for evidence_type, evidence_id, site_id, error in (
+        ('UNKNOWN',source['id'],None,'unsupported'),
+        ('PERIMETER_DETECTION',0,None,'positive integer'),
+        ('PERIMETER_DETECTION',999999,None,'not found'),
+        ('PERIMETER_DETECTION',source['id'],999999,'Site not found'),
+        ('PERIMETER_DETECTION',source['id'],site_b['id'],'site_id attribution'),
+    ):
+        with pytest.raises(IncidentReviewError,match=error):
+            create_review_from_evidence(title='Rejected promotion',evidence_type=evidence_type,
+                evidence_id=evidence_id,site_id=site_id,db_path=path)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM incident_reviews "
+            "WHERE title='Rejected promotion'").fetchone()[0] == 0
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0] == 0
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0] == 0
+
+
+def test_create_review_from_evidence_api_is_explicit_and_preserves_manual_contract(tmp_path, monkeypatch):
+    path = tmp_path / 'review-from-evidence-api.db'
+    initialize_database(path)
+    monkeypatch.setattr(api,'DB_PATH',path)
+    site = RemoteSensorStore(path).create_site('API promotion site')
+    source = _detection(path,site['id'],84)
+    routes = {(route.path,method): route.endpoint for route in api.app.routes
+              if hasattr(route,'endpoint') for method in getattr(route,'methods',())}
+    payload = ReviewFromEvidenceCreate.model_validate({
+        'review': {'title':'API promoted review','site_id':site['id']},
+        'evidence': {'evidence_type':'PERIMETER_DETECTION','evidence_id':source['id']},
+    })
+    response = routes[('/incident-reviews/from-evidence','POST')](payload)
+    assert set(response) == {'review','evidence'}
+    assert response['review']['state'] == 'OPEN'
+    assert response['review']['disposition'] == 'UNREVIEWED'
+    assert response['evidence'] == {
+        'evidence_type':'PERIMETER_DETECTION','evidence_id':source['id'],
+    }
+    with pytest.raises(Exception):
+        ReviewFromEvidenceCreate.model_validate({
+            'review': {'title':'Invalid','state':'CLOSED'},
+            'evidence': {'evidence_type':'PERIMETER_DETECTION','evidence_id':source['id']},
+        })
+    manual = routes[('/incident-reviews','POST')](ReviewCreate(title='Manual remains separate'))
+    assert manual['state'] == 'OPEN' and manual['disposition'] == 'UNREVIEWED'
+    assert list_evidence(manual['id'],db_path=path)['total'] == 0
 
 
 def test_closed_update_and_strict_enum_and_evidence_validation(tmp_path):

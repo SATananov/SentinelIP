@@ -5,7 +5,9 @@ import {
   attachIncidentEvidence,
   addIncidentReviewNote,
   buildIncidentReviewCreatePayload,
+  buildIncidentReviewFromEvidencePayload,
   createIncidentReview,
+  createIncidentReviewFromEvidence,
   detachIncidentEvidence,
   loadIncidentReviewOperations,
   loadIncidentReviewActivity,
@@ -288,6 +290,49 @@ test('manual review creation includes only valid optional attribution IDs and pr
       json: async () => ({ detail: 'Site and scope attribution do not match.' }) })
     await assert.rejects(createIncidentReview({ title: 'Review', site_id: 2, scope_id: 3 }),
       /Site and scope attribution do not match/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('evidence promotion uses one atomic allowlisted request and preserves immutable evidence context', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options })
+    return { ok: true, json: async () => ({ review: { id: 93 }, evidence: {} }) }
+  }
+  try {
+    const form = {
+      title: '  Promoted review  ', summary: 'Analyst context', priority: 'HIGH',
+      confidence: 'LOW', site_id: '2', scope_id: '', device_id: null,
+      state: 'CLOSED', disposition: 'ACTION_REQUIRED', analyst_note: 'omit',
+      final_summary: 'omit', evidence_type: 'FORGED', evidence_id: 900,
+    }
+    const context = { evidence_type: 'THREAT_DETECTION', evidence_id: '12', source_payload: 'omit' }
+    assert.deepEqual(buildIncidentReviewFromEvidencePayload(form, context), {
+      review: { title: 'Promoted review', summary: 'Analyst context', priority: 'HIGH',
+        confidence: 'LOW', site_id: 2 },
+      evidence: { evidence_type: 'THREAT_DETECTION', evidence_id: 12 },
+    })
+    const result = await createIncidentReviewFromEvidence(form, context)
+    assert.equal(result.review.id, 93)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'http://127.0.0.1:8000/incident-reviews/from-evidence')
+    assert.equal(calls[0].options.method, 'POST')
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      review: { title: 'Promoted review', summary: 'Analyst context', priority: 'HIGH',
+        confidence: 'LOW', site_id: 2 },
+      evidence: { evidence_type: 'THREAT_DETECTION', evidence_id: 12 },
+    })
+    assert.throws(() => buildIncidentReviewFromEvidencePayload(form,
+      { evidence_type: 'UNKNOWN', evidence_id: 12 }), /unsupported/)
+    for (const evidence_id of [0, -1, '1.5', 'bad', Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(() => buildIncidentReviewFromEvidencePayload(form,
+        { evidence_type: 'THREAT_DETECTION', evidence_id }), /positive integer/)
+    }
+    globalThis.fetch = async () => ({ ok: false, status: 422,
+      json: async () => ({ detail: 'Evidence site attribution conflicts.' }) })
+    await assert.rejects(createIncidentReviewFromEvidence(form, context), /Evidence site attribution conflicts/)
+    assert.equal(calls.length, 1, 'API failure must not trigger a fallback attach request')
   } finally { globalThis.fetch = originalFetch }
 })
 

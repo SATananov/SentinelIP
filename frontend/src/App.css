@@ -963,6 +963,20 @@ h2 {
   margin: 0;
 }
 
+.incident-review-evidence-context {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid #374150;
+  border-radius: 0.5rem;
+  color: #aeb7c5;
+  font-size: 0.875rem;
+}
+
+.incident-review-evidence-context strong {
+  color: #e7ecf4;
+}
+
 .incident-review-create-form label {
   display: grid;
   gap: 5px;

@@ -212,10 +212,10 @@ def _field_event(connection, incident_id, field, old, new, now):
                   old_value=old,new_value=new,summary=f'{field.replace("_"," ").title()} changed')
 
 
-def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confidence='MEDIUM',
-                  site_id=None, scope_id=None, device_id=None, disposition='UNREVIEWED',
-                  analyst_note=None, final_summary=None, db_path=DB_PATH):
-    initialize_database(db_path)
+def _create_review_in_transaction(connection, *, title, summary='', state='OPEN',
+                                  priority='MEDIUM', confidence='MEDIUM', site_id=None,
+                                  scope_id=None, device_id=None, disposition='UNREVIEWED',
+                                  analyst_note=None, final_summary=None):
     title = _valid_text(title, 'Title', 160, required=True)
     summary = _valid_text(summary, 'Summary', 4000)
     analyst_note = None if analyst_note is None else _valid_text(analyst_note, 'Analyst note', 4000)
@@ -227,20 +227,30 @@ def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confide
     now = _now()
     closed_at = None
     incident_key = f'IR-{uuid4().hex}'
+    _validate_attribution(connection, site_id=site_id, scope_id=scope_id, device_id=device_id)
+    cursor = connection.execute('''INSERT INTO incident_reviews (
+        incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
+        created_at,updated_at,closed_at,disposition,analyst_note,final_summary)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
+         now,now,closed_at,disposition,analyst_note,final_summary))
+    incident_id = cursor.lastrowid
+    _record_event(connection,incident_id,'REVIEW_CREATED',now=now,
+                  summary='Incident review created')
+    return _review(connection, incident_id)
+
+
+def create_review(*, title, summary='', state='OPEN', priority='MEDIUM', confidence='MEDIUM',
+                  site_id=None, scope_id=None, device_id=None, disposition='UNREVIEWED',
+                  analyst_note=None, final_summary=None, db_path=DB_PATH):
+    initialize_database(db_path)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute('BEGIN IMMEDIATE')
-        _validate_attribution(connection, site_id=site_id, scope_id=scope_id, device_id=device_id)
-        cursor = connection.execute('''INSERT INTO incident_reviews (
-            incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
-            created_at,updated_at,closed_at,disposition,analyst_note,final_summary)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (incident_key,title,summary,state,priority,confidence,site_id,scope_id,device_id,
-             now,now,closed_at,disposition,analyst_note,final_summary))
-        incident_id = cursor.lastrowid
-        _record_event(connection,incident_id,'REVIEW_CREATED',now=now,
-                      summary='Incident review created')
-        return _review(connection, incident_id)
+        return _create_review_in_transaction(
+            connection, title=title, summary=summary, state=state, priority=priority,
+            confidence=confidence, site_id=site_id, scope_id=scope_id, device_id=device_id,
+            disposition=disposition, analyst_note=analyst_note, final_summary=final_summary)
 
 
 def get_review(incident_id, db_path=DB_PATH):
@@ -549,6 +559,34 @@ def list_related_evidence(incident_id, *, limit=100, evidence_type=None, db_path
         return {'total':len(bounded),'items':bounded[:limit]}
 
 
+def _attach_evidence_in_transaction(connection, incident_id, *, evidence_type,
+                                     evidence_id, reason=None):
+    if type(evidence_id) is not int or evidence_id <= 0:
+        raise IncidentReviewError('Evidence ID must be a positive integer.')
+    if reason is not None:
+        reason = _valid_text(reason,'Evidence relation reason',500)
+    incident = _review(connection,incident_id)
+    if incident is None:
+        raise IncidentReviewError('Incident review not found.',404)
+    evidence = _evidence(connection,evidence_type,evidence_id)
+    _validate_link_attribution(connection,incident,evidence)
+    now = _now()
+    cursor = connection.execute('''INSERT OR IGNORE INTO incident_review_evidence
+        (incident_id,evidence_type,evidence_id,observed_at,added_at,reason) VALUES (?,?,?,?,?,?)''',
+        (incident_id,evidence_type,evidence_id,evidence['observed_at'],now,reason))
+    linked = connection.execute('SELECT * FROM incident_review_evidence WHERE incident_id=? AND evidence_type=? AND evidence_id=?',
+                                (incident_id,evidence_type,evidence_id)).fetchone()
+    _recompute_evidence_times(connection,incident_id)
+    connection.execute('UPDATE incident_reviews SET updated_at=? WHERE id=?',(now,incident_id))
+    if cursor.rowcount:
+        _record_event(connection,incident_id,'EVIDENCE_ATTACHED',now=now,
+                      evidence_type=evidence_type,evidence_id=evidence_id,
+                      summary='Evidence attached to review')
+    result = dict(linked)
+    result['idempotent'] = cursor.rowcount == 0
+    return result
+
+
 def add_evidence(incident_id, *, evidence_type, evidence_id, reason=None, db_path=DB_PATH):
     if type(evidence_id) is not int or evidence_id <= 0:
         raise IncidentReviewError('Evidence ID must be a positive integer.')
@@ -558,26 +596,30 @@ def add_evidence(incident_id, *, evidence_type, evidence_id, reason=None, db_pat
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute('BEGIN IMMEDIATE')
-        incident = _review(connection,incident_id)
-        if incident is None:
-            raise IncidentReviewError('Incident review not found.',404)
-        evidence = _evidence(connection,evidence_type,evidence_id)
-        _validate_link_attribution(connection,incident,evidence)
-        now = _now()
-        cursor = connection.execute('''INSERT OR IGNORE INTO incident_review_evidence
-            (incident_id,evidence_type,evidence_id,observed_at,added_at,reason) VALUES (?,?,?,?,?,?)''',
-            (incident_id,evidence_type,evidence_id,evidence['observed_at'],now,reason))
-        linked = connection.execute('SELECT * FROM incident_review_evidence WHERE incident_id=? AND evidence_type=? AND evidence_id=?',
-                                    (incident_id,evidence_type,evidence_id)).fetchone()
-        _recompute_evidence_times(connection,incident_id)
-        connection.execute('UPDATE incident_reviews SET updated_at=? WHERE id=?',(now,incident_id))
-        if cursor.rowcount:
-            _record_event(connection,incident_id,'EVIDENCE_ATTACHED',now=now,
-                          evidence_type=evidence_type,evidence_id=evidence_id,
-                          summary='Evidence attached to review')
-        result = dict(linked)
-        result['idempotent'] = cursor.rowcount == 0
-        return result
+        return _attach_evidence_in_transaction(
+            connection, incident_id, evidence_type=evidence_type,
+            evidence_id=evidence_id, reason=reason)
+
+
+def create_review_from_evidence(*, title, evidence_type, evidence_id, summary='',
+                                priority='MEDIUM', confidence='MEDIUM', site_id=None,
+                                scope_id=None, device_id=None, db_path=DB_PATH):
+    """Atomically create an OPEN review and attach one initiating evidence reference."""
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('BEGIN IMMEDIATE')
+        review = _create_review_in_transaction(
+            connection, title=title, summary=summary, state='OPEN',
+            priority=priority, confidence=confidence, site_id=site_id,
+            scope_id=scope_id, device_id=device_id, disposition='UNREVIEWED')
+        _attach_evidence_in_transaction(
+            connection, review['id'], evidence_type=evidence_type,
+            evidence_id=evidence_id)
+        return {
+            'review': _review(connection, review['id']),
+            'evidence': {'evidence_type': evidence_type, 'evidence_id': evidence_id},
+        }
 
 
 def list_evidence(incident_id, *, limit=100, offset=0, db_path=DB_PATH):

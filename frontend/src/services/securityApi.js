@@ -73,6 +73,32 @@ export function createIncidentReview(form) {
   return mutateJson('/incident-reviews', 'POST', payload)
 }
 
+const INCIDENT_REVIEW_EVIDENCE_TYPES = [
+  'PERIMETER_DETECTION', 'PERIMETER_POLICY_CORRELATION', 'PERIMETER_HOST_CORRELATION',
+  'EXTERNAL_EXPOSURE_CHANGE', 'THREAT_DETECTION', 'THREAT_CORRELATION', 'WEB_DETECTION',
+]
+
+export function buildIncidentReviewFromEvidencePayload(form, initiatingEvidence) {
+  const evidenceType = initiatingEvidence?.evidence_type
+  const rawEvidenceId = initiatingEvidence?.evidence_id
+  const evidenceId = typeof rawEvidenceId === 'number' ? rawEvidenceId : Number(rawEvidenceId)
+  if (!INCIDENT_REVIEW_EVIDENCE_TYPES.includes(evidenceType)) {
+    throw new Error('Initiating evidence type is unsupported.')
+  }
+  if (!Number.isSafeInteger(evidenceId) || evidenceId <= 0) {
+    throw new Error('Initiating evidence ID must be a positive integer.')
+  }
+  return {
+    review: buildIncidentReviewCreatePayload(form),
+    evidence: { evidence_type: evidenceType, evidence_id: evidenceId },
+  }
+}
+
+export function createIncidentReviewFromEvidence(form, initiatingEvidence) {
+  const payload = buildIncidentReviewFromEvidencePayload(form, initiatingEvidence)
+  return mutateJson('/incident-reviews/from-evidence', 'POST', payload)
+}
+
 export function buildIncidentReviewOperationsQuery(filters = {}) {
   const params = new URLSearchParams({
     limit: String(filters.limit ?? 20),

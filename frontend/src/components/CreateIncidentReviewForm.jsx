@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { buildIncidentReviewCreatePayload, createIncidentReview } from '../services/securityApi.js'
+import {
+  buildIncidentReviewCreatePayload,
+  createIncidentReview,
+  createIncidentReviewFromEvidence,
+} from '../services/securityApi.js'
 import { createIncidentReviewAttemptGuard } from '../services/incidentReviewCreationState.js'
 
 const INITIAL_FORM = {
@@ -13,7 +17,7 @@ const INITIAL_FORM = {
   device_id: '',
 }
 
-function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel }) {
+function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel, initiatingEvidence = null }) {
   const [form, setForm] = useState(INITIAL_FORM)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -39,7 +43,10 @@ function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel }) 
     setSubmitting(true)
     setError(null)
     try {
-      const review = await createIncidentReview(payload)
+      const result = initiatingEvidence
+        ? await createIncidentReviewFromEvidence(payload, initiatingEvidence)
+        : await createIncidentReview(payload)
+      const review = initiatingEvidence ? result.review : result
       if (!attemptGuard.current.isCurrent(attempt)) return
       await onCreated(review, attempt)
       if (!attemptGuard.current.isCurrent(attempt)) return
@@ -75,6 +82,10 @@ function CreateIncidentReviewForm({ getSelectionVersion, onCreated, onCancel }) 
       <p className="security-layer-copy">
         Incident Reviews are analyst investigation records and do not by themselves confirm an attack or compromise.
       </p>
+      {initiatingEvidence && <div className="incident-review-evidence-context" aria-label="Initiating Evidence">
+        <strong>Initiating Evidence</strong>
+        <span>{initiatingEvidence.evidence_type} · Reference {initiatingEvidence.evidence_id}</span>
+      </div>}
       {error && <p className="security-detail-error" role="alert">{error}</p>}
 
       <label>Review Title

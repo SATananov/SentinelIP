@@ -68,6 +68,26 @@ class EvidenceCreate(Input):
     reason: StrictStr | None = Field(default=None, max_length=500)
 
 
+class PromotionReviewCreate(Input):
+    title: StrictStr = Field(min_length=1, max_length=160)
+    summary: StrictStr = Field(default='', max_length=4000)
+    priority: Priority = 'MEDIUM'
+    confidence: Confidence = 'MEDIUM'
+    site_id: StrictInt | None = Field(default=None, ge=1)
+    scope_id: StrictInt | None = Field(default=None, ge=1)
+    device_id: StrictInt | None = Field(default=None, ge=1)
+
+
+class InitialEvidence(Input):
+    evidence_type: EvidenceType
+    evidence_id: StrictInt = Field(gt=0)
+
+
+class ReviewFromEvidenceCreate(Input):
+    review: PromotionReviewCreate
+    evidence: InitialEvidence
+
+
 class NoteCreate(Input):
     note_text: StrictStr = Field(min_length=1, max_length=4000)
 
@@ -215,6 +235,15 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
     def create_incident_review(payload: ReviewCreate):
         try:
             return reviews_db.create_review(**payload.model_dump(),db_path=db_path_provider())
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.post('/incident-reviews/from-evidence',status_code=201)
+    def create_incident_review_from_evidence(payload: ReviewFromEvidenceCreate):
+        try:
+            return reviews_db.create_review_from_evidence(
+                **payload.review.model_dump(), **payload.evidence.model_dump(),
+                db_path=db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
