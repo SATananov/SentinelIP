@@ -934,6 +934,71 @@ h2 {
   padding: 18px;
 }
 
+.incident-review-heading-actions,
+.incident-review-create-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.incident-review-create-form {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+  padding: 14px;
+  border: 1px solid #374150;
+  border-radius: 10px;
+  background: #12161c;
+}
+
+.incident-review-create-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.incident-review-create-heading h4 {
+  margin: 0;
+}
+
+.incident-review-create-form label {
+  display: grid;
+  gap: 5px;
+  color: #aeb7c5;
+  font-size: 11px;
+}
+
+.incident-review-create-form input,
+.incident-review-create-form textarea,
+.incident-review-create-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #374150;
+  border-radius: 7px;
+  padding: 8px;
+  background: #10141a;
+  color: #dce1e9;
+  font: inherit;
+  font-size: 12px;
+}
+
+.incident-review-create-form textarea {
+  resize: vertical;
+}
+
+.incident-review-create-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.incident-review-create-form button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .incident-review-workflow h4 {
   margin: 18px 0 9px;
   color: #dce1e9;
@@ -1017,6 +1082,10 @@ h2 {
 }
 
 @media (max-width: 720px) {
+  .incident-review-create-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .incident-review-edit-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

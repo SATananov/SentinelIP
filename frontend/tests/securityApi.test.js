@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   attachIncidentEvidence,
   addIncidentReviewNote,
+  buildIncidentReviewCreatePayload,
+  createIncidentReview,
   detachIncidentEvidence,
   loadIncidentReviewOperations,
   loadIncidentReviewActivity,
@@ -233,6 +235,60 @@ test('incident review API reads suggestions and mutates links only on explicit c
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('manual incident review creation sends only approved fields and omits empty attribution', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options })
+    return { ok: true, json: async () => ({ id: 91, state: 'OPEN' }) }
+  }
+  try {
+    const result = await createIncidentReview({
+      title: '  Analyst review  ', summary: '', priority: 'HIGH', confidence: 'LOW',
+      site_id: '', scope_id: null, device_id: undefined,
+      state: 'CLOSED', disposition: 'ACTION_REQUIRED', analyst_note: 'not sent',
+      final_summary: 'not sent', evidence: [{ evidence_type: 'THREAT_DETECTION', evidence_id: 4 }],
+      id: 8, incident_key: 'forged', created_at: 'forged',
+    })
+    assert.equal(result.id, 91)
+    assert.equal(calls[0].url, 'http://127.0.0.1:8000/incident-reviews')
+    assert.equal(calls[0].options.method, 'POST')
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      title: 'Analyst review', priority: 'HIGH', confidence: 'LOW',
+    })
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('manual review creation includes only valid optional attribution IDs and propagates API errors', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options })
+    return { ok: true, json: async () => ({ id: 92 }) }
+  }
+  try {
+    assert.deepEqual(buildIncidentReviewCreatePayload({
+      title: 'Review', summary: 'Two  spaces  stay', site_id: '2', scope_id: 3, device_id: '4',
+    }), { title: 'Review', summary: 'Two  spaces  stay', priority: 'MEDIUM', confidence: 'MEDIUM',
+      site_id: 2, scope_id: 3, device_id: 4 })
+    await createIncidentReview({ title: 'Review', site_id: '2', scope_id: '', device_id: null })
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      title: 'Review', priority: 'MEDIUM', confidence: 'MEDIUM', site_id: 2,
+    })
+    for (const bad of ['', '   ', 'x'.repeat(161)]) {
+      assert.throws(() => buildIncidentReviewCreatePayload({ title: bad }), /Review title/)
+    }
+    assert.throws(() => buildIncidentReviewCreatePayload({ title: 'Review', summary: 'x'.repeat(4001) }), /Summary/)
+    for (const bad of ['0', '-1', '2.5', 'nope', Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(() => buildIncidentReviewCreatePayload({ title: 'Review', device_id: bad }), /positive integer/)
+    }
+    globalThis.fetch = async () => ({ ok: false, status: 422,
+      json: async () => ({ detail: 'Site and scope attribution do not match.' }) })
+    await assert.rejects(createIncidentReview({ title: 'Review', site_id: 2, scope_id: 3 }),
+      /Site and scope attribution do not match/)
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('incident review history reads and note creation use explicit bounded API calls', async () => {

@@ -13,12 +13,19 @@ import {
   updateIncidentReview,
 } from '../services/securityApi.js'
 import { createIncidentReviewRequestGuard } from '../services/incidentReviewRequestGuard.js'
+import CreateIncidentReviewForm from './CreateIncidentReviewForm.jsx'
+import {
+  completeCreatedIncidentReview,
+  createIncidentReviewListGuard,
+  upsertCreatedIncidentReview,
+} from '../services/incidentReviewCreationState.js'
 
 function displayTime(value) {
   return value ? value.replace('T', ' ').replace('+00:00', 'Z') : '—'
 }
 
-function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null }) {
+function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null,
+  getSelectionVersion = null, onReviewCreated = null }) {
   const [reviews, setReviews] = useState([])
   const [selected, setSelected] = useState(null)
   const [evidence, setEvidence] = useState([])
@@ -31,8 +38,14 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
   const [listError, setListError] = useState(null)
   const [busy, setBusy] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [createFormOpen, setCreateFormOpen] = useState(false)
   const requestGuard = useRef(createIncidentReviewRequestGuard())
-  const reviewListGeneration = useRef(0)
+  const reviewListGuard = useRef(createIncidentReviewListGuard())
+  const localSelectionVersion = useRef(0)
+
+  function currentSelectionVersion() {
+    return `${getSelectionVersion?.() ?? 0}:${localSelectionVersion.current}`
+  }
 
   const loadReviewData = useCallback(async (reviewId, request) => {
     const [linked, related, history, analystNotes] = await Promise.all([
@@ -50,20 +63,42 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
   }, [])
 
   useEffect(() => {
-    reviewListGeneration.current += 1
-    const generation = reviewListGeneration.current
+    const listGuard = reviewListGuard.current
+    const generation = listGuard.begin()
     loadIncidentReviews()
       .then((result) => {
-        if (reviewListGeneration.current === generation) {
+        if (listGuard.isCurrent(generation)) {
           setReviews(result.items)
           setListError(null)
         }
       })
       .catch((err) => {
-        if (reviewListGeneration.current === generation) setListError(err.message)
+        if (listGuard.isCurrent(generation)) setListError(err.message)
       })
-    return () => { reviewListGeneration.current += 1 }
+    return () => { listGuard.invalidate() }
   }, [refreshSignal])
+
+  async function handleCreatedReview(review, attempt) {
+    reviewListGuard.current.invalidate()
+    setReviews((current) => upsertCreatedIncidentReview(current, review))
+    setListError(null)
+    completeCreatedIncidentReview({
+      review,
+      attempt,
+      currentSelectionVersion: currentSelectionVersion(),
+      requestGuard: requestGuard.current,
+      setSelectedReview: (created) => {
+        setEvidence([]); setSuggestions([]); setTimeline([]); setNotes([]); setNoteText('')
+        setBusy(null); setError(null); setDetailLoading(true)
+        setSelected(created)
+        setReviewDraft({ state: created.state, priority: created.priority,
+          confidence: created.confidence, disposition: created.disposition,
+          final_summary: created.final_summary })
+      },
+      onSelectReview,
+      refreshOperations: onReviewCreated,
+    })
+  }
 
   const selectedId = selected?.id
   const displaySelected = selected && (!selectedReviewId || selectedReviewId === selected.id)
@@ -161,13 +196,22 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
           <p className="panel-kicker">Analyst workflow</p>
           <h3>Incident Reviews</h3>
         </div>
-        <span className="panel-count">{reviews.length}</span>
+        <div className="incident-review-heading-actions">
+          <span className="panel-count">{reviews.length}</span>
+          {!createFormOpen && <button className="security-detail-close" type="button"
+            onClick={() => setCreateFormOpen(true)}>Create Review</button>}
+        </div>
       </div>
       <p className="security-layer-copy">
         Reviews group observations for investigation. Suggestions are review aids and do not establish a cause or confirm an attack or compromise.
       </p>
       {error && <p className="security-detail-error">{error}</p>}
       {listError && <p className="security-detail-error">{listError}</p>}
+      {createFormOpen && <CreateIncidentReviewForm
+        getSelectionVersion={currentSelectionVersion}
+        onCreated={handleCreatedReview}
+        onCancel={() => setCreateFormOpen(false)}
+      />}
       {selectedReviewId && selectedReviewId !== selected?.id && !error && <p className="security-empty" role="status">Loading selected Incident Review…</p>}
       {reviews.length === 0 ? (
         <p className="security-empty">No analyst incident reviews.</p>
@@ -180,6 +224,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
               type="button"
               onClick={() => {
                 if (selected?.id === review.id) return
+                localSelectionVersion.current += 1
                 requestGuard.current.select(review.id)
                 onSelectReview?.(review.id)
                 setEvidence([])

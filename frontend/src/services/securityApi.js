@@ -35,6 +35,44 @@ export function loadIncidentReviews(signal) {
   return getJson('/incident-reviews?limit=20&offset=0', signal)
 }
 
+export function buildIncidentReviewCreatePayload(form = {}) {
+  const title = typeof form.title === 'string' ? form.title.trim() : ''
+  if (!title || title.length > 160) {
+    throw new Error('Review title is required and must be 160 characters or fewer.')
+  }
+  const summary = form.summary ?? ''
+  if (typeof summary !== 'string' || summary.length > 4000) {
+    throw new Error('Summary must be 4000 characters or fewer.')
+  }
+
+  const priority = form.priority ?? 'MEDIUM'
+  const confidence = form.confidence ?? 'MEDIUM'
+  if (!['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(priority)) {
+    throw new Error('Review priority is unsupported.')
+  }
+  if (!['LOW', 'MEDIUM', 'HIGH'].includes(confidence)) {
+    throw new Error('Review confidence is unsupported.')
+  }
+
+  const payload = { title, priority, confidence }
+  if (summary !== '') payload.summary = summary
+  for (const key of ['site_id', 'scope_id', 'device_id']) {
+    const value = form[key]
+    if (value === undefined || value === null || value === '') continue
+    const id = typeof value === 'number' ? value : Number(value)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error(`${key.replace('_id', '')} must be a positive integer.`)
+    }
+    payload[key] = id
+  }
+  return payload
+}
+
+export function createIncidentReview(form) {
+  const payload = buildIncidentReviewCreatePayload(form)
+  return mutateJson('/incident-reviews', 'POST', payload)
+}
+
 export function buildIncidentReviewOperationsQuery(filters = {}) {
   const params = new URLSearchParams({
     limit: String(filters.limit ?? 20),

@@ -27,7 +27,7 @@ const ATTENTION_SIGNALS = [
   ['MISSING_SOURCE_EVIDENCE', 'Missing source evidence'],
   ['NO_LINKED_EVIDENCE', 'No linked evidence'],
 ]
-function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail = null }) {
+function IncidentReviewOperations({ refreshSignal, reviewRefreshSignal = 0, onSelectReview, reviewDetail = null }) {
   const [filters, setFilters] = useState({ sort: 'oldest_open', limit: 20, offset: 0 })
   const [data, setData] = useState(null)
   const [queueRequest, setQueueRequest] = useState({ queryKey: null, loading: false, error: null })
@@ -70,7 +70,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail 
         }
       })
     return () => { controller.abort(); guard.invalidate('queue') }
-  }, [query, queryKey, refreshSignal])
+  }, [query, queryKey, refreshSignal, reviewRefreshSignal])
 
   useEffect(() => {
     const guard = requestGuard.current
@@ -84,7 +84,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail 
       .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('sites', generation) && err.name !== 'AbortError') setSiteError(err.message) })
       .finally(() => { if (!controller.signal.aborted && guard.isCurrent('sites', generation)) setSiteLoading(false) })
     return () => { controller.abort(); guard.invalidate('sites') }
-  }, [siteOptions, refreshSignal])
+  }, [siteOptions, refreshSignal, reviewRefreshSignal])
 
   const workloadContext = useMemo(() => selectedSiteContext ? {
     site_id: selectedSiteContext.site_id,
@@ -104,7 +104,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail 
       .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('scopes', generation) && err.name !== 'AbortError') setScopeError(err.message) })
       .finally(() => { if (!controller.signal.aborted && guard.isCurrent('scopes', generation)) setScopeLoading(false) })
     return () => { controller.abort(); guard.invalidate('scopes') }
-  }, [workloadContext, workloadTab, scopeOptions, refreshSignal])
+  }, [workloadContext, workloadTab, scopeOptions, refreshSignal, reviewRefreshSignal])
 
   useEffect(() => {
     if (!workloadContext || workloadTab !== 'devices') return undefined
@@ -119,7 +119,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail 
       .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('devices', generation) && err.name !== 'AbortError') setDeviceError(err.message) })
       .finally(() => { if (!controller.signal.aborted && guard.isCurrent('devices', generation)) setDeviceLoading(false) })
     return () => { controller.abort(); guard.invalidate('devices') }
-  }, [workloadContext, workloadTab, deviceOptions, refreshSignal])
+  }, [workloadContext, workloadTab, deviceOptions, refreshSignal, reviewRefreshSignal])
 
   function updateFilter(key, value) {
     if (key === 'site_id') {

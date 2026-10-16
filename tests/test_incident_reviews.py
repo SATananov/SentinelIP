@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -38,8 +39,11 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
     assert empty['summary']['priority_distribution'] == {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
     assert empty['summary']['active_age_buckets'] == {key: 0 for key in ('LT_1H','H1_24','D1_3','D3_7','GT_7D')}
 
-    fresh = create_review(title='Fresh workload', priority='CRITICAL', db_path=path)
-    medium = create_review(title='Older workload', priority='MEDIUM', db_path=path)
+    with patch('database.incident_reviews._now', side_effect=[
+            (now-timedelta(minutes=5)).isoformat(),
+            (now-timedelta(days=2)).isoformat()]):
+        fresh = create_review(title='Fresh workload', priority='CRITICAL', db_path=path)
+        medium = create_review(title='Older workload', priority='MEDIUM', db_path=path)
     with get_connection(path) as connection:
         cursor = connection.execute('''INSERT INTO incident_reviews (
             incident_key,title,summary,state,priority,confidence,created_at,updated_at,
@@ -56,8 +60,6 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
                             (now-timedelta(days=1)).isoformat(),closed['id']))
         connection.execute("INSERT INTO incident_review_notes (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)",
                            (medium['id'],'A note','OPERATOR',(now+timedelta(hours=1)).isoformat()))
-        connection.execute("INSERT INTO incident_review_events (incident_review_id,event_type,actor_source,created_at,summary) VALUES (?,?,?,?,?)",
-                           (fresh['id'],'REVIEW_CREATED','OPERATOR',(now-timedelta(minutes=5)).isoformat(),'Created'))
     result = build_incident_review_operations(db_path=path, now=now, sort='priority')
     assert result['summary']['total_reviews'] == 3
     assert result['summary']['open_count'] == 2 and result['summary']['closed_count'] == 1

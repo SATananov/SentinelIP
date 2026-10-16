@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   loadSecurityDetail,
@@ -282,6 +282,17 @@ function SecurityReviewPanel({ refreshSignal }) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
   const [selectedReviewId, setSelectedReviewId] = useState(null)
+  const [reviewOperationsRefreshSignal, setReviewOperationsRefreshSignal] = useState(0)
+  const reviewSelectionVersion = useRef(0)
+
+  const selectIncidentReview = useCallback((reviewId) => {
+    reviewSelectionVersion.current += 1
+    setSelectedReviewId(reviewId)
+  }, [])
+  const getReviewSelectionVersion = useCallback(() => reviewSelectionVersion.current, [])
+  const refreshIncidentReviewOperations = useCallback(() => {
+    setReviewOperationsRefreshSignal((current) => current + 1)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -334,9 +345,12 @@ function SecurityReviewPanel({ refreshSignal }) {
     <section className="security-layer">
       <IncidentReviewOperations
         refreshSignal={refreshSignal}
-        onSelectReview={setSelectedReviewId}
+        reviewRefreshSignal={reviewOperationsRefreshSignal}
+        onSelectReview={selectIncidentReview}
         reviewDetail={<IncidentReviewSection refreshSignal={refreshSignal}
-          selectedReviewId={selectedReviewId} onSelectReview={setSelectedReviewId} />}
+          selectedReviewId={selectedReviewId} onSelectReview={selectIncidentReview}
+          getSelectionVersion={getReviewSelectionVersion}
+          onReviewCreated={refreshIncidentReviewOperations} />}
       />
       <div className="security-layer-heading">
         <div>
