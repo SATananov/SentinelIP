@@ -17,8 +17,159 @@ from database.remote_sensors import RemoteSensorStore
 from database.scopes import create_scope
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_models import PerimeterEvent
+from services.incident_review_operations import build_incident_review_operations
 
 AT = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
+
+
+def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_path):
+    path = tmp_path / 'review-operations.db'
+    initialize_database(path)
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    empty = build_incident_review_operations(db_path=path, now=now)
+    assert empty['summary']['total_reviews'] == 0
+    assert empty['summary']['priority_distribution'] == {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+    assert empty['summary']['active_age_buckets'] == {key: 0 for key in ('LT_1H','H1_24','D1_3','D3_7','GT_7D')}
+
+    fresh = create_review(title='Fresh workload', priority='CRITICAL', db_path=path)
+    medium = create_review(title='Older workload', priority='MEDIUM', db_path=path)
+    with get_connection(path) as connection:
+        cursor = connection.execute('''INSERT INTO incident_reviews (
+            incident_key,title,summary,state,priority,confidence,created_at,updated_at,
+            closed_at,disposition) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            ('IR-legacy-closed','Legacy closed','','CLOSED','LOW','LOW',
+             (now-timedelta(days=8)).isoformat(),(now-timedelta(days=1)).isoformat(),
+             (now-timedelta(hours=1)).isoformat(),'BENIGN'))
+        closed = {'id': cursor.lastrowid}
+    with get_connection(path) as connection:
+        connection.execute("UPDATE incident_reviews SET created_at=?,updated_at=? WHERE id=?",
+                           ((now-timedelta(days=2)).isoformat(),(now-timedelta(days=2)).isoformat(),medium['id']))
+        connection.execute("UPDATE incident_reviews SET state='CLOSED',closed_at=?,created_at=?,updated_at=? WHERE id=?",
+                           ((now-timedelta(hours=1)).isoformat(),(now-timedelta(days=8)).isoformat(),
+                            (now-timedelta(days=1)).isoformat(),closed['id']))
+        connection.execute("INSERT INTO incident_review_notes (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)",
+                           (medium['id'],'A note','OPERATOR',(now-timedelta(hours=3)).isoformat()))
+        connection.execute("INSERT INTO incident_review_events (incident_review_id,event_type,actor_source,created_at,summary) VALUES (?,?,?,?,?)",
+                           (fresh['id'],'REVIEW_CREATED','OPERATOR',(now-timedelta(minutes=5)).isoformat(),'Created'))
+    result = build_incident_review_operations(db_path=path, now=now, sort='priority')
+    assert result['summary']['total_reviews'] == 3
+    assert result['summary']['open_count'] == 2 and result['summary']['closed_count'] == 1
+    assert result['summary']['unresolved_count'] == 2
+    assert result['summary']['priority_distribution']['LOW'] == 1
+    assert result['summary']['disposition_distribution']['UNREVIEWED'] == 2
+    assert result['summary']['active_age_buckets']['D1_3'] == 1
+    rows = {row['id']: row for row in result['queue']}
+    assert rows[medium['id']]['note_count'] == 1
+    assert rows[medium['id']]['latest_activity_at'] == (now-timedelta(hours=3)).isoformat()
+    assert rows[medium['id']]['age_bucket'] == 'D1_3'
+    assert rows[closed['id']]['age_seconds'] is None and rows[closed['id']]['age_bucket'] is None
+    assert rows[closed['id']]['latest_activity_at'] == rows[closed['id']]['updated_at']
+    assert rows[fresh['id']]['has_final_summary'] == 0
+    assert [row['priority'] for row in result['queue']] == ['CRITICAL','MEDIUM','LOW']
+    assert build_incident_review_operations(db_path=path, now=now, has_evidence=False)['pagination']['total'] == 3
+    assert build_incident_review_operations(db_path=path, now=now, age_bucket='D1_3')['pagination']['total'] == 1
+    assert build_incident_review_operations(db_path=path, now=now, unresolved_only=True)['pagination']['total'] == 2
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_operations(db_path=path, now=now, unresolved_only=True, state='CLOSED')
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_operations(db_path=path, now=now, sort='created_at')
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_operations(db_path=path, now=now, age_bucket='INVALID')
+    plan = build_incident_review_operations(db_path=path, now=now, explain=True)['summary']['query_plan']
+    assert plan
+
+
+def test_incident_review_operations_api_shape_and_get_does_not_mutate(tmp_path, monkeypatch):
+    path = tmp_path / 'review-operations-api.db'
+    initialize_database(path)
+    monkeypatch.setattr(api, 'DB_PATH', path)
+    review = create_review(title='Read-only operations', db_path=path)
+    with get_connection(path) as connection:
+        before = (connection.execute('SELECT COUNT(*) FROM incident_reviews').fetchone()[0],
+                  connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0],
+                  connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0])
+    routes = {(route.path, method): route.endpoint for route in api.app.routes
+              if hasattr(route, 'endpoint') for method in getattr(route, 'methods', ())}
+    response = routes[('/incident-review-operations','GET')](
+        state=None, priority=None, disposition=None, site_id=None, scope_id=None,
+        device_id=None, has_evidence=None, age_bucket=None, unresolved_only=False,
+        sort='newest', limit=20, offset=0)
+    assert set(response) == {'summary', 'queue', 'pagination'}
+    assert set(response['queue'][0]) == {
+        'id','incident_key','title','state','priority','confidence','disposition',
+        'site_id','scope_id','device_id','created_at','updated_at','first_evidence_at',
+        'last_evidence_at','closed_at','has_final_summary','linked_evidence_count',
+        'note_count','latest_activity_at','age_seconds','age_bucket',
+    }
+    assert response['queue'][0]['id'] == review['id']
+    assert response['pagination'] == {'total': 1, 'limit': 20, 'offset': 0}
+    assert routes[('/incident-reviews','GET')](state=None, priority=None, site_id=None,
+        scope_id=None, device_id=None, disposition=None, limit=20, offset=0)['total'] == 1
+    with get_connection(path) as connection:
+        after = (connection.execute('SELECT COUNT(*) FROM incident_reviews').fetchone()[0],
+                 connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0],
+                 connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0])
+    assert after == before
+
+
+def test_incident_review_operations_active_age_buckets_all_boundaries(tmp_path):
+    path = tmp_path / 'review-operations-age.db'
+    initialize_database(path)
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    cases = [('LT_1H',timedelta(minutes=10)),('H1_24',timedelta(hours=3)),
+             ('D1_3',timedelta(days=2)),('D3_7',timedelta(days=5)),
+             ('GT_7D',timedelta(days=8))]
+    for index, (_, age) in enumerate(cases):
+        review = create_review(title=f'Age bucket {index}', db_path=path)
+        created = (now-age).isoformat()
+        with get_connection(path) as connection:
+            connection.execute('UPDATE incident_reviews SET created_at=? WHERE id=?',(created,review['id']))
+    result = build_incident_review_operations(db_path=path, now=now)
+    assert result['summary']['active_age_buckets'] == {key: 1 for key, _ in cases}
+
+
+def test_incident_review_operations_filter_sort_and_pagination_allowlists(tmp_path):
+    path = tmp_path / 'review-operations-filters.db'
+    initialize_database(path)
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    site, scope_id, device = _private_device(path, 'Operations site', '10.94.0.0/24')
+    critical = create_review(title='Critical active', priority='CRITICAL', site_id=site['id'],
+        scope_id=scope_id, device_id=device['id'], db_path=path)
+    high = create_review(title='High active', priority='HIGH', disposition='BENIGN', db_path=path)
+    low = create_review(title='Low closed', priority='LOW', db_path=path)
+    ages = {critical['id']: 3, high['id']: 2, low['id']: 1}
+    with get_connection(path) as connection:
+        for review_id, age in ages.items():
+            created = (now-timedelta(days=age)).isoformat()
+            updated = (now-timedelta(hours=age)).isoformat()
+            connection.execute('UPDATE incident_reviews SET created_at=?,updated_at=? WHERE id=?',
+                               (created, updated, review_id))
+        connection.execute("UPDATE incident_reviews SET state='CLOSED',closed_at=?,final_summary=? WHERE id=?",
+                           (now.isoformat(),'Reviewed and closed.',low['id']))
+        connection.execute('''INSERT INTO incident_review_evidence
+            (incident_id,evidence_type,evidence_id,observed_at,added_at) VALUES (?,?,?,?,?)''',
+            (critical['id'],'THREAT_DETECTION',1,now.isoformat(),now.isoformat()))
+    kwargs = {'db_path': path, 'now': now}
+    assert build_incident_review_operations(**kwargs, state='OPEN')['pagination']['total'] == 2
+    assert build_incident_review_operations(**kwargs, priority='CRITICAL')['queue'][0]['id'] == critical['id']
+    assert build_incident_review_operations(**kwargs, disposition='BENIGN')['queue'][0]['id'] == high['id']
+    assert build_incident_review_operations(**kwargs, site_id=site['id'])['pagination']['total'] == 1
+    assert build_incident_review_operations(**kwargs, scope_id=scope_id)['pagination']['total'] == 1
+    assert build_incident_review_operations(**kwargs, device_id=device['id'])['pagination']['total'] == 1
+    assert build_incident_review_operations(**kwargs, has_evidence=True)['pagination']['total'] == 1
+    assert build_incident_review_operations(**kwargs, has_evidence=False)['pagination']['total'] == 2
+    assert build_incident_review_operations(**kwargs, state='CLOSED')['queue'][0]['has_final_summary'] is True
+    assert [r['priority'] for r in build_incident_review_operations(**kwargs, sort='priority')['queue']] == ['CRITICAL','HIGH','LOW']
+    assert [r['id'] for r in build_incident_review_operations(**kwargs, sort='oldest')['queue']] == [critical['id'],high['id'],low['id']]
+    assert [r['id'] for r in build_incident_review_operations(**kwargs, sort='newest')['queue']] == [low['id'],high['id'],critical['id']]
+    assert [r['id'] for r in build_incident_review_operations(**kwargs, sort='recently_updated')['queue']] == [low['id'],high['id'],critical['id']]
+    assert [r['id'] for r in build_incident_review_operations(**kwargs, sort='oldest_open')['queue']] == [critical['id'],high['id'],low['id']]
+    page = build_incident_review_operations(**kwargs, sort='oldest', limit=1, offset=1)
+    assert page['pagination'] == {'total': 3, 'limit': 1, 'offset': 1}
+    assert page['queue'][0]['id'] == high['id']
+    for params in ({'limit': 0}, {'limit': 101}, {'offset': -1}, {'offset': 100001}):
+        with pytest.raises(IncidentReviewError):
+            build_incident_review_operations(**kwargs, **params)
 
 
 def _detection(path, site_id, sequence):

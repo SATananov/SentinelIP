@@ -5,6 +5,7 @@ import {
   loadSecurityOverview,
 } from '../services/securityApi.js'
 import IncidentReviewSection from './IncidentReviewSection.jsx'
+import IncidentReviewOperations from './IncidentReviewOperations.jsx'
 
 const KIND_LABELS = {
   threat: 'Threat',
@@ -280,6 +281,7 @@ function SecurityReviewPanel({ refreshSignal }) {
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
+  const [selectedReviewId, setSelectedReviewId] = useState(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -330,6 +332,7 @@ function SecurityReviewPanel({ refreshSignal }) {
 
   return (
     <section className="security-layer">
+      <IncidentReviewOperations refreshSignal={refreshSignal} onSelectReview={setSelectedReviewId} />
       <div className="security-layer-heading">
         <div>
           <p className="panel-kicker">Deterministic Security Pipeline</p>
@@ -434,7 +437,8 @@ function SecurityReviewPanel({ refreshSignal }) {
         </article>
       </div>
 
-      <IncidentReviewSection refreshSignal={refreshSignal} />
+      <IncidentReviewSection refreshSignal={refreshSignal}
+        selectedReviewId={selectedReviewId} onSelectReview={setSelectedReviewId} />
 
       <SecurityDetail
         selection={selection}

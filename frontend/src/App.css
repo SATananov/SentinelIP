@@ -628,6 +628,27 @@ h2 {
   margin-bottom: 22px;
 }
 
+.review-operations { margin-bottom: 24px; }
+.review-operations-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin: 18px 0; }
+.review-operations-cards article { padding: 14px 16px; border: 1px solid #303642; border-radius: 10px; background: #151922; display: grid; gap: 6px; }
+.review-operations-cards span { color: #9ba4b4; font-size: 13px; }
+.review-operations-cards strong { color: #f3f4f6; font-size: 24px; }
+.review-operations-filters { flex-wrap: wrap; align-items: end; }
+.review-operations-filters label { min-width: 130px; }
+.review-operations-check { display: flex; align-items: center; gap: 8px; min-height: 40px; }
+.review-queue-table-wrap { overflow-x: auto; }
+.review-queue-table { width: 100%; border-collapse: collapse; text-align: left; }
+.review-queue-table th, .review-queue-table td { padding: 11px 10px; border-bottom: 1px solid #2a303a; white-space: nowrap; }
+.review-queue-table th { color: #aab2c0; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.review-queue-select { display: grid; gap: 3px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.review-queue-select strong { color: #e7eaf0; }
+.review-queue-select small { color: #8d97a8; }
+.review-operations-activity { margin-top: 16px; color: #aab2c0; font-size: 13px; line-height: 1.6; }
+.review-operations-breakdown { display: grid; gap: 10px; margin: 16px 0 20px; }
+.review-operations-breakdown > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 12px; border: 1px solid #2a303a; border-radius: 8px; color: #aab2c0; font-size: 12px; }
+.review-operations-breakdown strong { color: #e7eaf0; min-width: 140px; }
+@media (max-width: 760px) { .review-operations-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 .security-layer-heading {
   display: flex;
   align-items: flex-start;

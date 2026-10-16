@@ -5,6 +5,8 @@ import {
   attachIncidentEvidence,
   addIncidentReviewNote,
   detachIncidentEvidence,
+  loadIncidentReviewOperations,
+  buildIncidentReviewOperationsQuery,
   loadIncidentReviewEvidence,
   loadIncidentReviewNotes,
   loadIncidentReviews,
@@ -12,6 +14,40 @@ import {
   loadRelatedIncidentEvidence,
   updateIncidentReview,
 } from '../src/services/securityApi.js'
+import { formatReviewAge } from '../src/services/incidentReviewFormat.js'
+
+test('operations request uses explicit bounded filters, sort, and pagination', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ summary: {}, queue: [], pagination: {} }) }
+  }
+  try {
+    const query = buildIncidentReviewOperationsQuery({ state: 'OPEN', site_id: 3,
+      has_evidence: false, unresolved_only: true, sort: 'oldest_open', limit: 50, offset: 100 })
+    assert.match(query, /state=OPEN/)
+    assert.match(query, /has_evidence=false/)
+    assert.match(query, /unresolved_only=true/)
+    await loadIncidentReviewOperations({ state: 'OPEN', sort: 'priority', limit: 10, offset: 20 })
+    assert.match(calls[0], /\/incident-review-operations\?/)
+    assert.match(calls[0], /sort=priority/)
+    assert.match(calls[0], /limit=10/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('operations request propagates API errors', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 422 })
+  try { await assert.rejects(loadIncidentReviewOperations(), /Security API request failed \(422\)/) }
+  finally { globalThis.fetch = originalFetch }
+})
+
+test('review age labels are workload buckets and closed age is blank', () => {
+  assert.equal(formatReviewAge(20, 'LT_1H'), '< 1h')
+  assert.equal(formatReviewAge(3600, 'H1_24'), '1h–24h')
+  assert.equal(formatReviewAge(null, null), '—')
+})
 
 test('incident review API reads suggestions and mutates links only on explicit calls', async () => {
   const originalFetch = globalThis.fetch

@@ -35,6 +35,29 @@ export function loadIncidentReviews(signal) {
   return getJson('/incident-reviews?limit=20&offset=0', signal)
 }
 
+export function buildIncidentReviewOperationsQuery(filters = {}) {
+  const params = new URLSearchParams({
+    limit: String(filters.limit ?? 20),
+    offset: String(filters.offset ?? 0),
+    sort: filters.sort ?? 'newest',
+  })
+  for (const key of ['state', 'priority', 'disposition', 'site_id', 'scope_id',
+    'device_id', 'has_evidence', 'age_bucket']) {
+    const value = filters[key]
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  }
+  if (filters.unresolved_only) params.set('unresolved_only', 'true')
+  return params.toString()
+}
+
+export function loadIncidentReviewOperations(filters = {}, signal) {
+  return getJson(`/incident-review-operations?${buildIncidentReviewOperationsQuery(filters)}`, signal)
+}
+
+export function loadIncidentReview(id, signal) {
+  return getJson(`/incident-reviews/${id}`, signal)
+}
+
 export function loadIncidentReviewEvidence(id, signal) {
   return getJson(`/incident-reviews/${id}/evidence?limit=100&offset=0`, signal)
 }

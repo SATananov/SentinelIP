@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
+from services.incident_review_operations import build_incident_review_operations
 
 EvidenceType = Literal['PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
     'PERIMETER_HOST_CORRELATION','EXTERNAL_EXPOSURE_CHANGE','THREAT_DETECTION',
@@ -65,6 +66,32 @@ def _raise(exc):
 
 
 def register_incident_review_routes(app: FastAPI, db_path_provider):
+    @app.get('/incident-review-operations')
+    def incident_review_operations(
+        state: State | None = None,
+        priority: Priority | None = None,
+        disposition: Disposition | None = None,
+        site_id: int | None = Query(default=None, ge=1),
+        scope_id: int | None = Query(default=None, ge=1),
+        device_id: int | None = Query(default=None, ge=1),
+        has_evidence: bool | None = None,
+        age_bucket: str | None = None,
+        unresolved_only: bool = False,
+        sort: str = 'newest',
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ):
+        try:
+            return build_incident_review_operations(
+                state=state, priority=priority, disposition=disposition,
+                site_id=site_id, scope_id=scope_id, device_id=device_id,
+                has_evidence=has_evidence, age_bucket=age_bucket,
+                unresolved_only=unresolved_only, sort=sort, limit=limit,
+                offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
     @app.get('/incident-reviews')
     def list_incident_reviews(
         state: State | None = None,

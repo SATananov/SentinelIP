@@ -5,6 +5,7 @@ import {
   addIncidentReviewNote,
   detachIncidentEvidence,
   loadIncidentReviewEvidence,
+  loadIncidentReview,
   loadIncidentReviewNotes,
   loadIncidentReviews,
   loadIncidentReviewTimeline,
@@ -17,7 +18,7 @@ function displayTime(value) {
   return value ? value.replace('T', ' ').replace('+00:00', 'Z') : '—'
 }
 
-function IncidentReviewSection({ refreshSignal }) {
+function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null }) {
   const [reviews, setReviews] = useState([])
   const [selected, setSelected] = useState(null)
   const [evidence, setEvidence] = useState([])
@@ -65,6 +66,31 @@ function IncidentReviewSection({ refreshSignal }) {
   }, [refreshSignal])
 
   const selectedId = selected?.id
+  useEffect(() => {
+    if (!selectedReviewId || selectedReviewId === selected?.id) return undefined
+    const request = requestGuard.current.begin(selectedReviewId)
+    Promise.resolve().then(() => {
+      if (!requestGuard.current.isCurrent(request)) return null
+      setEvidence([]); setSuggestions([]); setTimeline([]); setNotes([])
+      setDetailLoading(true); setError(null)
+      return loadIncidentReview(selectedReviewId)
+    })
+      .then((review) => {
+        if (!review) return
+        if (!requestGuard.current.isCurrent(request)) return
+        setSelected(review)
+        setReviewDraft({ state: review.state, priority: review.priority,
+          confidence: review.confidence, disposition: review.disposition,
+          final_summary: review.final_summary })
+      })
+      .catch((err) => {
+        if (requestGuard.current.isCurrent(request)) setError(err.message)
+      })
+      .finally(() => {
+        if (requestGuard.current.isCurrent(request)) setDetailLoading(false)
+      })
+    return undefined
+  }, [selectedReviewId, selected?.id])
   useEffect(() => {
     if (!selectedId) return undefined
     const request = requestGuard.current.begin(selectedId)
@@ -153,6 +179,7 @@ function IncidentReviewSection({ refreshSignal }) {
               onClick={() => {
                 if (selected?.id === review.id) return
                 requestGuard.current.select(review.id)
+                onSelectReview?.(review.id)
                 setEvidence([])
                 setSuggestions([])
                 setTimeline([])
@@ -186,6 +213,7 @@ function IncidentReviewSection({ refreshSignal }) {
             </div>
             <button className="security-detail-close" type="button" onClick={() => {
               requestGuard.current.invalidate()
+              onSelectReview?.(null)
               setSelected(null)
               setEvidence([])
               setSuggestions([])
