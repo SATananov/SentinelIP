@@ -4,3 +4,12 @@ export function formatReviewAge(seconds, bucket) {
   if (seconds === null || seconds === undefined || !bucket) return '—'
   return AGE_LABELS[bucket] || '—'
 }
+
+export function formatSiteWorkloadAge(seconds) {
+  if (seconds === null || seconds === undefined) return '—'
+  const days = Math.floor(seconds / 86400)
+  if (days > 0) return `${days}d`
+  const hours = Math.floor(seconds / 3600)
+  if (hours > 0) return `${hours}h`
+  return `${Math.floor(seconds / 60)}m`
+}

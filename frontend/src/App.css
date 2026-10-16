@@ -651,6 +651,11 @@ h2 {
 .review-operations-breakdown { display: grid; gap: 10px; margin: 16px 0 20px; }
 .review-operations-breakdown > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 12px; border: 1px solid #2a303a; border-radius: 8px; color: #aab2c0; font-size: 12px; }
 .review-operations-breakdown strong { color: #e7eaf0; min-width: 140px; }
+.review-site-workload { margin: 22px 0; }
+.review-site-workload-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.review-site-workload-heading h3 { margin: 0; color: #e7eaf0; }
+.review-site-workload-heading label { display: flex; align-items: center; gap: 8px; color: #aab2c0; font-size: 13px; }
+.review-site-workload-heading select { min-height: 36px; }
 @media (max-width: 760px) { .review-operations-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .security-layer-heading {

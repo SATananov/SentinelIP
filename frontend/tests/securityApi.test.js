@@ -6,6 +6,8 @@ import {
   addIncidentReviewNote,
   detachIncidentEvidence,
   loadIncidentReviewOperations,
+  loadIncidentReviewSites,
+  buildIncidentReviewSitesQuery,
   buildIncidentReviewOperationsQuery,
   loadIncidentReviewEvidence,
   loadIncidentReviewNotes,
@@ -14,7 +16,7 @@ import {
   loadRelatedIncidentEvidence,
   updateIncidentReview,
 } from '../src/services/securityApi.js'
-import { formatReviewAge } from '../src/services/incidentReviewFormat.js'
+import { formatReviewAge, formatSiteWorkloadAge } from '../src/services/incidentReviewFormat.js'
 
 test('operations request uses explicit bounded filters, sort, and pagination', async () => {
   const originalFetch = globalThis.fetch
@@ -47,10 +49,34 @@ test('operations request propagates API errors', async () => {
   finally { globalThis.fetch = originalFetch }
 })
 
+test('site workload request carries independent sort and pagination and propagates errors', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ sites: [], pagination: { limit: 10, offset: 20, total: 0 } }) }
+  }
+  try {
+    assert.match(buildIncidentReviewSitesQuery({ sort: 'attention_desc', limit: 10, offset: 20 }), /sort=attention_desc/)
+    await loadIncidentReviewSites({ sort: 'site_name', limit: 10, offset: 20 })
+    assert.match(calls[0], /\/incident-review-operations\/sites\?/)
+    assert.match(calls[0], /sort=site_name/)
+    assert.match(calls[0], /offset=20/)
+    globalThis.fetch = async () => ({ ok: false, status: 422 })
+    await assert.rejects(loadIncidentReviewSites(), /Security API request failed \(422\)/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('queue request can filter explicitly to unattributed reviews', () => {
+  assert.match(buildIncidentReviewOperationsQuery({ unattributed_only: true }), /unattributed_only=true/)
+})
+
 test('review age labels are workload buckets and closed age is blank', () => {
   assert.equal(formatReviewAge(20, 'LT_1H'), '< 1h')
   assert.equal(formatReviewAge(3600, 'H1_24'), '1h–24h')
   assert.equal(formatReviewAge(null, null), '—')
+  assert.equal(formatSiteWorkloadAge(90000), '1d')
+  assert.equal(formatSiteWorkloadAge(null), '—')
 })
 
 test('incident review API reads suggestions and mutates links only on explicit calls', async () => {

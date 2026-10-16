@@ -30,95 +30,12 @@ SIGNAL_REASONS = {
 MAX_LIMIT = 100
 MAX_OFFSET = 100000
 RECENT_ACTIVITY_LIMIT = 20
+SITE_SORTS = ('unresolved_desc', 'attention_desc', 'oldest_active', 'recent_activity', 'site_name')
+_SITE_ID_TIEBREAK = '(site_id IS NULL) ASC,site_id ASC'
 
 
-def _validate(*, limit, offset, sort, state, priority, disposition, site_id, scope_id,
-              device_id, has_evidence, age_bucket, unresolved_only, has_attention,
-              attention_signal):
-    if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
-        raise IncidentReviewError('Operations limit must be between 1 and 100.')
-    if type(offset) is not int or not 0 <= offset <= MAX_OFFSET:
-        raise IncidentReviewError('Operations offset must be between 0 and 100000.')
-    if sort not in SORTS:
-        raise IncidentReviewError('Unsupported incident review operations sort.')
-    if state is not None and state not in STATES:
-        raise IncidentReviewError('Unsupported review state.')
-    if priority is not None and priority not in PRIORITIES:
-        raise IncidentReviewError('Unsupported review priority.')
-    if disposition is not None and disposition not in DISPOSITIONS:
-        raise IncidentReviewError('Unsupported review disposition.')
-    if age_bucket is not None and age_bucket not in AGE_BUCKETS:
-        raise IncidentReviewError('Unsupported active review age bucket.')
-    for value in (site_id, scope_id, device_id):
-        if value is not None and (type(value) is not int or value < 1):
-            raise IncidentReviewError('Attribution filters must be positive integers.')
-    if has_evidence is not None and type(has_evidence) is not bool:
-        raise IncidentReviewError('has_evidence must be a boolean.')
-    if type(unresolved_only) is not bool:
-        raise IncidentReviewError('unresolved_only must be a boolean.')
-    if has_attention is not None and type(has_attention) is not bool:
-        raise IncidentReviewError('has_attention must be a boolean.')
-    if attention_signal is not None and attention_signal not in SIGNAL_ORDER:
-        raise IncidentReviewError('Unsupported incident review attention signal.')
-    if has_attention is False and attention_signal is not None:
-        raise IncidentReviewError('has_attention=false conflicts with attention_signal.')
-    if unresolved_only and state == 'CLOSED':
-        raise IncidentReviewError('unresolved_only conflicts with state=CLOSED.')
-
-
-def build_incident_review_operations(*, limit=20, offset=0, sort='newest', state=None,
-        priority=None, disposition=None, site_id=None, scope_id=None, device_id=None,
-        has_evidence=None, age_bucket=None, unresolved_only=False, has_attention=None,
-        attention_signal=None, db_path=DB_PATH,
-        now=None, explain=False):
-    _validate(limit=limit, offset=offset, sort=sort, state=state, priority=priority,
-        disposition=disposition, site_id=site_id, scope_id=scope_id, device_id=device_id,
-        has_evidence=has_evidence, age_bucket=age_bucket, unresolved_only=unresolved_only,
-        has_attention=has_attention, attention_signal=attention_signal)
-    initialize_database(db_path)
-    now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise IncidentReviewError('Operations clock must be timezone-aware.')
-    now = now.astimezone(timezone.utc)
-    now_text = now.isoformat(timespec='microseconds')
-    cutoff = (now - timedelta(hours=24)).isoformat(timespec='microseconds')
-    inactivity_cutoff = (now - timedelta(days=7)).isoformat(timespec='microseconds')
-    where, params = [], []
-    for column, value in (('state', state), ('priority', priority), ('disposition', disposition),
-                          ('site_id', site_id), ('scope_id', scope_id), ('device_id', device_id)):
-        if value is not None:
-            where.append(f'r.{column}=?')
-            params.append(value)
-    if unresolved_only:
-        where.append("r.state != 'CLOSED'")
-    if has_evidence is not None:
-        where.append(('r.linked_evidence_count>0' if has_evidence
-                      else 'r.linked_evidence_count=0'))
-    if age_bucket:
-        where.append('r.age_bucket=?')
-        params.append(age_bucket)
-    if has_attention is not None:
-        where.append('r.has_attention=?')
-        params.append(int(has_attention))
-    if attention_signal is not None:
-        signal_columns = {
-            'HIGH_PRIORITY_UNRESOLVED': 'high_priority_unresolved',
-            'AGING_REVIEW': 'aging_review',
-            'NO_RECENT_ACTIVITY': 'no_recent_activity',
-            'REOPENED_REVIEW': 'reopened_review',
-            'MISSING_SOURCE_EVIDENCE': 'missing_source_evidence',
-            'NO_LINKED_EVIDENCE': 'no_linked_evidence',
-        }
-        where.append(f"r.{signal_columns[attention_signal]}=1")
-    where_sql = ' WHERE ' + ' AND '.join(where) if where else ''
-    order_sql = {
-        'newest': 'r.created_at DESC,r.id DESC',
-        'oldest': 'r.created_at ASC,r.id ASC',
-        'priority': "CASE r.priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,r.created_at ASC,r.id ASC",
-        'recently_updated': 'r.updated_at DESC,r.id DESC',
-        'oldest_open': "CASE WHEN r.state IN ('OPEN','IN_REVIEW') THEN 0 ELSE 1 END,r.created_at ASC,r.id ASC",
-    }[sort]
-    cte = """WITH available_evidence AS (
+def _review_rollup_cte():
+    return """WITH available_evidence AS (
         SELECT l.incident_id,l.evidence_type,l.evidence_id
           FROM incident_review_evidence l JOIN perimeter_detections s ON s.id=l.evidence_id
           WHERE l.evidence_type='PERIMETER_DETECTION'
@@ -216,6 +133,102 @@ def build_incident_review_operations(*, limit=20, offset=0, sort='newest', state
             THEN 1 ELSE 0 END has_attention
         FROM base_review_rows b
       )"""
+
+
+def _validate(*, limit, offset, sort, state, priority, disposition, site_id, scope_id,
+              device_id, has_evidence, age_bucket, unresolved_only, has_attention,
+              attention_signal, unattributed_only=False):
+    if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
+        raise IncidentReviewError('Operations limit must be between 1 and 100.')
+    if type(offset) is not int or not 0 <= offset <= MAX_OFFSET:
+        raise IncidentReviewError('Operations offset must be between 0 and 100000.')
+    if sort not in SORTS:
+        raise IncidentReviewError('Unsupported incident review operations sort.')
+    if state is not None and state not in STATES:
+        raise IncidentReviewError('Unsupported review state.')
+    if priority is not None and priority not in PRIORITIES:
+        raise IncidentReviewError('Unsupported review priority.')
+    if disposition is not None and disposition not in DISPOSITIONS:
+        raise IncidentReviewError('Unsupported review disposition.')
+    if age_bucket is not None and age_bucket not in AGE_BUCKETS:
+        raise IncidentReviewError('Unsupported active review age bucket.')
+    for value in (site_id, scope_id, device_id):
+        if value is not None and (type(value) is not int or value < 1):
+            raise IncidentReviewError('Attribution filters must be positive integers.')
+    if has_evidence is not None and type(has_evidence) is not bool:
+        raise IncidentReviewError('has_evidence must be a boolean.')
+    if type(unresolved_only) is not bool:
+        raise IncidentReviewError('unresolved_only must be a boolean.')
+    if has_attention is not None and type(has_attention) is not bool:
+        raise IncidentReviewError('has_attention must be a boolean.')
+    if attention_signal is not None and attention_signal not in SIGNAL_ORDER:
+        raise IncidentReviewError('Unsupported incident review attention signal.')
+    if type(unattributed_only) is not bool:
+        raise IncidentReviewError('unattributed_only must be a boolean.')
+    if unattributed_only and site_id is not None:
+        raise IncidentReviewError('unattributed_only conflicts with site_id.')
+    if has_attention is False and attention_signal is not None:
+        raise IncidentReviewError('has_attention=false conflicts with attention_signal.')
+    if unresolved_only and state == 'CLOSED':
+        raise IncidentReviewError('unresolved_only conflicts with state=CLOSED.')
+
+
+def build_incident_review_operations(*, limit=20, offset=0, sort='newest', state=None,
+        priority=None, disposition=None, site_id=None, scope_id=None, device_id=None,
+        has_evidence=None, age_bucket=None, unresolved_only=False, has_attention=None,
+        attention_signal=None, unattributed_only=False, db_path=DB_PATH,
+        now=None, explain=False):
+    _validate(limit=limit, offset=offset, sort=sort, state=state, priority=priority,
+        disposition=disposition, site_id=site_id, scope_id=scope_id, device_id=device_id,
+        has_evidence=has_evidence, age_bucket=age_bucket, unresolved_only=unresolved_only,
+        has_attention=has_attention, attention_signal=attention_signal,
+        unattributed_only=unattributed_only)
+    initialize_database(db_path)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise IncidentReviewError('Operations clock must be timezone-aware.')
+    now = now.astimezone(timezone.utc)
+    now_text = now.isoformat(timespec='microseconds')
+    cutoff = (now - timedelta(hours=24)).isoformat(timespec='microseconds')
+    inactivity_cutoff = (now - timedelta(days=7)).isoformat(timespec='microseconds')
+    where, params = [], []
+    for column, value in (('state', state), ('priority', priority), ('disposition', disposition),
+                          ('site_id', site_id), ('scope_id', scope_id), ('device_id', device_id)):
+        if value is not None:
+            where.append(f'r.{column}=?')
+            params.append(value)
+    if unattributed_only:
+        where.append('r.site_id IS NULL')
+    if unresolved_only:
+        where.append("r.state != 'CLOSED'")
+    if has_evidence is not None:
+        where.append(('r.linked_evidence_count>0' if has_evidence
+                      else 'r.linked_evidence_count=0'))
+    if age_bucket:
+        where.append('r.age_bucket=?')
+        params.append(age_bucket)
+    if has_attention is not None:
+        where.append('r.has_attention=?')
+        params.append(int(has_attention))
+    if attention_signal is not None:
+        signal_columns = {
+            'HIGH_PRIORITY_UNRESOLVED': 'high_priority_unresolved',
+            'AGING_REVIEW': 'aging_review',
+            'NO_RECENT_ACTIVITY': 'no_recent_activity',
+            'REOPENED_REVIEW': 'reopened_review',
+            'MISSING_SOURCE_EVIDENCE': 'missing_source_evidence',
+            'NO_LINKED_EVIDENCE': 'no_linked_evidence',
+        }
+        where.append(f"r.{signal_columns[attention_signal]}=1")
+    where_sql = ' WHERE ' + ' AND '.join(where) if where else ''
+    order_sql = {
+        'newest': 'r.created_at DESC,r.id DESC',
+        'oldest': 'r.created_at ASC,r.id ASC',
+        'priority': "CASE r.priority WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 ELSE 3 END,r.created_at ASC,r.id ASC",
+        'recently_updated': 'r.updated_at DESC,r.id DESC',
+        'oldest_open': "CASE WHEN r.state IN ('OPEN','IN_REVIEW') THEN 0 ELSE 1 END,r.created_at ASC,r.id ASC",
+    }[sort]
+    cte = _review_rollup_cte()
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
         summary = {}
@@ -291,3 +304,69 @@ def build_incident_review_operations(*, limit=20, offset=0, sort='newest', state
             queue.append(row)
         return {'summary': summary, 'queue': queue,
                 'pagination': {'total': total, 'limit': limit, 'offset': offset}}
+
+
+def build_incident_review_site_workload(*, limit=20, offset=0, sort='unresolved_desc',
+                                        db_path=DB_PATH, now=None, explain=False):
+    if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
+        raise IncidentReviewError('Site workload limit must be between 1 and 100.')
+    if type(offset) is not int or not 0 <= offset <= MAX_OFFSET:
+        raise IncidentReviewError('Site workload offset must be between 0 and 100000.')
+    if sort not in SITE_SORTS:
+        raise IncidentReviewError('Unsupported site workload sort.')
+    initialize_database(db_path)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise IncidentReviewError('Site workload clock must be timezone-aware.')
+    now = now.astimezone(timezone.utc)
+    now_text = now.isoformat(timespec='microseconds')
+    inactivity_cutoff = (now - timedelta(days=7)).isoformat(timespec='microseconds')
+    cte = _review_rollup_cte()
+    params = (now_text, now_text, now_text, now_text, now_text,
+              inactivity_cutoff, inactivity_cutoff)
+    site_rows = """site_rows AS (
+      SELECT r.site_id,
+        CASE WHEN r.site_id IS NULL THEN 'Unattributed' ELSE s.name END site_name,
+        COUNT(*) total_reviews,
+        SUM(r.state!='CLOSED') unresolved_reviews,
+        SUM(r.state='OPEN') open_reviews,
+        SUM(r.state='IN_REVIEW') in_review_reviews,
+        SUM(r.state='CLOSED') closed_reviews,
+        SUM(CASE WHEN r.state IN ('OPEN','IN_REVIEW') THEN r.has_attention ELSE 0 END) reviews_needing_attention,
+        SUM(r.high_priority_unresolved) high_priority_unresolved,
+        MIN(CASE WHEN r.state IN ('OPEN','IN_REVIEW') THEN r.created_at END) oldest_active_created_at,
+        MAX(r.latest_activity_at) latest_review_activity_at
+      FROM review_rows r LEFT JOIN sites s ON s.id=r.site_id
+      GROUP BY r.site_id
+    )"""
+    ordering = {
+        'unresolved_desc': f"unresolved_reviews DESC,{_SITE_ID_TIEBREAK}",
+        'attention_desc': f"reviews_needing_attention DESC,unresolved_reviews DESC,{_SITE_ID_TIEBREAK}",
+        'oldest_active': f"CASE WHEN oldest_active_created_at IS NULL THEN 1 ELSE 0 END,oldest_active_created_at ASC,{_SITE_ID_TIEBREAK}",
+        'recent_activity': f"CASE WHEN latest_review_activity_at IS NULL THEN 1 ELSE 0 END,latest_review_activity_at DESC,{_SITE_ID_TIEBREAK}",
+        'site_name': f"CASE WHEN site_name IS NULL THEN 1 ELSE 0 END,lower(site_name) ASC,{_SITE_ID_TIEBREAK}",
+    }[sort]
+    query = f"""{cte}, {site_rows}
+      SELECT site_id,site_name,total_reviews,unresolved_reviews,open_reviews,
+        in_review_reviews,closed_reviews,reviews_needing_attention,high_priority_unresolved,
+        oldest_active_created_at,
+        CASE WHEN oldest_active_created_at IS NULL THEN NULL
+          ELSE CAST((julianday(?) - julianday(oldest_active_created_at))*86400 AS INTEGER) END oldest_active_age_seconds,
+        latest_review_activity_at
+      FROM site_rows"""
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        count = connection.execute(
+            'SELECT COUNT(*) FROM (SELECT site_id FROM incident_reviews GROUP BY site_id)'
+        ).fetchone()[0]
+        page_params = (*params, now_text, limit, offset)
+        rows = connection.execute(f"WITH {query.split('WITH ',1)[1]} ORDER BY {ordering} LIMIT ? OFFSET ?", page_params).fetchall()
+        if explain:
+            plan = connection.execute(
+                f"EXPLAIN QUERY PLAN WITH {query.split('WITH ',1)[1]} ORDER BY {ordering} LIMIT ? OFFSET ?",
+                page_params).fetchall()
+        sites = [dict(row) for row in rows]
+        result = {'sites': sites, 'pagination': {'limit': limit, 'offset': offset, 'total': count}}
+        if explain:
+            result['query_plan'] = [dict(row) for row in plan]
+        return result

@@ -19,7 +19,9 @@ from database.remote_sensors import RemoteSensorStore
 from database.scopes import create_scope
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_models import PerimeterEvent
-from services.incident_review_operations import build_incident_review_operations
+from services.incident_review_operations import (
+    build_incident_review_operations, build_incident_review_site_workload,
+)
 from services.incident_review_operations import SIGNAL_ORDER
 
 AT = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
@@ -82,6 +84,107 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
         build_incident_review_operations(db_path=path, now=now, age_bucket='INVALID')
     plan = build_incident_review_operations(db_path=path, now=now, explain=True)['summary']['query_plan']
     assert plan
+
+
+def test_incident_review_site_workload_groups_attention_activity_and_sorts(tmp_path):
+    path = tmp_path / 'review-site-workload.db'
+    initialize_database(path)
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    with get_connection(path) as connection:
+        site_a = connection.execute("INSERT INTO sites (name,enabled,created_at,updated_at) VALUES ('Alpha',1,?,?)", (now.isoformat(), now.isoformat())).lastrowid
+        site_b = connection.execute("INSERT INTO sites (name,enabled,created_at,updated_at) VALUES ('Beta',1,?,?)", (now.isoformat(), now.isoformat())).lastrowid
+        site_c = connection.execute("INSERT INTO sites (name,enabled,created_at,updated_at) VALUES ('Gamma',1,?,?)", (now.isoformat(), now.isoformat())).lastrowid
+    with get_connection(path) as connection:
+        def raw_review(key, title, state, priority, site_id, created, updated, closed_at=None):
+            return connection.execute("""INSERT INTO incident_reviews (
+                incident_key,title,summary,state,priority,confidence,site_id,created_at,updated_at,closed_at,disposition
+                ) VALUES (?,?, '', ?,?,'MEDIUM',?,?,?,?, 'UNREVIEWED')""",
+                (key,title,state,priority,site_id,created.isoformat(),updated.isoformat(),closed_at.isoformat() if closed_at else None)).lastrowid
+        active_id = raw_review('IR-site-active','Old high priority','OPEN','HIGH',site_a,now-timedelta(days=4),now-timedelta(days=4))
+        raw_review('IR-site-closed','Closed','CLOSED','LOW',site_a,now-timedelta(days=5),now-timedelta(hours=2),now)
+        other_id = raw_review('IR-site-other','Other site','OPEN','LOW',site_b,now,now-timedelta(days=1))
+        raw_review('IR-site-closed-only','Closed-only site','CLOSED','LOW',site_c,now-timedelta(days=2),now-timedelta(days=1),now)
+        unattributed_id = raw_review('IR-site-unattributed','Unattributed','OPEN','LOW',None,now-timedelta(hours=1),now-timedelta(minutes=30))
+        connection.execute("INSERT INTO incident_review_events (incident_review_id,event_type,actor_source,created_at,summary) VALUES (?,?,?,?,?)", (active_id,'REVIEW_CREATED','OPERATOR',(now-timedelta(hours=1)).isoformat(),'Created'))
+        connection.execute("INSERT INTO incident_review_notes (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)", (other_id,'Recent note','OPERATOR',(now-timedelta(minutes=2)).isoformat()))
+
+    result = build_incident_review_site_workload(db_path=path, now=now, explain=True)
+    assert set(result) == {'sites', 'pagination', 'query_plan'}
+    assert result['pagination'] == {'limit': 20, 'offset': 0, 'total': 4}
+    assert result['query_plan']
+    rows = {row['site_id']: row for row in result['sites']}
+    assert set(result['sites'][0]) == {
+        'site_id','site_name','total_reviews','unresolved_reviews','open_reviews',
+        'in_review_reviews','closed_reviews','reviews_needing_attention',
+        'high_priority_unresolved','oldest_active_created_at',
+        'oldest_active_age_seconds','latest_review_activity_at',
+    }
+    assert rows[site_a]['site_name'] == 'Alpha'
+    assert rows[site_a]['total_reviews'] == 2
+    assert rows[site_a]['open_reviews'] == 1 and rows[site_a]['closed_reviews'] == 1
+    assert rows[site_a]['unresolved_reviews'] == 1
+    assert rows[site_a]['reviews_needing_attention'] == 1
+    assert rows[site_a]['high_priority_unresolved'] == 1
+    assert rows[site_a]['oldest_active_created_at'] == (now-timedelta(days=4)).isoformat()
+    assert rows[site_a]['oldest_active_age_seconds'] == 4*86400
+    assert rows[site_a]['latest_review_activity_at'] == (now-timedelta(hours=1)).isoformat()
+    assert rows[site_b]['in_review_reviews'] == 0
+    assert rows[site_b]['oldest_active_age_seconds'] == 0
+    assert rows[site_b]['latest_review_activity_at'] == (now-timedelta(minutes=2)).isoformat()
+    assert rows[site_c]['oldest_active_created_at'] is None
+    assert rows[site_c]['oldest_active_age_seconds'] is None
+    assert rows[None]['latest_review_activity_at'] == (now-timedelta(minutes=30)).isoformat()
+    assert rows[None]['site_name'] == 'Unattributed'
+    assert rows[None]['total_reviews'] == 1
+    assert [row['site_id'] for row in build_incident_review_site_workload(db_path=path, now=now, sort='site_name')['sites']] == [site_a, site_b, site_c, None]
+    assert [row['site_id'] for row in build_incident_review_site_workload(db_path=path, now=now, sort='attention_desc')['sites']][0] == site_a
+    assert [row['site_id'] for row in build_incident_review_site_workload(db_path=path, now=now, sort='oldest_active')['sites']][0] == site_a
+    assert [row['site_id'] for row in build_incident_review_site_workload(db_path=path, now=now, sort='recent_activity')['sites']][0] == site_b
+    assert build_incident_review_site_workload(db_path=path, now=now, limit=1, offset=1)['pagination']['total'] == 4
+    assert build_incident_review_site_workload(db_path=path, now=now, limit=1, offset=1)['sites'][0]['site_id'] == site_b
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_site_workload(db_path=path, sort='created_at')
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_site_workload(db_path=path, limit=101)
+
+
+def test_unattributed_queue_filter_is_explicit_and_conflicts_with_site_id(tmp_path):
+    path = tmp_path / 'review-unattributed-filter.db'
+    initialize_database(path)
+    with get_connection(path) as connection:
+        site_id = connection.execute("INSERT INTO sites (name,enabled,created_at,updated_at) VALUES ('Site',1,?,?)", (AT.isoformat(), AT.isoformat())).lastrowid
+    create_review(title='Attributed', site_id=site_id, db_path=path)
+    create_review(title='Unattributed', db_path=path)
+    selected = build_incident_review_operations(db_path=path, unattributed_only=True)
+    assert selected['pagination']['total'] == 1
+    assert selected['queue'][0]['site_id'] is None
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_operations(db_path=path, site_id=site_id, unattributed_only=True)
+
+
+def test_site_workload_api_shape_and_unattributed_queue_parameter(tmp_path, monkeypatch):
+    path = tmp_path / 'review-site-api.db'
+    initialize_database(path)
+    monkeypatch.setattr(api, 'DB_PATH', path)
+    routes = {(route.path, method): route.endpoint for route in api.app.routes
+              if hasattr(route, 'endpoint') for method in getattr(route, 'methods', ())}
+    with get_connection(path) as connection:
+        tables = ('incident_reviews','incident_review_evidence','incident_review_events',
+                  'incident_review_notes','sites','authorized_scopes','devices')
+        before = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] for table in tables}
+    result = routes[('/incident-review-operations/sites', 'GET')](sort='site_name', limit=10, offset=0)
+    assert result == {'sites': [], 'pagination': {'limit': 10, 'offset': 0, 'total': 0}}
+    with get_connection(path) as connection:
+        after = {table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] for table in tables}
+    assert after == before
+    with pytest.raises(HTTPException):
+        routes[('/incident-review-operations/sites', 'GET')](sort='created_at', limit=10, offset=0)
+    with pytest.raises(HTTPException):
+        routes[('/incident-review-operations', 'GET')](
+            state=None, priority=None, disposition=None, site_id=1, scope_id=None,
+            device_id=None, has_evidence=None, age_bucket=None, unresolved_only=False,
+            has_attention=None, attention_signal=None, unattributed_only=True,
+            sort='newest', limit=20, offset=0)
 
 
 def test_incident_review_operations_api_shape_and_get_does_not_mutate(tmp_path, monkeypatch):

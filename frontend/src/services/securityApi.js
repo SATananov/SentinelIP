@@ -42,12 +42,21 @@ export function buildIncidentReviewOperationsQuery(filters = {}) {
     sort: filters.sort ?? 'newest',
   })
   for (const key of ['state', 'priority', 'disposition', 'site_id', 'scope_id',
-    'device_id', 'has_evidence', 'age_bucket', 'has_attention', 'attention_signal']) {
+    'device_id', 'has_evidence', 'age_bucket', 'has_attention', 'attention_signal',
+    'unattributed_only']) {
     const value = filters[key]
     if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
   }
   if (filters.unresolved_only) params.set('unresolved_only', 'true')
   return params.toString()
+}
+
+export function buildIncidentReviewSitesQuery({ sort = 'unresolved_desc', limit = 20, offset = 0 } = {}) {
+  return new URLSearchParams({ sort, limit: String(limit), offset: String(offset) }).toString()
+}
+
+export function loadIncidentReviewSites(options = {}, signal) {
+  return getJson(`/incident-review-operations/sites?${buildIncidentReviewSitesQuery(options)}`, signal)
 }
 
 export function loadIncidentReviewOperations(filters = {}, signal) {

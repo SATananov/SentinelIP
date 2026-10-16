@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { loadIncidentReviewOperations } from '../services/securityApi.js'
-import { formatReviewAge } from '../services/incidentReviewFormat.js'
+import { loadIncidentReviewOperations, loadIncidentReviewSites } from '../services/securityApi.js'
+import { formatReviewAge, formatSiteWorkloadAge } from '../services/incidentReviewFormat.js'
 
 const AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
 const ATTENTION_SIGNALS = [
@@ -18,6 +18,10 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [siteOptions, setSiteOptions] = useState({ sort: 'unresolved_desc', limit: 20, offset: 0 })
+  const [siteData, setSiteData] = useState(null)
+  const [siteLoading, setSiteLoading] = useState(false)
+  const [siteError, setSiteError] = useState(null)
   const query = useMemo(() => ({ ...filters }), [filters])
 
   useEffect(() => {
@@ -32,8 +36,29 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
     return () => controller.abort()
   }, [query, refreshSignal])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) { setSiteLoading(true); setSiteError(null) }
+      return loadIncidentReviewSites(siteOptions, controller.signal)
+    })
+      .then((result) => { if (!controller.signal.aborted) setSiteData(result) })
+      .catch((err) => { if (err.name !== 'AbortError') setSiteError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setSiteLoading(false) })
+    return () => controller.abort()
+  }, [siteOptions, refreshSignal])
+
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value, offset: 0 }))
+  }
+
+  function selectSite(siteId) {
+    setFilters((current) => {
+      const next = { ...current }
+      delete next.site_id
+      delete next.unattributed_only
+      return { ...next, ...(siteId === null ? { unattributed_only: true } : { site_id: siteId }), offset: 0 }
+    })
   }
 
   const summary = data?.summary
@@ -62,6 +87,33 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <div><strong>Disposition</strong>{Object.entries(summary.disposition_distribution).map(([key, count]) => <span key={key}>{key.replaceAll('_',' ')}: {count}</span>)}</div>
         <div><strong>Reviews by Site</strong>{summary.reviews_by_site.map(({ site_id, count }) => <span key={site_id ?? 'unattributed'}>{site_id === null ? 'Unattributed' : `Site ${site_id}`}: {count}</span>)}</div>
       </div>}
+      <section className="review-site-workload" aria-labelledby="review-site-workload-title">
+        <div className="review-site-workload-heading"><h3 id="review-site-workload-title">Site Workload</h3>
+          <label><span>Sort sites</span><select value={siteOptions.sort} onChange={(event) => setSiteOptions((current) => ({ ...current, sort: event.target.value, offset: 0 }))}>
+            {[
+              ['unresolved_desc', 'Unresolved Reviews'], ['attention_desc', 'Needs Attention'],
+              ['oldest_active', 'Oldest Active Review'], ['recent_activity', 'Latest Review Activity'],
+              ['site_name', 'Site name'],
+            ].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select></label>
+        </div>
+        <p className="security-layer-copy">Global review workload by site. Counts are operational context and do not indicate site severity.</p>
+        {siteError && <div className="error-box">{siteError}</div>}
+        {siteLoading && !siteData ? <p className="security-empty">Loading site workload…</p> : siteError && !siteData ? null : !siteData?.sites?.length ? <p className="security-empty">No site workload to display.</p> : (
+          <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr>
+            <th>Site</th><th>Unresolved</th><th>Needs Attention</th><th>High-Priority Unresolved</th><th>Oldest Active Review</th><th>Latest Review Activity</th>
+          </tr></thead><tbody>{siteData.sites.map((site) => <tr key={site.site_id ?? 'unattributed'}>
+            <td><button type="button" className="review-queue-select" onClick={() => selectSite(site.site_id)}><strong>{site.site_name ?? `Site ${site.site_id}`}</strong>{site.site_id !== null && <small>Filter queue by site</small>}</button></td>
+            <td>{site.unresolved_reviews}</td><td>{site.reviews_needing_attention}</td><td>{site.high_priority_unresolved}</td>
+            <td>{site.oldest_active_created_at ? `${formatSiteWorkloadAge(site.oldest_active_age_seconds)} · ${site.oldest_active_created_at.replace('T',' ').replace('+00:00','Z')}` : '—'}</td>
+            <td>{site.latest_review_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td>
+          </tr>)}</tbody></table></div>
+        )}
+        {siteData?.pagination && <div className="pagination"><span className="pagination-summary">{siteData.pagination.total ? `Page ${Math.floor(siteData.pagination.offset / siteData.pagination.limit) + 1} of ${Math.max(1, Math.ceil(siteData.pagination.total / siteData.pagination.limit))} · ${siteData.pagination.total} site groups` : 'No site groups'}</span><div className="pagination-actions">
+          <button type="button" disabled={siteData.pagination.offset === 0} onClick={() => setSiteOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button>
+          <button type="button" disabled={siteData.pagination.offset + siteData.pagination.limit >= siteData.pagination.total || siteData.pagination.offset >= 100000} onClick={() => setSiteOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
+        </div></div>}
+      </section>
       <div className="filters review-operations-filters">
         <label><span>State</span><select value={filters.state || ''} onChange={(e) => updateFilter('state', e.target.value)}><option value="">All states</option><option>OPEN</option><option>IN_REVIEW</option><option>CLOSED</option></select></label>
         <label><span>Priority</span><select value={filters.priority || ''} onChange={(e) => updateFilter('priority', e.target.value)}><option value="">All priorities</option>{['CRITICAL','HIGH','MEDIUM','LOW'].map((v) => <option key={v}>{v}</option>)}</select></label>

@@ -5,7 +5,9 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
-from services.incident_review_operations import build_incident_review_operations
+from services.incident_review_operations import (
+    build_incident_review_operations, build_incident_review_site_workload,
+)
 
 EvidenceType = Literal['PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
     'PERIMETER_HOST_CORRELATION','EXTERNAL_EXPOSURE_CHANGE','THREAT_DETECTION',
@@ -81,6 +83,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         unresolved_only: bool = False,
         has_attention: bool | None = None,
         attention_signal: AttentionSignal | None = None,
+        unattributed_only: bool = False,
         sort: str = 'newest',
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0, le=100000),
@@ -91,8 +94,22 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
                 site_id=site_id, scope_id=scope_id, device_id=device_id,
                 has_evidence=has_evidence, age_bucket=age_bucket,
                 unresolved_only=unresolved_only, has_attention=has_attention,
-                attention_signal=attention_signal, sort=sort, limit=limit,
+                attention_signal=attention_signal, unattributed_only=unattributed_only,
+                sort=sort, limit=limit,
                 offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-review-operations/sites')
+    def incident_review_site_workload(
+        sort: str = 'unresolved_desc',
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ):
+        try:
+            return build_incident_review_site_workload(
+                sort=sort, limit=limit, offset=offset, db_path=db_path_provider(),
             )
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
