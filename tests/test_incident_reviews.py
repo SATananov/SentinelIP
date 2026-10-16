@@ -55,7 +55,7 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
                            ((now-timedelta(hours=1)).isoformat(),(now-timedelta(days=8)).isoformat(),
                             (now-timedelta(days=1)).isoformat(),closed['id']))
         connection.execute("INSERT INTO incident_review_notes (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)",
-                           (medium['id'],'A note','OPERATOR',(now-timedelta(hours=3)).isoformat()))
+                           (medium['id'],'A note','OPERATOR',(now+timedelta(hours=1)).isoformat()))
         connection.execute("INSERT INTO incident_review_events (incident_review_id,event_type,actor_source,created_at,summary) VALUES (?,?,?,?,?)",
                            (fresh['id'],'REVIEW_CREATED','OPERATOR',(now-timedelta(minutes=5)).isoformat(),'Created'))
     result = build_incident_review_operations(db_path=path, now=now, sort='priority')
@@ -67,7 +67,7 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
     assert result['summary']['active_age_buckets']['D1_3'] == 1
     rows = {row['id']: row for row in result['queue']}
     assert rows[medium['id']]['note_count'] == 1
-    assert rows[medium['id']]['latest_activity_at'] == (now-timedelta(hours=3)).isoformat()
+    assert rows[medium['id']]['latest_activity_at'] == (now+timedelta(hours=1)).isoformat()
     assert rows[medium['id']]['age_bucket'] == 'D1_3'
     assert rows[closed['id']]['age_seconds'] is None and rows[closed['id']]['age_bucket'] is None
     assert rows[closed['id']]['latest_activity_at'] == rows[closed['id']]['updated_at']

@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { loadIncidentReviewOperations, loadIncidentReviewSites } from '../services/securityApi.js'
+import {
+  loadIncidentReviewDevices,
+  loadIncidentReviewOperations,
+  loadIncidentReviewScopes,
+  loadIncidentReviewSites,
+} from '../services/securityApi.js'
 import { formatReviewAge, formatSiteWorkloadAge } from '../services/incidentReviewFormat.js'
+import {
+  applyDeviceDrilldown,
+  applyScopeDrilldown,
+  applySiteContextToQueue,
+  siteContextFromWorkloadRow,
+} from '../services/incidentReviewOperationsState.js'
 
 const AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
 const ATTENTION_SIGNALS = [
@@ -22,6 +33,16 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [siteData, setSiteData] = useState(null)
   const [siteLoading, setSiteLoading] = useState(false)
   const [siteError, setSiteError] = useState(null)
+  const [selectedSiteContext, setSelectedSiteContext] = useState(null)
+  const [workloadTab, setWorkloadTab] = useState('scopes')
+  const [scopeOptions, setScopeOptions] = useState({ sort: 'unresolved_desc', limit: 20, offset: 0 })
+  const [deviceOptions, setDeviceOptions] = useState({ sort: 'unresolved_desc', limit: 20, offset: 0 })
+  const [scopeData, setScopeData] = useState(null)
+  const [scopeLoading, setScopeLoading] = useState(false)
+  const [scopeError, setScopeError] = useState(null)
+  const [deviceData, setDeviceData] = useState(null)
+  const [deviceLoading, setDeviceLoading] = useState(false)
+  const [deviceError, setDeviceError] = useState(null)
   const query = useMemo(() => ({ ...filters }), [filters])
 
   useEffect(() => {
@@ -48,17 +69,79 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
     return () => controller.abort()
   }, [siteOptions, refreshSignal])
 
+  const workloadContext = useMemo(() => selectedSiteContext ? {
+    site_id: selectedSiteContext.site_id,
+    unattributed_only: selectedSiteContext.unattributed_only,
+  } : null, [selectedSiteContext])
+
+  useEffect(() => {
+    if (!workloadContext || workloadTab !== 'scopes') return undefined
+    const controller = new AbortController()
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) { setScopeLoading(true); setScopeError(null) }
+      return loadIncidentReviewScopes(workloadContext, scopeOptions, controller.signal)
+    })
+      .then((result) => { if (!controller.signal.aborted) setScopeData(result) })
+      .catch((err) => { if (err.name !== 'AbortError') setScopeError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setScopeLoading(false) })
+    return () => controller.abort()
+  }, [workloadContext, workloadTab, scopeOptions, refreshSignal])
+
+  useEffect(() => {
+    if (!workloadContext || workloadTab !== 'devices') return undefined
+    const controller = new AbortController()
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) { setDeviceLoading(true); setDeviceError(null) }
+      return loadIncidentReviewDevices(workloadContext, deviceOptions, controller.signal)
+    })
+      .then((result) => { if (!controller.signal.aborted) setDeviceData(result) })
+      .catch((err) => { if (err.name !== 'AbortError') setDeviceError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setDeviceLoading(false) })
+    return () => controller.abort()
+  }, [workloadContext, workloadTab, deviceOptions, refreshSignal])
+
   function updateFilter(key, value) {
+    if (key === 'site_id') {
+      setSelectedSiteContext(null)
+      setScopeOptions((current) => ({ ...current, offset: 0 }))
+      setDeviceOptions((current) => ({ ...current, offset: 0 }))
+      setFilters((current) => {
+        const next = { ...current, [key]: value, offset: 0 }
+        for (const drilldown of ['unattributed_only','scope_id','device_id','unattributed_scope_only','unattributed_device_only']) delete next[drilldown]
+        return next
+      })
+      return
+    }
     setFilters((current) => ({ ...current, [key]: value, offset: 0 }))
   }
 
-  function selectSite(siteId) {
-    setFilters((current) => {
-      const next = { ...current }
-      delete next.site_id
-      delete next.unattributed_only
-      return { ...next, ...(siteId === null ? { unattributed_only: true } : { site_id: siteId }), offset: 0 }
-    })
+  function selectSite(siteRow) {
+    const context = siteContextFromWorkloadRow(siteRow)
+    setSelectedSiteContext(context)
+    setScopeData(null)
+    setDeviceData(null)
+    setScopeError(null)
+    setDeviceError(null)
+    setScopeOptions((current) => ({ ...current, offset: 0 }))
+    setDeviceOptions((current) => ({ ...current, offset: 0 }))
+    setFilters((current) => applySiteContextToQueue(current, context))
+  }
+
+  function selectScope(scopeId) {
+    setFilters((current) => applyScopeDrilldown(current, scopeId))
+  }
+
+  function selectDevice(deviceId) {
+    setFilters((current) => applyDeviceDrilldown(current, deviceId))
+  }
+
+  function clearFilters() {
+    setSelectedSiteContext(null)
+    setScopeData(null)
+    setDeviceData(null)
+    setScopeOptions((current) => ({ ...current, offset: 0 }))
+    setDeviceOptions((current) => ({ ...current, offset: 0 }))
+    setFilters({ sort: 'oldest_open', limit: 20, offset: 0 })
   }
 
   const summary = data?.summary
@@ -103,7 +186,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
           <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr>
             <th>Site</th><th>Unresolved</th><th>Needs Attention</th><th>High-Priority Unresolved</th><th>Oldest Active Review</th><th>Latest Review Activity</th>
           </tr></thead><tbody>{siteData.sites.map((site) => <tr key={site.site_id ?? 'unattributed'}>
-            <td><button type="button" className="review-queue-select" onClick={() => selectSite(site.site_id)}><strong>{site.site_name ?? `Site ${site.site_id}`}</strong>{site.site_id !== null && <small>Filter queue by site</small>}</button></td>
+            <td><button type="button" className="review-queue-select" aria-pressed={selectedSiteContext?.site_id === site.site_id} onClick={() => selectSite(site)}><strong>{site.site_name ?? `Site ${site.site_id}`}</strong><small>Select site workload</small></button></td>
             <td>{site.unresolved_reviews}</td><td>{site.reviews_needing_attention}</td><td>{site.high_priority_unresolved}</td>
             <td>{site.oldest_active_created_at ? `${formatSiteWorkloadAge(site.oldest_active_age_seconds)} · ${site.oldest_active_created_at.replace('T',' ').replace('+00:00','Z')}` : '—'}</td>
             <td>{site.latest_review_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td>
@@ -113,6 +196,44 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
           <button type="button" disabled={siteData.pagination.offset === 0} onClick={() => setSiteOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button>
           <button type="button" disabled={siteData.pagination.offset + siteData.pagination.limit >= siteData.pagination.total || siteData.pagination.offset >= 100000} onClick={() => setSiteOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
         </div></div>}
+      </section>
+      <section className="review-attribution-workload" aria-labelledby="review-attribution-workload-title">
+        <h3 id="review-attribution-workload-title">Scope &amp; Device Workload</h3>
+        {!selectedSiteContext ? <p className="security-empty">Select a site to view scope and device workload.</p> : <>
+          <p className="security-layer-copy">Selected context: {selectedSiteContext.site_id === null ? 'Unattributed' : `Site #${selectedSiteContext.site_id}`}. Workload reflects review attribution only.</p>
+          <div className="review-workload-tabs" role="tablist" aria-label="Scope and device workload">
+            <button type="button" role="tab" aria-selected={workloadTab === 'scopes'} onClick={() => setWorkloadTab('scopes')}>Scope Workload</button>
+            <button type="button" role="tab" aria-selected={workloadTab === 'devices'} onClick={() => setWorkloadTab('devices')}>Device Workload</button>
+          </div>
+          {workloadTab === 'scopes' && <div role="tabpanel" className="review-workload-panel">
+            <div className="review-site-workload-heading"><h4>Scope Workload</h4><label><span>Sort scopes</span><select value={scopeOptions.sort} onChange={(event) => setScopeOptions((current) => ({ ...current, sort: event.target.value, offset: 0 }))}>
+              {['unresolved_desc','attention_desc','oldest_active','recent_activity','name'].map((sort) => <option key={sort} value={sort}>{sort.replaceAll('_',' ')}</option>)}
+            </select></label></div>
+            {scopeError && <div className="error-box">{scopeError}</div>}
+            {scopeLoading && !scopeData ? <p className="security-empty">Loading scope workload…</p> : scopeError && !scopeData ? null : !scopeData?.scopes?.length ? <p className="security-empty">No scope workload in this site context.</p> : <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr><th>Scope</th><th>Unresolved</th><th>Needs Attention</th><th>High-Priority Unresolved</th><th>Oldest Active Review</th><th>Latest Review Activity</th></tr></thead><tbody>
+              {scopeData.scopes.map((scope) => <tr key={scope.scope_id ?? 'unattributed-scope'}><td><button type="button" className="review-queue-select" onClick={() => selectScope(scope.scope_id)}><strong>{scope.scope_id === null ? 'Unattributed' : scope.scope_name || scope.canonical_target || `Scope ID ${scope.scope_id}`}</strong>{(scope.scope_name && scope.canonical_target) ? <small>{scope.canonical_target}{scope.scope_type ? ` · ${scope.scope_type.replaceAll('_',' ')}` : ''}</small> : scope.scope_type && <small>{scope.scope_type.replaceAll('_',' ')}</small>}</button></td>
+                <td>{scope.unresolved_reviews}</td><td>{scope.reviews_needing_attention}</td><td>{scope.high_priority_unresolved}</td><td>{scope.oldest_active_created_at ? `${formatSiteWorkloadAge(scope.oldest_active_age_seconds)} · ${scope.oldest_active_created_at.replace('T',' ').replace('+00:00','Z')}` : '—'}</td><td>{scope.latest_review_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td>
+              </tr>)}
+            </tbody></table></div>}
+            {scopeData?.pagination && <div className="pagination"><span className="pagination-summary">{scopeData.pagination.total ? `Page ${Math.floor(scopeData.pagination.offset / scopeData.pagination.limit) + 1} of ${Math.max(1, Math.ceil(scopeData.pagination.total / scopeData.pagination.limit))} · ${scopeData.pagination.total} scope groups` : 'No scope groups'}</span><div className="pagination-actions">
+              <button type="button" disabled={scopeData.pagination.offset === 0} onClick={() => setScopeOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button><button type="button" disabled={scopeData.pagination.offset + scopeData.pagination.limit >= scopeData.pagination.total || scopeData.pagination.offset >= 100000} onClick={() => setScopeOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
+            </div></div>}
+          </div>}
+          {workloadTab === 'devices' && <div role="tabpanel" className="review-workload-panel">
+            <div className="review-site-workload-heading"><h4>Device Workload</h4><label><span>Sort devices</span><select value={deviceOptions.sort} onChange={(event) => setDeviceOptions((current) => ({ ...current, sort: event.target.value, offset: 0 }))}>
+              {['unresolved_desc','attention_desc','oldest_active','recent_activity','label'].map((sort) => <option key={sort} value={sort}>{sort.replaceAll('_',' ')}</option>)}
+            </select></label></div>
+            {deviceError && <div className="error-box">{deviceError}</div>}
+            {deviceLoading && !deviceData ? <p className="security-empty">Loading device workload…</p> : deviceError && !deviceData ? null : !deviceData?.devices?.length ? <p className="security-empty">No device workload in this site context.</p> : <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr><th>Device</th><th>Unresolved</th><th>Needs Attention</th><th>High-Priority Unresolved</th><th>Oldest Active Review</th><th>Latest Review Activity</th></tr></thead><tbody>
+              {deviceData.devices.map((device) => <tr key={device.device_id ?? 'unattributed-device'}><td><button type="button" className="review-queue-select" onClick={() => selectDevice(device.device_id)}><strong>{device.device_label}</strong>{device.hostname && <small>{device.hostname}</small>}</button></td>
+                <td>{device.unresolved_reviews}</td><td>{device.reviews_needing_attention}</td><td>{device.high_priority_unresolved}</td><td>{device.oldest_active_created_at ? `${formatSiteWorkloadAge(device.oldest_active_age_seconds)} · ${device.oldest_active_created_at.replace('T',' ').replace('+00:00','Z')}` : '—'}</td><td>{device.latest_review_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td>
+              </tr>)}
+            </tbody></table></div>}
+            {deviceData?.pagination && <div className="pagination"><span className="pagination-summary">{deviceData.pagination.total ? `Page ${Math.floor(deviceData.pagination.offset / deviceData.pagination.limit) + 1} of ${Math.max(1, Math.ceil(deviceData.pagination.total / deviceData.pagination.limit))} · ${deviceData.pagination.total} device groups` : 'No device groups'}</span><div className="pagination-actions">
+              <button type="button" disabled={deviceData.pagination.offset === 0} onClick={() => setDeviceOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button><button type="button" disabled={deviceData.pagination.offset + deviceData.pagination.limit >= deviceData.pagination.total || deviceData.pagination.offset >= 100000} onClick={() => setDeviceOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
+            </div></div>}
+          </div>}
+        </>}
       </section>
       <div className="filters review-operations-filters">
         <label><span>State</span><select value={filters.state || ''} onChange={(e) => updateFilter('state', e.target.value)}><option value="">All states</option><option>OPEN</option><option>IN_REVIEW</option><option>CLOSED</option></select></label>
@@ -125,7 +246,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <label><span>Attention signal</span><select value={filters.attention_signal || ''} onChange={(e) => updateFilter('attention_signal', e.target.value)}><option value="">All signals</option>{ATTENTION_SIGNALS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
         <label><span>Sort</span><select value={filters.sort} onChange={(e) => updateFilter('sort', e.target.value)}>{[['oldest_open','Oldest open'],['newest','Newest'],['oldest','Oldest'],['priority','Priority'],['recently_updated','Recently updated']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         <label className="review-operations-check"><input type="checkbox" checked={Boolean(filters.unresolved_only)} onChange={(e) => updateFilter('unresolved_only', e.target.checked)} /> Unresolved only</label>
-        <button type="button" className="clear-filters" onClick={() => setFilters({ sort: 'oldest_open', limit: 20, offset: 0 })}>Clear filters</button>
+        <button type="button" className="clear-filters" onClick={clearFilters}>Clear filters</button>
       </div>
       {error && <div className="error-box">{error}</div>}
       {loading && !data ? <p className="security-empty">Loading review queue…</p> : error && !data ? null : !data?.queue?.length ? <p className="security-empty">No reviews match the selected filters.</p> : (

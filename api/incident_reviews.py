@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from database import incident_reviews as reviews_db
 from services.incident_review_operations import (
     build_incident_review_operations, build_incident_review_site_workload,
+    build_incident_review_scope_workload, build_incident_review_device_workload,
 )
 
 EvidenceType = Literal['PERIMETER_DETECTION','PERIMETER_POLICY_CORRELATION',
@@ -84,6 +85,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         has_attention: bool | None = None,
         attention_signal: AttentionSignal | None = None,
         unattributed_only: bool = False,
+        unattributed_scope_only: bool = False,
+        unattributed_device_only: bool = False,
         sort: str = 'newest',
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0, le=100000),
@@ -95,6 +98,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
                 has_evidence=has_evidence, age_bucket=age_bucket,
                 unresolved_only=unresolved_only, has_attention=has_attention,
                 attention_signal=attention_signal, unattributed_only=unattributed_only,
+                unattributed_scope_only=unattributed_scope_only,
+                unattributed_device_only=unattributed_device_only,
                 sort=sort, limit=limit,
                 offset=offset, db_path=db_path_provider(),
             )
@@ -110,6 +115,38 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         try:
             return build_incident_review_site_workload(
                 sort=sort, limit=limit, offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-review-operations/scopes')
+    def incident_review_scope_workload(
+        site_id: int | None = Query(default=None, ge=1),
+        unattributed_only: bool = False,
+        sort: str = 'unresolved_desc',
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ):
+        try:
+            return build_incident_review_scope_workload(
+                site_id=site_id, unattributed_only=unattributed_only, sort=sort,
+                limit=limit, offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-review-operations/devices')
+    def incident_review_device_workload(
+        site_id: int | None = Query(default=None, ge=1),
+        unattributed_only: bool = False,
+        sort: str = 'unresolved_desc',
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ):
+        try:
+            return build_incident_review_device_workload(
+                site_id=site_id, unattributed_only=unattributed_only, sort=sort,
+                limit=limit, offset=offset, db_path=db_path_provider(),
             )
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)

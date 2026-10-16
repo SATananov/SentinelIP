@@ -8,6 +8,10 @@ import {
   loadIncidentReviewOperations,
   loadIncidentReviewSites,
   buildIncidentReviewSitesQuery,
+  buildIncidentReviewScopesQuery,
+  buildIncidentReviewDevicesQuery,
+  loadIncidentReviewScopes,
+  loadIncidentReviewDevices,
   buildIncidentReviewOperationsQuery,
   loadIncidentReviewEvidence,
   loadIncidentReviewNotes,
@@ -17,6 +21,12 @@ import {
   updateIncidentReview,
 } from '../src/services/securityApi.js'
 import { formatReviewAge, formatSiteWorkloadAge } from '../src/services/incidentReviewFormat.js'
+import {
+  applyDeviceDrilldown,
+  applyScopeDrilldown,
+  applySiteContextToQueue,
+  siteContextFromWorkloadRow,
+} from '../src/services/incidentReviewOperationsState.js'
 
 test('operations request uses explicit bounded filters, sort, and pagination', async () => {
   const originalFetch = globalThis.fetch
@@ -69,6 +79,56 @@ test('site workload request carries independent sort and pagination and propagat
 
 test('queue request can filter explicitly to unattributed reviews', () => {
   assert.match(buildIncidentReviewOperationsQuery({ unattributed_only: true }), /unattributed_only=true/)
+  assert.match(buildIncidentReviewOperationsQuery({ unattributed_scope_only: true }), /unattributed_scope_only=true/)
+  assert.match(buildIncidentReviewOperationsQuery({ unattributed_device_only: true }), /unattributed_device_only=true/)
+})
+
+test('scope and device workload requests require site context and encode pagination and sorting', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ scopes: [], devices: [], pagination: { total: 0 } }) }
+  }
+  try {
+    assert.throws(() => buildIncidentReviewScopesQuery(), /exactly one selected site/)
+    assert.throws(() => buildIncidentReviewDevicesQuery({ site_id: 4, unattributed_only: true }), /exactly one selected site/)
+    assert.match(buildIncidentReviewScopesQuery({ site_id: 4 }, { sort: 'name', limit: 10, offset: 20 }), /site_id=4/)
+    assert.match(buildIncidentReviewDevicesQuery({ unattributed_only: true }, { sort: 'label', limit: 5, offset: 15 }), /unattributed_only=true/)
+    await loadIncidentReviewScopes({ site_id: 4 }, { sort: 'attention_desc', limit: 10, offset: 20 })
+    await loadIncidentReviewDevices({ unattributed_only: true }, { sort: 'label', limit: 5, offset: 15 })
+    assert.match(calls[0], /\/incident-review-operations\/scopes\?/)
+    assert.match(calls[0], /site_id=4/)
+    assert.match(calls[0], /sort=attention_desc/)
+    assert.match(calls[0], /offset=20/)
+    assert.match(calls[1], /\/incident-review-operations\/devices\?/)
+    assert.match(calls[1], /unattributed_only=true/)
+    assert.match(calls[1], /sort=label/)
+    globalThis.fetch = async () => ({ ok: false, status: 503 })
+    await assert.rejects(loadIncidentReviewScopes({ site_id: 4 }), /Security API request failed \(503\)/)
+    await assert.rejects(loadIncidentReviewDevices({ site_id: 4 }), /Security API request failed \(503\)/)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('site, scope, and device drill-down transitions preserve context and reset queue paging', () => {
+  const initial = { site_id: 2, scope_id: 3, device_id: 4, has_attention: true, offset: 60 }
+  const site = siteContextFromWorkloadRow({ site_id: null })
+  assert.deepEqual(site, { site_id: null, unattributed_only: true })
+  assert.deepEqual(applySiteContextToQueue(initial, { site_id: 9, unattributed_only: false }), {
+    has_attention: true, site_id: 9, offset: 0,
+  })
+  assert.deepEqual(applySiteContextToQueue(initial, site), {
+    has_attention: true, unattributed_only: true, offset: 0,
+  })
+  assert.deepEqual(applyScopeDrilldown({ site_id: 2, device_id: 4, offset: 40 }, null), {
+    site_id: 2, device_id: 4, unattributed_scope_only: true, offset: 0,
+  })
+  assert.deepEqual(applyScopeDrilldown({ unattributed_only: true, offset: 5 }, 7), {
+    unattributed_only: true, scope_id: 7, offset: 0,
+  })
+  assert.deepEqual(applyDeviceDrilldown({ unattributed_only: true, scope_id: 3, offset: 20 }, 8), {
+    unattributed_only: true, scope_id: 3, device_id: 8, offset: 0,
+  })
 })
 
 test('review age labels are workload buckets and closed age is blank', () => {

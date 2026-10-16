@@ -43,7 +43,7 @@ export function buildIncidentReviewOperationsQuery(filters = {}) {
   })
   for (const key of ['state', 'priority', 'disposition', 'site_id', 'scope_id',
     'device_id', 'has_evidence', 'age_bucket', 'has_attention', 'attention_signal',
-    'unattributed_only']) {
+    'unattributed_only', 'unattributed_scope_only', 'unattributed_device_only']) {
     const value = filters[key]
     if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
   }
@@ -57,6 +57,37 @@ export function buildIncidentReviewSitesQuery({ sort = 'unresolved_desc', limit 
 
 export function loadIncidentReviewSites(options = {}, signal) {
   return getJson(`/incident-review-operations/sites?${buildIncidentReviewSitesQuery(options)}`, signal)
+}
+
+function buildScopedWorkloadQuery(context, { sort, limit = 20, offset = 0 }) {
+  const hasSiteId = Number.isSafeInteger(context?.site_id) && context.site_id > 0
+  const unattributed = context?.unattributed_only === true
+  if (hasSiteId === unattributed) {
+    throw new Error('Provide exactly one selected site or the Unattributed site context.')
+  }
+  if (context?.unattributed_only !== undefined && typeof context.unattributed_only !== 'boolean') {
+    throw new Error('unattributed_only must be a boolean.')
+  }
+  const params = new URLSearchParams({ sort, limit: String(limit), offset: String(offset) })
+  if (hasSiteId) params.set('site_id', String(context.site_id))
+  else params.set('unattributed_only', 'true')
+  return params.toString()
+}
+
+export function buildIncidentReviewScopesQuery(context, options = {}) {
+  return buildScopedWorkloadQuery(context, { ...options, sort: options.sort ?? 'unresolved_desc' })
+}
+
+export function buildIncidentReviewDevicesQuery(context, options = {}) {
+  return buildScopedWorkloadQuery(context, { ...options, sort: options.sort ?? 'unresolved_desc' })
+}
+
+export function loadIncidentReviewScopes(context, options = {}, signal) {
+  return getJson(`/incident-review-operations/scopes?${buildIncidentReviewScopesQuery(context, options)}`, signal)
+}
+
+export function loadIncidentReviewDevices(context, options = {}, signal) {
+  return getJson(`/incident-review-operations/devices?${buildIncidentReviewDevicesQuery(context, options)}`, signal)
 }
 
 export function loadIncidentReviewOperations(filters = {}, signal) {
