@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 import sqlite3
 
 from database.db import DB_PATH, get_connection, initialize_database
-from database.incident_reviews import DISPOSITIONS, IncidentReviewError, PRIORITIES, STATES
+from database.incident_reviews import (
+    CONFIDENCES, DISPOSITIONS, IncidentReviewError, PRIORITIES, STATES,
+)
 
 AGE_BUCKETS = ('LT_1H', 'H1_24', 'D1_3', 'D3_7', 'GT_7D')
 SORTS = ('newest', 'oldest', 'priority', 'recently_updated', 'oldest_open')
@@ -34,6 +36,142 @@ SITE_SORTS = ('unresolved_desc', 'attention_desc', 'oldest_active', 'recent_acti
 SCOPE_SORTS = ('unresolved_desc', 'attention_desc', 'oldest_active', 'recent_activity', 'name')
 DEVICE_SORTS = ('unresolved_desc', 'attention_desc', 'oldest_active', 'recent_activity', 'label')
 _SITE_ID_TIEBREAK = '(site_id IS NULL) ASC,site_id ASC'
+ACTIVITY_EVENT_TYPES = frozenset({
+    'REVIEW_CREATED', 'STATE_CHANGED', 'REVIEW_CLOSED', 'REVIEW_REOPENED',
+    'PRIORITY_CHANGED', 'CONFIDENCE_CHANGED', 'DISPOSITION_CHANGED',
+    'REVIEW_FIELD_CHANGED', 'FINAL_SUMMARY_CHANGED', 'ANALYST_NOTE_ADDED',
+    'ANALYST_NOTE_CLEARED', 'EVIDENCE_ATTACHED', 'EVIDENCE_DETACHED',
+})
+_ACTIVITY_FIELD_NAMES = {
+    'STATE_CHANGED': 'state',
+    'PRIORITY_CHANGED': 'priority',
+    'CONFIDENCE_CHANGED': 'confidence',
+    'DISPOSITION_CHANGED': 'disposition',
+}
+_SAFE_REVIEW_FIELD_NAMES = frozenset({'title', 'summary', 'site_id', 'scope_id', 'device_id'})
+
+
+def _activity_timestamp(value, name):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise IncidentReviewError(f'{name} must be an ISO-8601 timestamp.')
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith(('Z', 'z')) else value)
+    except ValueError as exc:
+        raise IncidentReviewError(f'{name} must be an ISO-8601 timestamp.') from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise IncidentReviewError(f'{name} must include a timezone.')
+    return parsed.astimezone(timezone.utc).isoformat(timespec='microseconds')
+
+
+def _activity_summary(event_type, old_value, new_value, states, priorities, confidences, dispositions):
+    scalar_labels = {
+        'STATE_CHANGED': ('State', states, 'Review state changed'),
+        'PRIORITY_CHANGED': ('Priority', priorities, 'Review priority changed'),
+        'CONFIDENCE_CHANGED': ('Confidence', confidences, 'Review confidence changed'),
+        'DISPOSITION_CHANGED': ('Disposition', dispositions, 'Review disposition changed'),
+    }
+    if event_type in scalar_labels:
+        label, allowed, fallback = scalar_labels[event_type]
+        if old_value in allowed and new_value in allowed:
+            return f'{label} changed from {old_value} to {new_value}'
+        return fallback
+    return {
+        'REVIEW_CREATED': 'Review created',
+        'REVIEW_CLOSED': 'Review closed',
+        'REVIEW_REOPENED': 'Review reopened',
+        'REVIEW_FIELD_CHANGED': 'Review field updated',
+        'FINAL_SUMMARY_CHANGED': 'Final summary updated',
+        'ANALYST_NOTE_ADDED': 'Analyst note added',
+        'ANALYST_NOTE_CLEARED': 'Analyst note cleared',
+        'EVIDENCE_ATTACHED': 'Evidence attached',
+        'EVIDENCE_DETACHED': 'Evidence detached',
+    }.get(event_type, 'Review activity recorded')
+
+
+def build_incident_review_activity(*, event_type=None, incident_review_id=None,
+                                   site_id=None, scope_id=None, device_id=None,
+                                   since=None, until=None, limit=20, offset=0,
+                                   db_path=DB_PATH):
+    """Return a bounded, privacy-filtered cross-review event feed."""
+    if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
+        raise IncidentReviewError('Activity limit must be between 1 and 100.')
+    if type(offset) is not int or not 0 <= offset <= MAX_OFFSET:
+        raise IncidentReviewError('Activity offset must be between 0 and 100000.')
+    if event_type is not None and (
+            not isinstance(event_type, str) or event_type not in ACTIVITY_EVENT_TYPES):
+        raise IncidentReviewError('Unsupported review activity event type.')
+    for value in (incident_review_id, site_id, scope_id, device_id):
+        if value is not None and (type(value) is not int or value < 1):
+            raise IncidentReviewError('Activity identifier filters must be positive integers.')
+    since_utc = _activity_timestamp(since, 'since')
+    until_utc = _activity_timestamp(until, 'until')
+    if since_utc is not None and until_utc is not None \
+            and datetime.fromisoformat(since_utc) > datetime.fromisoformat(until_utc):
+        raise IncidentReviewError('since must not be later than until.')
+
+    clauses, params = [], []
+    for column, value in (
+        ('e.event_type', event_type), ('e.incident_review_id', incident_review_id),
+        ('r.site_id', site_id), ('r.scope_id', scope_id), ('r.device_id', device_id),
+    ):
+        if value is not None:
+            clauses.append(f'{column}=?')
+            params.append(value)
+    if since_utc is not None:
+        clauses.append('julianday(e.created_at)>=julianday(?)')
+        params.append(since_utc)
+    if until_utc is not None:
+        clauses.append('julianday(e.created_at)<=julianday(?)')
+        params.append(until_utc)
+    where_sql = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        total = connection.execute(f'''SELECT COUNT(*)
+            FROM incident_review_events e
+            JOIN incident_reviews r ON r.id=e.incident_review_id{where_sql}''', params).fetchone()[0]
+        rows = connection.execute(f'''SELECT e.id event_id,e.incident_review_id,
+                r.incident_key,r.title review_title,e.event_type,e.field_name,e.actor_source,
+                e.created_at,r.site_id,r.scope_id,r.device_id,s.name site_name,
+                e.note_id,e.evidence_type,e.evidence_id,e.old_value,e.new_value
+            FROM incident_review_events e
+            JOIN incident_reviews r ON r.id=e.incident_review_id
+            LEFT JOIN sites s ON s.id=r.site_id{where_sql}
+            ORDER BY julianday(e.created_at) DESC,e.id DESC LIMIT ? OFFSET ?''',
+            (*params, limit, offset)).fetchall()
+
+    activity = []
+    for row in rows:
+        event = dict(row)
+        kind = event['event_type']
+        field_name = _ACTIVITY_FIELD_NAMES.get(kind)
+        if kind == 'REVIEW_FIELD_CHANGED' and event['field_name'] in _SAFE_REVIEW_FIELD_NAMES:
+            field_name = event['field_name']
+        note_id = event['note_id'] if kind in {'ANALYST_NOTE_ADDED', 'ANALYST_NOTE_CLEARED'} else None
+        evidence_type = event['evidence_type'] if kind in {'EVIDENCE_ATTACHED', 'EVIDENCE_DETACHED'} else None
+        evidence_id = event['evidence_id'] if evidence_type is not None else None
+        activity.append({
+            'event_id': event['event_id'],
+            'incident_review_id': event['incident_review_id'],
+            'incident_key': event['incident_key'],
+            'review_title': event['review_title'],
+            'event_type': kind,
+            'field_name': field_name,
+            'actor_source': event['actor_source'],
+            'created_at': event['created_at'],
+            'site_id': event['site_id'],
+            'scope_id': event['scope_id'],
+            'device_id': event['device_id'],
+            'site_name': 'Unattributed' if event['site_id'] is None else event['site_name'],
+            'summary': _activity_summary(kind, event['old_value'], event['new_value'],
+                                         STATES, PRIORITIES, CONFIDENCES, DISPOSITIONS),
+            'note_id': note_id,
+            'evidence_type': evidence_type,
+            'evidence_id': evidence_id,
+        })
+    return {'activity': activity, 'pagination': {'limit': limit, 'offset': offset, 'total': total}}
 
 
 def _review_rollup_cte(review_filter_sql=''):

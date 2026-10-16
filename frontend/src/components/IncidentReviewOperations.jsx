@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
   loadIncidentReviewDevices,
+  loadIncidentReviewActivity,
   loadIncidentReviewOperations,
   loadIncidentReviewScopes,
   loadIncidentReviewSites,
@@ -23,6 +24,12 @@ const ATTENTION_SIGNALS = [
   ['MISSING_SOURCE_EVIDENCE', 'Missing source evidence'],
   ['NO_LINKED_EVIDENCE', 'No linked evidence'],
 ]
+const ACTIVITY_EVENT_TYPES = [
+  'REVIEW_CREATED', 'STATE_CHANGED', 'REVIEW_CLOSED', 'REVIEW_REOPENED',
+  'PRIORITY_CHANGED', 'CONFIDENCE_CHANGED', 'DISPOSITION_CHANGED', 'REVIEW_FIELD_CHANGED',
+  'FINAL_SUMMARY_CHANGED', 'ANALYST_NOTE_ADDED', 'ANALYST_NOTE_CLEARED',
+  'EVIDENCE_ATTACHED', 'EVIDENCE_DETACHED',
+]
 
 function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [filters, setFilters] = useState({ sort: 'oldest_open', limit: 20, offset: 0 })
@@ -43,6 +50,10 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [deviceData, setDeviceData] = useState(null)
   const [deviceLoading, setDeviceLoading] = useState(false)
   const [deviceError, setDeviceError] = useState(null)
+  const [activityOptions, setActivityOptions] = useState({ limit: 20, offset: 0, event_type: '', site_id: '' })
+  const [activityData, setActivityData] = useState(null)
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [activityError, setActivityError] = useState(null)
   const query = useMemo(() => ({ ...filters }), [filters])
 
   useEffect(() => {
@@ -99,6 +110,18 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
       .finally(() => { if (!controller.signal.aborted) setDeviceLoading(false) })
     return () => controller.abort()
   }, [workloadContext, workloadTab, deviceOptions, refreshSignal])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    Promise.resolve().then(() => {
+      if (!controller.signal.aborted) { setActivityLoading(true); setActivityError(null) }
+      return loadIncidentReviewActivity(activityOptions, controller.signal)
+    })
+      .then((result) => { if (!controller.signal.aborted) setActivityData(result) })
+      .catch((err) => { if (err.name !== 'AbortError') setActivityError(err.message) })
+      .finally(() => { if (!controller.signal.aborted) setActivityLoading(false) })
+    return () => controller.abort()
+  }, [activityOptions, refreshSignal])
 
   function updateFilter(key, value) {
     if (key === 'site_id') {
@@ -255,7 +278,32 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         </tbody></table></div>
       )}
       {page && <div className="pagination"><span className="pagination-summary">{page.total ? `Page ${currentPage} of ${totalPages} · ${page.total} reviews` : 'No matching reviews'}</span><div className="pagination-actions"><button type="button" disabled={page.offset === 0} onClick={() => setFilters((c) => ({ ...c, offset: Math.max(0, c.offset - c.limit) }))}>Previous</button><button type="button" disabled={currentPage >= totalPages || page.offset >= 100000} onClick={() => setFilters((c) => ({ ...c, offset: c.offset + c.limit }))}>Next</button></div></div>}
-      {summary && <p className="review-operations-activity">Recent Review Activity: {summary.recent_activity.length ? summary.recent_activity.slice(0, 5).map((item) => `${item.incident_key} · ${item.event_type.replaceAll('_',' ')} · ${item.created_at.replace('T',' ')}`).join('  |  ') : 'No review activity recorded.'}</p>}
+      <section className="review-activity-feed" aria-labelledby="review-activity-feed-title">
+        <div className="review-site-workload-heading"><div><h3 id="review-activity-feed-title">Recent Review Activity</h3>
+          <p className="security-layer-copy">Site, scope, and device context reflects the review’s current attribution.</p></div>
+          <div className="review-activity-filters">
+            <label><span>Event type</span><select value={activityOptions.event_type} onChange={(event) => setActivityOptions((current) => ({ ...current, event_type: event.target.value, offset: 0 }))}>
+              <option value="">All activity</option>{ACTIVITY_EVENT_TYPES.map((kind) => <option key={kind} value={kind}>{kind.replaceAll('_', ' ')}</option>)}
+            </select></label>
+            <label><span>Site ID</span><input type="number" min="1" value={activityOptions.site_id} onChange={(event) => setActivityOptions((current) => ({ ...current, site_id: event.target.value, offset: 0 }))} placeholder="All sites" /></label>
+          </div>
+        </div>
+        {activityError && <div className="error-box">{activityError}</div>}
+        {activityLoading && !activityData ? <p className="security-empty">Loading review activity…</p>
+          : activityError && !activityData ? null
+            : !activityData?.activity?.length ? <p className="security-empty">No review activity matches the selected filters.</p>
+              : <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr>
+                <th>Time</th><th>Review</th><th>Activity</th><th>Current Site</th><th>Actor</th>
+              </tr></thead><tbody>{activityData.activity.map((item) => <tr key={item.event_id}>
+                <td>{item.created_at.replace('T', ' ').replace('+00:00', 'Z')}</td>
+                <td><button type="button" className="review-queue-select" onClick={() => onSelectReview(item.incident_review_id)}><strong>{item.incident_key}</strong><small>{item.review_title}</small></button></td>
+                <td>{item.summary}</td><td>{item.site_name ?? (item.site_id === null ? 'Unattributed' : `Site ${item.site_id}`)}</td><td>{item.actor_source}</td>
+              </tr>)}</tbody></table></div>}
+        {activityData?.pagination && <div className="pagination"><span className="pagination-summary">{activityData.pagination.total ? `Page ${Math.floor(activityData.pagination.offset / activityData.pagination.limit) + 1} of ${Math.max(1, Math.ceil(activityData.pagination.total / activityData.pagination.limit))} · ${activityData.pagination.total} events` : 'No matching activity'}</span><div className="pagination-actions">
+          <button type="button" disabled={activityData.pagination.offset === 0} onClick={() => setActivityOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button>
+          <button type="button" disabled={activityData.pagination.offset + activityData.pagination.limit >= activityData.pagination.total || activityData.pagination.offset >= 100000} onClick={() => setActivityOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
+        </div></div>}
+      </section>
     </section>
   )
 }

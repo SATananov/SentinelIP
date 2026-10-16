@@ -94,6 +94,22 @@ export function loadIncidentReviewOperations(filters = {}, signal) {
   return getJson(`/incident-review-operations?${buildIncidentReviewOperationsQuery(filters)}`, signal)
 }
 
+export function buildIncidentReviewActivityQuery(filters = {}) {
+  const params = new URLSearchParams({
+    limit: String(filters.limit ?? 20),
+    offset: String(filters.offset ?? 0),
+  })
+  for (const key of ['event_type', 'incident_review_id', 'site_id', 'scope_id', 'device_id', 'since', 'until']) {
+    const value = filters[key]
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  }
+  return params.toString()
+}
+
+export function loadIncidentReviewActivity(filters = {}, signal) {
+  return getJson(`/incident-review-operations/activity?${buildIncidentReviewActivityQuery(filters)}`, signal)
+}
+
 export function loadIncidentReview(id, signal) {
   return getJson(`/incident-reviews/${id}`, signal)
 }

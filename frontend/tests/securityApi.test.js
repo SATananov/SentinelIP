@@ -6,6 +6,8 @@ import {
   addIncidentReviewNote,
   detachIncidentEvidence,
   loadIncidentReviewOperations,
+  loadIncidentReviewActivity,
+  buildIncidentReviewActivityQuery,
   loadIncidentReviewSites,
   buildIncidentReviewSitesQuery,
   buildIncidentReviewScopesQuery,
@@ -57,6 +59,31 @@ test('operations request propagates API errors', async () => {
   globalThis.fetch = async () => ({ ok: false, status: 422 })
   try { await assert.rejects(loadIncidentReviewOperations(), /Security API request failed \(422\)/) }
   finally { globalThis.fetch = originalFetch }
+})
+
+test('activity feed request exposes only the explicit filters and bounded pagination', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, json: async () => ({ activity: [], pagination: { limit: 10, offset: 20, total: 0 } }) }
+  }
+  try {
+    const query = buildIncidentReviewActivityQuery({ event_type: 'STATE_CHANGED', incident_review_id: 5,
+      site_id: 3, scope_id: 7, device_id: 8, since: '2026-10-01T00:00:00Z',
+      until: '2026-10-02T00:00:00Z', limit: 10, offset: 20 })
+    for (const expected of ['event_type=STATE_CHANGED', 'incident_review_id=5', 'site_id=3',
+      'scope_id=7', 'device_id=8', 'since=', 'until=', 'limit=10', 'offset=20']) {
+      assert.ok(query.includes(expected), expected)
+    }
+    await loadIncidentReviewActivity({ event_type: 'REVIEW_CLOSED', site_id: 3, limit: 10, offset: 20 })
+    assert.match(calls[0], /\/incident-review-operations\/activity\?/)
+    assert.match(calls[0], /event_type=REVIEW_CLOSED/)
+    assert.match(calls[0], /site_id=3/)
+    assert.match(calls[0], /offset=20/)
+    globalThis.fetch = async () => ({ ok: false, status: 422 })
+    await assert.rejects(loadIncidentReviewActivity(), /Security API request failed \(422\)/)
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('site workload request carries independent sort and pagination and propagates errors', async () => {

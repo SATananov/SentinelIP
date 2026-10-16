@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
 from services.incident_review_operations import (
-    build_incident_review_operations, build_incident_review_site_workload,
+    build_incident_review_operations, build_incident_review_activity, build_incident_review_site_workload,
     build_incident_review_scope_workload, build_incident_review_device_workload,
 )
 
@@ -21,6 +21,10 @@ Disposition = Literal['UNREVIEWED','EXPECTED_ACTIVITY','BENIGN','NEEDS_MONITORIN
     'ACTION_REQUIRED','FALSE_POSITIVE','INCONCLUSIVE']
 AttentionSignal = Literal['AGING_REVIEW','HIGH_PRIORITY_UNRESOLVED','NO_RECENT_ACTIVITY',
     'REOPENED_REVIEW','MISSING_SOURCE_EVIDENCE','NO_LINKED_EVIDENCE']
+ActivityEventType = Literal['REVIEW_CREATED','STATE_CHANGED','REVIEW_CLOSED','REVIEW_REOPENED',
+    'PRIORITY_CHANGED','CONFIDENCE_CHANGED','DISPOSITION_CHANGED','REVIEW_FIELD_CHANGED',
+    'FINAL_SUMMARY_CHANGED','ANALYST_NOTE_ADDED','ANALYST_NOTE_CLEARED',
+    'EVIDENCE_ATTACHED','EVIDENCE_DETACHED']
 MAX_INCIDENT_REVIEW_OFFSET = 100000
 
 
@@ -102,6 +106,28 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
                 unattributed_device_only=unattributed_device_only,
                 sort=sort, limit=limit,
                 offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+
+    @app.get('/incident-review-operations/activity')
+    def incident_review_activity(
+        event_type: ActivityEventType | None = None,
+        incident_review_id: int | None = Query(default=None, ge=1),
+        site_id: int | None = Query(default=None, ge=1),
+        scope_id: int | None = Query(default=None, ge=1),
+        device_id: int | None = Query(default=None, ge=1),
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=100000),
+    ):
+        try:
+            return build_incident_review_activity(
+                event_type=event_type, incident_review_id=incident_review_id,
+                site_id=site_id, scope_id=scope_id, device_id=device_id,
+                since=since, until=until, limit=limit, offset=offset,
+                db_path=db_path_provider(),
             )
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
