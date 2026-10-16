@@ -643,6 +643,10 @@ h2 {
 .review-queue-select { display: grid; gap: 3px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
 .review-queue-select strong { color: #e7eaf0; }
 .review-queue-select small { color: #8d97a8; }
+.review-queue-attention { max-width: 210px; white-space: normal !important; }
+.review-queue-attention strong, .review-queue-attention small { display: block; line-height: 1.4; }
+.review-queue-attention strong { color: #e3c17a; font-size: 12px; font-weight: 600; }
+.review-queue-attention small { color: #aab2c0; margin-top: 3px; }
 .review-operations-activity { margin-top: 16px; color: #aab2c0; font-size: 13px; line-height: 1.6; }
 .review-operations-breakdown { display: grid; gap: 10px; margin: 16px 0 20px; }
 .review-operations-breakdown > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 12px; border: 1px solid #2a303a; border-radius: 8px; color: #aab2c0; font-size: 12px; }

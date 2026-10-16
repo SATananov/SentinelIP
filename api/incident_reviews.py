@@ -16,6 +16,8 @@ Priority = Literal['LOW','MEDIUM','HIGH','CRITICAL']
 Confidence = Literal['LOW','MEDIUM','HIGH']
 Disposition = Literal['UNREVIEWED','EXPECTED_ACTIVITY','BENIGN','NEEDS_MONITORING',
     'ACTION_REQUIRED','FALSE_POSITIVE','INCONCLUSIVE']
+AttentionSignal = Literal['AGING_REVIEW','HIGH_PRIORITY_UNRESOLVED','NO_RECENT_ACTIVITY',
+    'REOPENED_REVIEW','MISSING_SOURCE_EVIDENCE','NO_LINKED_EVIDENCE']
 MAX_INCIDENT_REVIEW_OFFSET = 100000
 
 
@@ -77,6 +79,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         has_evidence: bool | None = None,
         age_bucket: str | None = None,
         unresolved_only: bool = False,
+        has_attention: bool | None = None,
+        attention_signal: AttentionSignal | None = None,
         sort: str = 'newest',
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0, le=100000),
@@ -86,7 +90,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
                 state=state, priority=priority, disposition=disposition,
                 site_id=site_id, scope_id=scope_id, device_id=device_id,
                 has_evidence=has_evidence, age_bucket=age_bucket,
-                unresolved_only=unresolved_only, sort=sort, limit=limit,
+                unresolved_only=unresolved_only, has_attention=has_attention,
+                attention_signal=attention_signal, sort=sort, limit=limit,
                 offset=offset, db_path=db_path_provider(),
             )
         except reviews_db.IncidentReviewError as exc:

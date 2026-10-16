@@ -25,10 +25,14 @@ test('operations request uses explicit bounded filters, sort, and pagination', a
   }
   try {
     const query = buildIncidentReviewOperationsQuery({ state: 'OPEN', site_id: 3,
-      has_evidence: false, unresolved_only: true, sort: 'oldest_open', limit: 50, offset: 100 })
+      has_evidence: false, has_attention: true, attention_signal: 'AGING_REVIEW',
+      unresolved_only: true, sort: 'oldest_open', limit: 50, offset: 100 })
     assert.match(query, /state=OPEN/)
     assert.match(query, /has_evidence=false/)
     assert.match(query, /unresolved_only=true/)
+    assert.match(query, /has_attention=true/)
+    assert.match(query, /attention_signal=AGING_REVIEW/)
+    assert.match(buildIncidentReviewOperationsQuery({ has_attention: false }), /has_attention=false/)
     await loadIncidentReviewOperations({ state: 'OPEN', sort: 'priority', limit: 10, offset: 20 })
     assert.match(calls[0], /\/incident-review-operations\?/)
     assert.match(calls[0], /sort=priority/)

@@ -4,6 +4,14 @@ import { loadIncidentReviewOperations } from '../services/securityApi.js'
 import { formatReviewAge } from '../services/incidentReviewFormat.js'
 
 const AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
+const ATTENTION_SIGNALS = [
+  ['HIGH_PRIORITY_UNRESOLVED', 'High-priority unresolved'],
+  ['AGING_REVIEW', 'Review aging'],
+  ['NO_RECENT_ACTIVITY', 'No recent activity'],
+  ['REOPENED_REVIEW', 'Reopened review'],
+  ['MISSING_SOURCE_EVIDENCE', 'Missing source evidence'],
+  ['NO_LINKED_EVIDENCE', 'No linked evidence'],
+]
 
 function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [filters, setFilters] = useState({ sort: 'oldest_open', limit: 20, offset: 0 })
@@ -36,7 +44,8 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   return (
     <section className="panel review-operations">
       <div className="panel-heading"><div><p className="panel-kicker">Analyst Operations</p><h2>Review Queue</h2>
-        <p className="security-layer-copy">Priority reflects analyst review workload. Review age is time since creation and does not indicate severity.</p></div>
+        <p className="security-layer-copy">Priority reflects analyst review workload. Review age is time since creation and does not indicate severity.</p>
+        <p className="security-layer-copy">Attention signals describe analyst workflow conditions. They do not change review priority, state, or disposition.</p></div>
         <span className="panel-count">{loading ? '…' : page?.total ?? 0}</span></div>
       {summary && <div className="review-operations-cards">
         <article><span>Total Reviews</span><strong>{summary.total_reviews}</strong></article>
@@ -60,15 +69,16 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <label><span>Review Age</span><select value={filters.age_bucket || ''} onChange={(e) => updateFilter('age_bucket', e.target.value)}><option value="">Any age</option>{Object.entries(AGE_LABELS).map(([v, label]) => <option key={v} value={v}>{label}</option>)}</select></label>
         {['site_id','scope_id','device_id'].map((key) => <label key={key}><span>{key.replace('_id','').replace('_',' ')}</span><input aria-label={key} type="number" min="1" value={filters[key] || ''} onChange={(e) => updateFilter(key, e.target.value)} placeholder="All" /></label>)}
         <label><span>Evidence</span><select value={filters.has_evidence === true ? 'true' : filters.has_evidence === false ? 'false' : ''} onChange={(e) => updateFilter('has_evidence', e.target.value === '' ? '' : e.target.value === 'true')}><option value="">Any</option><option value="true">Has evidence</option><option value="false">No evidence</option></select></label>
+        <label><span>Needs attention</span><select value={filters.has_attention === true ? 'true' : filters.has_attention === false ? 'false' : ''} onChange={(e) => updateFilter('has_attention', e.target.value === '' ? '' : e.target.value === 'true')}><option value="">Any</option><option value="true">Needs attention</option><option value="false">No attention signals</option></select></label>
+        <label><span>Attention signal</span><select value={filters.attention_signal || ''} onChange={(e) => updateFilter('attention_signal', e.target.value)}><option value="">All signals</option>{ATTENTION_SIGNALS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
         <label><span>Sort</span><select value={filters.sort} onChange={(e) => updateFilter('sort', e.target.value)}>{[['oldest_open','Oldest open'],['newest','Newest'],['oldest','Oldest'],['priority','Priority'],['recently_updated','Recently updated']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         <label className="review-operations-check"><input type="checkbox" checked={Boolean(filters.unresolved_only)} onChange={(e) => updateFilter('unresolved_only', e.target.checked)} /> Unresolved only</label>
-        <label className="review-operations-check"><input type="checkbox" checked={filters.has_evidence === true} onChange={(e) => updateFilter('has_evidence', e.target.checked ? true : '')} /> Has linked evidence</label>
         <button type="button" className="clear-filters" onClick={() => setFilters({ sort: 'oldest_open', limit: 20, offset: 0 })}>Clear filters</button>
       </div>
       {error && <div className="error-box">{error}</div>}
       {loading && !data ? <p className="security-empty">Loading review queue…</p> : error && !data ? null : !data?.queue?.length ? <p className="security-empty">No reviews match the selected filters.</p> : (
-        <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr><th>Review</th><th>State</th><th>Priority</th><th>Disposition</th><th>Review Age</th><th>Evidence</th><th>Notes</th><th>Latest Activity</th></tr></thead><tbody>
-          {data.queue.map((row) => <tr key={row.id}><td><button type="button" className="review-queue-select" onClick={() => onSelectReview(row.id)}><strong>{row.title}</strong><small>{row.incident_key}</small></button></td><td>{row.state.replaceAll('_',' ')}</td><td>{row.priority}</td><td>{row.disposition.replaceAll('_',' ')}</td><td>{formatReviewAge(row.age_seconds, row.age_bucket)}</td><td>{row.linked_evidence_count}</td><td>{row.note_count}</td><td>{row.latest_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td></tr>)}
+        <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr><th>Review</th><th>Attention</th><th>State</th><th>Priority</th><th>Disposition</th><th>Review Age</th><th>Evidence</th><th>Notes</th><th>Latest Activity</th></tr></thead><tbody>
+          {data.queue.map((row) => <tr key={row.id}><td><button type="button" className="review-queue-select" onClick={() => onSelectReview(row.id)}><strong>{row.title}</strong><small>{row.incident_key}</small></button></td><td className="review-queue-attention" title={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('\n')} aria-label={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('. ')}>{row.has_attention ? <><strong>{row.attention_signals.slice(0, 2).map((signal) => signal.label).join(' · ')}</strong>{row.attention_signal_count > 2 && <small>+{row.attention_signal_count - 2} more</small>}</> : '—'}</td><td>{row.state.replaceAll('_',' ')}</td><td>{row.priority}</td><td>{row.disposition.replaceAll('_',' ')}</td><td>{formatReviewAge(row.age_seconds, row.age_bucket)}</td><td>{row.linked_evidence_count}</td><td>{row.note_count}</td><td>{row.latest_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td></tr>)}
         </tbody></table></div>
       )}
       {page && <div className="pagination"><span className="pagination-summary">{page.total ? `Page ${currentPage} of ${totalPages} · ${page.total} reviews` : 'No matching reviews'}</span><div className="pagination-actions"><button type="button" disabled={page.offset === 0} onClick={() => setFilters((c) => ({ ...c, offset: Math.max(0, c.offset - c.limit) }))}>Previous</button><button type="button" disabled={currentPage >= totalPages || page.offset >= 100000} onClick={() => setFilters((c) => ({ ...c, offset: c.offset + c.limit }))}>Next</button></div></div>}

@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
+from fastapi import HTTPException
 
 import api.main as api
 from database.db import get_connection, initialize_database
@@ -18,6 +20,7 @@ from database.scopes import create_scope
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_models import PerimeterEvent
 from services.incident_review_operations import build_incident_review_operations
+from services.incident_review_operations import SIGNAL_ORDER
 
 AT = datetime(2026, 10, 13, 11, 0, tzinfo=timezone.utc)
 
@@ -28,6 +31,8 @@ def test_incident_review_operations_summary_queue_filters_and_is_read_only(tmp_p
     now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
     empty = build_incident_review_operations(db_path=path, now=now)
     assert empty['summary']['total_reviews'] == 0
+    assert empty['summary']['reviews_needing_attention'] == 0
+    assert empty['summary']['signal_distribution'] == {code: 0 for code in SIGNAL_ORDER}
     assert empty['summary']['priority_distribution'] == {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
     assert empty['summary']['active_age_buckets'] == {key: 0 for key in ('LT_1H','H1_24','D1_3','D3_7','GT_7D')}
 
@@ -87,28 +92,158 @@ def test_incident_review_operations_api_shape_and_get_does_not_mutate(tmp_path, 
     with get_connection(path) as connection:
         before = (connection.execute('SELECT COUNT(*) FROM incident_reviews').fetchone()[0],
                   connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0],
-                  connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0])
+                  connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0],
+                  connection.execute('SELECT COUNT(*) FROM threat_detections').fetchone()[0])
     routes = {(route.path, method): route.endpoint for route in api.app.routes
               if hasattr(route, 'endpoint') for method in getattr(route, 'methods', ())}
     response = routes[('/incident-review-operations','GET')](
         state=None, priority=None, disposition=None, site_id=None, scope_id=None,
         device_id=None, has_evidence=None, age_bucket=None, unresolved_only=False,
-        sort='newest', limit=20, offset=0)
+        has_attention=None, attention_signal=None, sort='newest', limit=20, offset=0)
     assert set(response) == {'summary', 'queue', 'pagination'}
     assert set(response['queue'][0]) == {
         'id','incident_key','title','state','priority','confidence','disposition',
         'site_id','scope_id','device_id','created_at','updated_at','first_evidence_at',
         'last_evidence_at','closed_at','has_final_summary','linked_evidence_count',
-        'note_count','latest_activity_at','age_seconds','age_bucket',
+        'note_count','latest_activity_at','age_seconds','age_bucket','attention_signals',
+        'attention_signal_count','has_attention',
     }
     assert response['queue'][0]['id'] == review['id']
+    assert response['queue'][0]['has_attention'] is True
+    assert response['queue'][0]['attention_signals'][-1]['code'] == 'NO_LINKED_EVIDENCE'
+    filtered = routes[('/incident-review-operations','GET')](
+        state=None, priority=None, disposition=None, site_id=None, scope_id=None,
+        device_id=None, has_evidence=None, age_bucket=None, unresolved_only=False,
+        has_attention=True, attention_signal='NO_LINKED_EVIDENCE',
+        sort='newest', limit=20, offset=0)
+    assert filtered['pagination']['total'] == 1
+    with pytest.raises(HTTPException):
+        routes[('/incident-review-operations','GET')](
+            state=None, priority=None, disposition=None, site_id=None, scope_id=None,
+            device_id=None, has_evidence=None, age_bucket=None, unresolved_only=False,
+            has_attention=False, attention_signal='NO_LINKED_EVIDENCE',
+            sort='newest', limit=20, offset=0)
     assert response['pagination'] == {'total': 1, 'limit': 20, 'offset': 0}
     assert routes[('/incident-reviews','GET')](state=None, priority=None, site_id=None,
         scope_id=None, device_id=None, disposition=None, limit=20, offset=0)['total'] == 1
     with get_connection(path) as connection:
         after = (connection.execute('SELECT COUNT(*) FROM incident_reviews').fetchone()[0],
                  connection.execute('SELECT COUNT(*) FROM incident_review_events').fetchone()[0],
-                 connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0])
+                 connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0],
+                 connection.execute('SELECT COUNT(*) FROM threat_detections').fetchone()[0])
+    assert after == before
+
+
+def test_incident_review_operations_attention_signals_filters_and_read_only(tmp_path):
+    path = tmp_path / 'review-operations-attention.db'
+    initialize_database(path)
+    now = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+    now_text = now.isoformat()
+
+    def raw_review(key, *, state='OPEN', priority='LOW', created=now, updated=now,
+                   closed=None, disposition='UNREVIEWED', site_id=None):
+        with get_connection(path) as connection:
+            cursor = connection.execute('''INSERT INTO incident_reviews (
+                incident_key,title,summary,state,priority,confidence,created_at,updated_at,
+                closed_at,disposition,site_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                (key,key,'',state,priority,'MEDIUM',created.isoformat(),updated.isoformat(),
+                 closed.isoformat() if closed else None,disposition,site_id))
+            return cursor.lastrowid
+
+    def event(review_id, event_type, at):
+        with get_connection(path) as connection:
+            connection.execute('''INSERT INTO incident_review_events
+                (incident_review_id,event_type,actor_source,created_at) VALUES (?,?,?,?)''',
+                (review_id,event_type,'OPERATOR',at.isoformat()))
+
+    site = RemoteSensorStore(path).create_site('Signal source site')
+    available_source = _detection(path,site['id'],40)
+    clean = raw_review('clean', created=now-timedelta(hours=2), site_id=site['id'])
+    event(clean,'REVIEW_CREATED',now-timedelta(hours=2))
+    exactly_day = raw_review('exact-day', priority='HIGH', created=now-timedelta(days=1))
+    event(exactly_day,'REVIEW_CREATED',now-timedelta(hours=1))
+    below_day = raw_review('below-day', created=now-timedelta(hours=23, seconds=59))
+    event(below_day,'REVIEW_CREATED',now-timedelta(hours=1))
+    exactly_week = raw_review('exact-week', created=now-timedelta(days=8), updated=now-timedelta(days=7))
+    recent_note = raw_review('recent-note', created=now-timedelta(days=8), updated=now-timedelta(days=8))
+    event(recent_note,'REVIEW_CREATED',now-timedelta(days=8))
+    recent_event = raw_review('recent-event', created=now-timedelta(days=8), updated=now-timedelta(days=8))
+    event(recent_event,'REVIEW_CREATED',now-timedelta(days=6))
+    with get_connection(path) as connection:
+        connection.execute('''INSERT INTO incident_review_notes
+            (incident_review_id,note_text,actor_source,created_at) VALUES (?,?,?,?)''',
+            (recent_note,'Recent note','OPERATOR',(now-timedelta(days=6)).isoformat()))
+    reopened = raw_review('reopened', priority='CRITICAL', created=now-timedelta(days=8))
+    event(reopened,'REVIEW_CLOSED',now-timedelta(days=6))
+    event(reopened,'REVIEW_REOPENED',now-timedelta(days=5))
+    tie_reopened = raw_review('tie-reopened', created=now-timedelta(hours=1))
+    event(tie_reopened,'REVIEW_CLOSED',now-timedelta(hours=1))
+    event(tie_reopened,'REVIEW_REOPENED',now-timedelta(hours=1))
+    tie_closed = raw_review('tie-closed', created=now-timedelta(hours=1))
+    event(tie_closed,'REVIEW_REOPENED',now-timedelta(hours=1))
+    event(tie_closed,'REVIEW_CLOSED',now-timedelta(hours=1))
+    closed_high = raw_review('closed-high', state='CLOSED', priority='CRITICAL',
+        created=now-timedelta(days=10), closed=now-timedelta(days=1))
+    event(closed_high,'REVIEW_REOPENED',now-timedelta(hours=1))
+    event(closed_high,'REVIEW_CLOSED',now)
+    missing = raw_review('missing', priority='HIGH', created=now-timedelta(days=8))
+    event(missing,'REVIEW_CLOSED',now-timedelta(days=6))
+    event(missing,'REVIEW_REOPENED',now-timedelta(days=5))
+    with get_connection(path) as connection:
+        connection.execute('''INSERT INTO incident_review_evidence
+            (incident_id,evidence_type,evidence_id,observed_at,added_at) VALUES (?,?,?,?,?)''',
+            (clean,'PERIMETER_DETECTION',available_source['id'],now_text,now_text))
+        connection.execute('''INSERT INTO incident_review_evidence
+            (incident_id,evidence_type,evidence_id,observed_at,added_at) VALUES (?,?,?,?,?)''',
+            (missing,'THREAT_DETECTION',987654,now_text,now_text))
+        connection.execute('''INSERT INTO incident_review_evidence
+            (incident_id,evidence_type,evidence_id,observed_at,added_at) VALUES (?,?,?,?,?)''',
+            (reopened,'THREAT_DETECTION',987655,now_text,now_text))
+
+    before = {}
+    with get_connection(path) as connection:
+        connection.row_factory = sqlite3.Row
+        before = {row['id']: (row['state'],row['priority'],row['confidence'],row['disposition'])
+                  for row in connection.execute('SELECT * FROM incident_reviews')}
+        evidence_before = connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0]
+    result = build_incident_review_operations(db_path=path, now=now)
+    by_id = {row['id']: row for row in result['queue']}
+    assert by_id[clean]['attention_signals'] == []
+    assert by_id[exactly_day]['attention_signals'][0]['code'] == 'HIGH_PRIORITY_UNRESOLVED'
+    assert 'AGING_REVIEW' in [s['code'] for s in by_id[exactly_day]['attention_signals']]
+    assert 'AGING_REVIEW' not in [s['code'] for s in by_id[below_day]['attention_signals']]
+    assert 'HIGH_PRIORITY_UNRESOLVED' in [s['code'] for s in by_id[exactly_day]['attention_signals']]
+    assert 'NO_RECENT_ACTIVITY' in [s['code'] for s in by_id[exactly_week]['attention_signals']]
+    assert 'NO_RECENT_ACTIVITY' not in [s['code'] for s in by_id[recent_note]['attention_signals']]
+    assert 'NO_RECENT_ACTIVITY' not in [s['code'] for s in by_id[recent_event]['attention_signals']]
+    assert 'REOPENED_REVIEW' in [s['code'] for s in by_id[reopened]['attention_signals']]
+    assert 'HIGH_PRIORITY_UNRESOLVED' in [s['code'] for s in by_id[reopened]['attention_signals']]
+    assert 'REOPENED_REVIEW' in [s['code'] for s in by_id[tie_reopened]['attention_signals']]
+    assert 'REOPENED_REVIEW' not in [s['code'] for s in by_id[tie_closed]['attention_signals']]
+    assert by_id[closed_high]['attention_signals'] == []
+    assert 'MISSING_SOURCE_EVIDENCE' in [s['code'] for s in by_id[missing]['attention_signals']]
+    assert 'NO_LINKED_EVIDENCE' not in [s['code'] for s in by_id[missing]['attention_signals']]
+    assert 'NO_LINKED_EVIDENCE' in [s['code'] for s in by_id[below_day]['attention_signals']]
+    codes = [s['code'] for s in by_id[missing]['attention_signals']]
+    assert codes == [code for code in SIGNAL_ORDER if code in codes]
+    assert len(codes) == len(set(codes)) <= 6
+    assert all(set(signal) == {'code','label','reason'} for signal in by_id[missing]['attention_signals'])
+    assert by_id[missing]['attention_signal_count'] == len(codes)
+    assert by_id[missing]['has_attention'] is True
+    assert result['summary']['signal_distribution']['AGING_REVIEW'] >= 1
+    assert result['summary']['reviews_needing_attention'] == sum(
+        row['state'] != 'CLOSED' and row['has_attention'] for row in result['queue'])
+    assert by_id[closed_high]['has_attention'] is False
+    assert build_incident_review_operations(db_path=path, now=now, has_attention=True)['pagination']['total'] == result['summary']['reviews_needing_attention']
+    assert build_incident_review_operations(db_path=path, now=now, has_attention=False)['pagination']['total'] == len([r for r in result['queue'] if not r['has_attention']])
+    assert build_incident_review_operations(db_path=path, now=now, attention_signal='REOPENED_REVIEW')['pagination']['total'] == 3
+    with pytest.raises(IncidentReviewError):
+        build_incident_review_operations(db_path=path, now=now, has_attention=False, attention_signal='AGING_REVIEW')
+    with get_connection(path) as connection:
+        connection.row_factory = sqlite3.Row
+        after = {row['id']: (row['state'],row['priority'],row['confidence'],row['disposition'])
+                 for row in connection.execute('SELECT * FROM incident_reviews')}
+        assert connection.execute('SELECT COUNT(*) FROM incident_review_evidence').fetchone()[0] == evidence_before
     assert after == before
 
 

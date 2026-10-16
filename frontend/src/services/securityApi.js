@@ -42,7 +42,7 @@ export function buildIncidentReviewOperationsQuery(filters = {}) {
     sort: filters.sort ?? 'newest',
   })
   for (const key of ['state', 'priority', 'disposition', 'site_id', 'scope_id',
-    'device_id', 'has_evidence', 'age_bucket']) {
+    'device_id', 'has_evidence', 'age_bucket', 'has_attention', 'attention_signal']) {
     const value = filters[key]
     if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
   }
