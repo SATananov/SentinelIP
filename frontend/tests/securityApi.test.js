@@ -29,6 +29,8 @@ import {
   applyDeviceDrilldown,
   applyScopeDrilldown,
   applySiteContextToQueue,
+  isCurrentReviewQueueResult,
+  requestIncidentReviewSelection,
   siteContextFromWorkloadRow,
 } from '../src/services/incidentReviewOperationsState.js'
 
@@ -178,6 +180,21 @@ test('site, scope, and device drill-down transitions preserve context and reset 
   assert.deepEqual(applyDeviceDrilldown({ unattributed_only: true, scope_id: 3, offset: 20 }, 8), {
     unattributed_only: true, scope_id: 3, device_id: 8, offset: 0,
   })
+})
+
+test('a queue result is visible only for the filter and page query that requested it', () => {
+  const response = { queryKey: '{"site_id":2,"offset":0}', result: { queue: [{ id: 3 }] } }
+  assert.deepEqual(isCurrentReviewQueueResult(response, '{"site_id":2,"offset":0}'), { queue: [{ id: 3 }] })
+  assert.equal(isCurrentReviewQueueResult(response, '{"site_id":9,"offset":0}'), null)
+  assert.equal(isCurrentReviewQueueResult(response, '{"site_id":2,"offset":20}'), null)
+})
+
+test('queue and activity selection use the same controlled review navigation callback', () => {
+  for (const source of ['queue', 'activity']) {
+    let selectedReviewId = null
+    requestIncidentReviewSelection(41, (reviewId) => { selectedReviewId = reviewId })
+    assert.equal(selectedReviewId, 41, `${source} selection reaches the controlled detail selection`)
+  }
 })
 
 test('review age labels are workload buckets and closed age is blank', () => {

@@ -1,23 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from 'recharts'
-
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   loadIncidentReviewDevices,
-  loadIncidentReviewActivity,
   loadIncidentReviewOperations,
   loadIncidentReviewScopes,
   loadIncidentReviewSites,
-  loadIncidentReviewTrends,
 } from '../services/securityApi.js'
 import { formatReviewAge, formatSiteWorkloadAge } from '../services/incidentReviewFormat.js'
+import ReviewActivitySection from './ReviewActivitySection.jsx'
+import WorkloadTrendsSection from './WorkloadTrendsSection.jsx'
 import {
   applyDeviceDrilldown,
   applyScopeDrilldown,
   applySiteContextToQueue,
+  isCurrentReviewQueueResult,
+  requestIncidentReviewSelection,
   siteContextFromWorkloadRow,
 } from '../services/incidentReviewOperationsState.js'
+import { createOperationsRequestGuard } from '../services/incidentReviewRequestGuard.js'
 
 const AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
 const ATTENTION_SIGNALS = [
@@ -28,27 +27,10 @@ const ATTENTION_SIGNALS = [
   ['MISSING_SOURCE_EVIDENCE', 'Missing source evidence'],
   ['NO_LINKED_EVIDENCE', 'No linked evidence'],
 ]
-const ACTIVITY_EVENT_TYPES = [
-  'REVIEW_CREATED', 'STATE_CHANGED', 'REVIEW_CLOSED', 'REVIEW_REOPENED',
-  'PRIORITY_CHANGED', 'CONFIDENCE_CHANGED', 'DISPOSITION_CHANGED', 'REVIEW_FIELD_CHANGED',
-  'FINAL_SUMMARY_CHANGED', 'ANALYST_NOTE_ADDED', 'ANALYST_NOTE_CLEARED',
-  'EVIDENCE_ATTACHED', 'EVIDENCE_DETACHED',
-]
-const TREND_AGE_LABELS = { LT_1H: '< 1h', H1_24: '1h–24h', D1_3: '1d–3d', D3_7: '3d–7d', GT_7D: '> 7d' }
-
-function formatTrendTick(value, window) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return window === '24h'
-    ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(date)
-    : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(date)
-}
-
-function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
+function IncidentReviewOperations({ refreshSignal, onSelectReview, reviewDetail = null }) {
   const [filters, setFilters] = useState({ sort: 'oldest_open', limit: 20, offset: 0 })
   const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [queueRequest, setQueueRequest] = useState({ queryKey: null, loading: false, error: null })
   const [siteOptions, setSiteOptions] = useState({ sort: 'unresolved_desc', limit: 20, offset: 0 })
   const [siteData, setSiteData] = useState(null)
   const [siteLoading, setSiteLoading] = useState(false)
@@ -63,38 +45,45 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   const [deviceData, setDeviceData] = useState(null)
   const [deviceLoading, setDeviceLoading] = useState(false)
   const [deviceError, setDeviceError] = useState(null)
-  const [activityOptions, setActivityOptions] = useState({ limit: 20, offset: 0, event_type: '', site_id: '' })
-  const [activityData, setActivityData] = useState(null)
-  const [activityLoading, setActivityLoading] = useState(false)
-  const [activityError, setActivityError] = useState(null)
-  const [trendWindow, setTrendWindow] = useState('30d')
-  const [trendData, setTrendData] = useState(null)
-  const [trendLoading, setTrendLoading] = useState(false)
-  const [trendError, setTrendError] = useState(null)
+  const requestGuard = useRef(createOperationsRequestGuard())
   const query = useMemo(() => ({ ...filters }), [filters])
+  const queryKey = JSON.stringify(query)
 
   useEffect(() => {
+    const guard = requestGuard.current
+    const generation = guard.begin('queue')
     const controller = new AbortController()
     Promise.resolve().then(() => {
-      if (!controller.signal.aborted) { setLoading(true); setError(null) }
+      if (controller.signal.aborted) return null
+      setQueueRequest({ queryKey, loading: true, error: null })
       return loadIncidentReviewOperations(query, controller.signal)
     })
-      .then((result) => { if (!controller.signal.aborted) setData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
-  }, [query, refreshSignal])
+      .then((result) => {
+        if (!controller.signal.aborted && guard.isCurrent('queue', generation) && result) {
+          setData({ queryKey, result })
+          setQueueRequest({ queryKey, loading: false, error: null })
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted && guard.isCurrent('queue', generation) && err.name !== 'AbortError') {
+          setQueueRequest({ queryKey, loading: false, error: err.message })
+        }
+      })
+    return () => { controller.abort(); guard.invalidate('queue') }
+  }, [query, queryKey, refreshSignal])
 
   useEffect(() => {
+    const guard = requestGuard.current
+    const generation = guard.begin('sites')
     const controller = new AbortController()
     Promise.resolve().then(() => {
       if (!controller.signal.aborted) { setSiteLoading(true); setSiteError(null) }
       return loadIncidentReviewSites(siteOptions, controller.signal)
     })
-      .then((result) => { if (!controller.signal.aborted) setSiteData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setSiteError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setSiteLoading(false) })
-    return () => controller.abort()
+      .then((result) => { if (!controller.signal.aborted && guard.isCurrent('sites', generation)) setSiteData(result) })
+      .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('sites', generation) && err.name !== 'AbortError') setSiteError(err.message) })
+      .finally(() => { if (!controller.signal.aborted && guard.isCurrent('sites', generation)) setSiteLoading(false) })
+    return () => { controller.abort(); guard.invalidate('sites') }
   }, [siteOptions, refreshSignal])
 
   const workloadContext = useMemo(() => selectedSiteContext ? {
@@ -104,53 +93,33 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
 
   useEffect(() => {
     if (!workloadContext || workloadTab !== 'scopes') return undefined
+    const guard = requestGuard.current
+    const generation = guard.begin('scopes')
     const controller = new AbortController()
     Promise.resolve().then(() => {
       if (!controller.signal.aborted) { setScopeLoading(true); setScopeError(null) }
       return loadIncidentReviewScopes(workloadContext, scopeOptions, controller.signal)
     })
-      .then((result) => { if (!controller.signal.aborted) setScopeData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setScopeError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setScopeLoading(false) })
-    return () => controller.abort()
+      .then((result) => { if (!controller.signal.aborted && guard.isCurrent('scopes', generation)) setScopeData(result) })
+      .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('scopes', generation) && err.name !== 'AbortError') setScopeError(err.message) })
+      .finally(() => { if (!controller.signal.aborted && guard.isCurrent('scopes', generation)) setScopeLoading(false) })
+    return () => { controller.abort(); guard.invalidate('scopes') }
   }, [workloadContext, workloadTab, scopeOptions, refreshSignal])
 
   useEffect(() => {
     if (!workloadContext || workloadTab !== 'devices') return undefined
+    const guard = requestGuard.current
+    const generation = guard.begin('devices')
     const controller = new AbortController()
     Promise.resolve().then(() => {
       if (!controller.signal.aborted) { setDeviceLoading(true); setDeviceError(null) }
       return loadIncidentReviewDevices(workloadContext, deviceOptions, controller.signal)
     })
-      .then((result) => { if (!controller.signal.aborted) setDeviceData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setDeviceError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setDeviceLoading(false) })
-    return () => controller.abort()
+      .then((result) => { if (!controller.signal.aborted && guard.isCurrent('devices', generation)) setDeviceData(result) })
+      .catch((err) => { if (!controller.signal.aborted && guard.isCurrent('devices', generation) && err.name !== 'AbortError') setDeviceError(err.message) })
+      .finally(() => { if (!controller.signal.aborted && guard.isCurrent('devices', generation)) setDeviceLoading(false) })
+    return () => { controller.abort(); guard.invalidate('devices') }
   }, [workloadContext, workloadTab, deviceOptions, refreshSignal])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    Promise.resolve().then(() => {
-      if (!controller.signal.aborted) { setActivityLoading(true); setActivityError(null) }
-      return loadIncidentReviewActivity(activityOptions, controller.signal)
-    })
-      .then((result) => { if (!controller.signal.aborted) setActivityData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setActivityError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setActivityLoading(false) })
-    return () => controller.abort()
-  }, [activityOptions, refreshSignal])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    Promise.resolve().then(() => {
-      if (!controller.signal.aborted) { setTrendLoading(true); setTrendError(null) }
-      return loadIncidentReviewTrends(trendWindow, controller.signal)
-    })
-      .then((result) => { if (!controller.signal.aborted) setTrendData(result) })
-      .catch((err) => { if (err.name !== 'AbortError') setTrendError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setTrendLoading(false) })
-    return () => controller.abort()
-  }, [trendWindow, refreshSignal])
 
   function updateFilter(key, value) {
     if (key === 'site_id') {
@@ -168,7 +137,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
   }
 
   function selectSite(siteRow) {
-    const context = siteContextFromWorkloadRow(siteRow)
+    const context = { ...siteContextFromWorkloadRow(siteRow), site_name: siteRow.site_name ?? null }
     setSelectedSiteContext(context)
     setScopeData(null)
     setDeviceData(null)
@@ -196,14 +165,17 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
     setFilters({ sort: 'oldest_open', limit: 20, offset: 0 })
   }
 
-  const summary = data?.summary
-  const page = data?.pagination
+  const currentQueueData = isCurrentReviewQueueResult(data, queryKey)
+  const summary = currentQueueData?.summary
+  const page = currentQueueData?.pagination
+  const loading = queueRequest.queryKey === queryKey ? queueRequest.loading : !currentQueueData
+  const error = queueRequest.queryKey === queryKey ? queueRequest.error : null
   const totalPages = page ? Math.max(1, Math.ceil(page.total / page.limit)) : 1
   const currentPage = page ? Math.floor(page.offset / page.limit) + 1 : 1
 
   return (
     <section className="panel review-operations">
-      <div className="panel-heading"><div><p className="panel-kicker">Analyst Operations</p><h2>Review Queue</h2>
+      <div className="panel-heading"><div><p className="panel-kicker">Analyst Operations</p><h2>Operations Summary</h2>
         <p className="security-layer-copy">Priority reflects analyst review workload. Review age is time since creation and does not indicate severity.</p>
         <p className="security-layer-copy">Attention signals describe analyst workflow conditions. They do not change review priority, state, or disposition.</p></div>
         <span className="panel-count">{loading ? '…' : page?.total ?? 0}</span></div>
@@ -213,6 +185,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <article><span>In Review</span><strong>{summary.in_review_count}</strong></article>
         <article><span>Closed Reviews</span><strong>{summary.closed_count}</strong></article>
         <article><span>Unresolved</span><strong>{summary.unresolved_count}</strong></article>
+        <article><span>Needs Attention</span><strong>{summary.reviews_needing_attention}</strong></article>
         <article><span>Created · 24h</span><strong>{summary.created_last_24h}</strong></article>
         <article><span>Closed · 24h</span><strong>{summary.closed_last_24h}</strong></article>
       </div>}
@@ -222,44 +195,6 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <div><strong>Disposition</strong>{Object.entries(summary.disposition_distribution).map(([key, count]) => <span key={key}>{key.replaceAll('_',' ')}: {count}</span>)}</div>
         <div><strong>Reviews by Site</strong>{summary.reviews_by_site.map(({ site_id, count }) => <span key={site_id ?? 'unattributed'}>{site_id === null ? 'Unattributed' : `Site ${site_id}`}: {count}</span>)}</div>
       </div>}
-      <section className="review-workload-trends" aria-labelledby="review-workload-trends-title">
-        <div className="review-site-workload-heading"><div><h3 id="review-workload-trends-title">Workload Trends</h3>
-          <p className="security-layer-copy">Closure and reopen series reflect recorded workflow events. Current workload and aging are present-state values.</p></div>
-          <label><span>Time window</span><select value={trendWindow} onChange={(event) => setTrendWindow(event.target.value)}>
-            {['24h','7d','30d','90d'].map((value) => <option key={value} value={value}>{value}</option>)}
-          </select></label>
-        </div>
-        {trendError && <div className="error-box">{trendError}</div>}
-        {trendLoading && !trendData ? <p className="security-empty">Loading workload trends…</p>
-          : trendError && !trendData ? null : trendData && <>
-            <p className="security-layer-copy">Historical activity · {trendData.window_start.replace('T',' ').replace('+00:00','Z')} to {trendData.window_end.replace('T',' ').replace('+00:00','Z')} UTC</p>
-            <div className="review-trend-chart" role="img" aria-label={`Historical review workload trends for ${trendData.window}`}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData.series} margin={{ top: 8, right: 18, bottom: 4, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#303642" />
-                  <XAxis dataKey="bucket_start" tickFormatter={(value) => formatTrendTick(value, trendData.window)} minTickGap={24} stroke="#8d95a5" />
-                  <YAxis allowDecimals={false} width={36} stroke="#8d95a5" />
-                  <Tooltip labelFormatter={(value) => `${formatTrendTick(value, trendData.window)} UTC`} />
-                  <Legend />
-                  <Line type="monotone" dataKey="reviews_created" name="Reviews Created" stroke="#70a7ff" dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="review_close_events" name="Review Closures" stroke="#64c9a5" dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="review_reopen_events" name="Review Reopens" stroke="#d6ae62" dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="review-trend-current">
-              <section aria-labelledby="review-current-workload-title"><h4 id="review-current-workload-title">Current Workload</h4>
-                <div className="review-trend-cards">
-                  {[["Open",'open_count'],["In Review",'in_review_count'],["Closed",'closed_count'],["Unresolved",'unresolved_count'],["Needs Attention",'reviews_needing_attention'],["Oldest Active Review",'oldest_active_age_seconds']].map(([label,key]) => <article key={key}><span>{label}</span><strong>{key === 'oldest_active_age_seconds' ? (trendData.current_snapshot[key] === null ? '—' : formatSiteWorkloadAge(trendData.current_snapshot[key])) : trendData.current_snapshot[key]}</strong></article>)}
-                </div>
-                {trendData.current_snapshot.open_count + trendData.current_snapshot.in_review_count + trendData.current_snapshot.closed_count === 0 && <p className="security-empty">No reviews in the current workload snapshot.</p>}
-              </section>
-              <section aria-labelledby="review-current-aging-title"><h4 id="review-current-aging-title">Current Aging</h4>
-                <div className="review-trend-aging">{Object.entries(trendData.current_snapshot.age_buckets).map(([key,count]) => <article key={key}><span>{TREND_AGE_LABELS[key]}</span><strong>{count}</strong></article>)}</div>
-              </section>
-            </div>
-          </>}
-      </section>
       <section className="review-site-workload" aria-labelledby="review-site-workload-title">
         <div className="review-site-workload-heading"><h3 id="review-site-workload-title">Site Workload</h3>
           <label><span>Sort sites</span><select value={siteOptions.sort} onChange={(event) => setSiteOptions((current) => ({ ...current, sort: event.target.value, offset: 0 }))}>
@@ -290,7 +225,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
       <section className="review-attribution-workload" aria-labelledby="review-attribution-workload-title">
         <h3 id="review-attribution-workload-title">Scope &amp; Device Workload</h3>
         {!selectedSiteContext ? <p className="security-empty">Select a site to view scope and device workload.</p> : <>
-          <p className="security-layer-copy">Selected context: {selectedSiteContext.site_id === null ? 'Unattributed' : `Site #${selectedSiteContext.site_id}`}. Workload reflects review attribution only.</p>
+          <p className="security-layer-copy">Selected context: {selectedSiteContext.site_id === null ? 'Unattributed' : (selectedSiteContext.site_name || `Site #${selectedSiteContext.site_id}`)}. Workload reflects review attribution only.</p>
           <div className="review-workload-tabs" role="tablist" aria-label="Scope and device workload">
             <button type="button" role="tab" aria-selected={workloadTab === 'scopes'} onClick={() => setWorkloadTab('scopes')}>Scope Workload</button>
             <button type="button" role="tab" aria-selected={workloadTab === 'devices'} onClick={() => setWorkloadTab('devices')}>Device Workload</button>
@@ -325,6 +260,7 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
           </div>}
         </>}
       </section>
+      <h3 className="review-queue-heading">Review Queue</h3>
       <div className="filters review-operations-filters">
         <label><span>State</span><select value={filters.state || ''} onChange={(e) => updateFilter('state', e.target.value)}><option value="">All states</option><option>OPEN</option><option>IN_REVIEW</option><option>CLOSED</option></select></label>
         <label><span>Priority</span><select value={filters.priority || ''} onChange={(e) => updateFilter('priority', e.target.value)}><option value="">All priorities</option>{['CRITICAL','HIGH','MEDIUM','LOW'].map((v) => <option key={v}>{v}</option>)}</select></label>
@@ -339,38 +275,17 @@ function IncidentReviewOperations({ refreshSignal, onSelectReview }) {
         <button type="button" className="clear-filters" onClick={clearFilters}>Clear filters</button>
       </div>
       {error && <div className="error-box">{error}</div>}
-      {loading && !data ? <p className="security-empty">Loading review queue…</p> : error && !data ? null : !data?.queue?.length ? <p className="security-empty">No reviews match the selected filters.</p> : (
+      {error && currentQueueData && <p className="security-layer-copy">Showing the last loaded results for the current queue filters.</p>}
+      {loading && !currentQueueData ? <p className="security-empty" role="status">Loading review queue…</p> : error && !currentQueueData ? null : !currentQueueData?.queue?.length ? <p className="security-empty">No reviews match the selected filters.</p> : (
         <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr><th>Review</th><th>Attention</th><th>State</th><th>Priority</th><th>Disposition</th><th>Review Age</th><th>Evidence</th><th>Notes</th><th>Latest Activity</th></tr></thead><tbody>
-          {data.queue.map((row) => <tr key={row.id}><td><button type="button" className="review-queue-select" onClick={() => onSelectReview(row.id)}><strong>{row.title}</strong><small>{row.incident_key}</small></button></td><td className="review-queue-attention" title={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('\n')} aria-label={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('. ')}>{row.has_attention ? <><strong>{row.attention_signals.slice(0, 2).map((signal) => signal.label).join(' · ')}</strong>{row.attention_signal_count > 2 && <small>+{row.attention_signal_count - 2} more</small>}</> : '—'}</td><td>{row.state.replaceAll('_',' ')}</td><td>{row.priority}</td><td>{row.disposition.replaceAll('_',' ')}</td><td>{formatReviewAge(row.age_seconds, row.age_bucket)}</td><td>{row.linked_evidence_count}</td><td>{row.note_count}</td><td>{row.latest_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td></tr>)}
+          {currentQueueData.queue.map((row) => <tr key={row.id}><td><button type="button" className="review-queue-select" onClick={() => requestIncidentReviewSelection(row.id, onSelectReview)}><strong>{row.title}</strong><small>{row.incident_key}</small></button></td><td className="review-queue-attention" title={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('\n')} aria-label={row.attention_signals.map((signal) => `${signal.label}: ${signal.reason}`).join('. ')}>{row.has_attention ? <><strong>{row.attention_signals.slice(0, 2).map((signal) => signal.label).join(' · ')}</strong>{row.attention_signal_count > 2 && <small>+{row.attention_signal_count - 2} more</small>}</> : '—'}</td><td>{row.state.replaceAll('_',' ')}</td><td>{row.priority}</td><td>{row.disposition.replaceAll('_',' ')}</td><td>{formatReviewAge(row.age_seconds, row.age_bucket)}</td><td>{row.linked_evidence_count}</td><td>{row.note_count}</td><td>{row.latest_activity_at?.replace('T',' ').replace('+00:00','Z') || '—'}</td></tr>)}
         </tbody></table></div>
       )}
-      {page && <div className="pagination"><span className="pagination-summary">{page.total ? `Page ${currentPage} of ${totalPages} · ${page.total} reviews` : 'No matching reviews'}</span><div className="pagination-actions"><button type="button" disabled={page.offset === 0} onClick={() => setFilters((c) => ({ ...c, offset: Math.max(0, c.offset - c.limit) }))}>Previous</button><button type="button" disabled={currentPage >= totalPages || page.offset >= 100000} onClick={() => setFilters((c) => ({ ...c, offset: c.offset + c.limit }))}>Next</button></div></div>}
-      <section className="review-activity-feed" aria-labelledby="review-activity-feed-title">
-        <div className="review-site-workload-heading"><div><h3 id="review-activity-feed-title">Recent Review Activity</h3>
-          <p className="security-layer-copy">Site, scope, and device context reflects the review’s current attribution.</p></div>
-          <div className="review-activity-filters">
-            <label><span>Event type</span><select value={activityOptions.event_type} onChange={(event) => setActivityOptions((current) => ({ ...current, event_type: event.target.value, offset: 0 }))}>
-              <option value="">All activity</option>{ACTIVITY_EVENT_TYPES.map((kind) => <option key={kind} value={kind}>{kind.replaceAll('_', ' ')}</option>)}
-            </select></label>
-            <label><span>Site ID</span><input type="number" min="1" value={activityOptions.site_id} onChange={(event) => setActivityOptions((current) => ({ ...current, site_id: event.target.value, offset: 0 }))} placeholder="All sites" /></label>
-          </div>
-        </div>
-        {activityError && <div className="error-box">{activityError}</div>}
-        {activityLoading && !activityData ? <p className="security-empty">Loading review activity…</p>
-          : activityError && !activityData ? null
-            : !activityData?.activity?.length ? <p className="security-empty">No review activity matches the selected filters.</p>
-              : <div className="review-queue-table-wrap"><table className="review-queue-table"><thead><tr>
-                <th>Time</th><th>Review</th><th>Activity</th><th>Current Site</th><th>Actor</th>
-              </tr></thead><tbody>{activityData.activity.map((item) => <tr key={item.event_id}>
-                <td>{item.created_at.replace('T', ' ').replace('+00:00', 'Z')}</td>
-                <td><button type="button" className="review-queue-select" onClick={() => onSelectReview(item.incident_review_id)}><strong>{item.incident_key}</strong><small>{item.review_title}</small></button></td>
-                <td>{item.summary}</td><td>{item.site_name ?? (item.site_id === null ? 'Unattributed' : `Site ${item.site_id}`)}</td><td>{item.actor_source}</td>
-              </tr>)}</tbody></table></div>}
-        {activityData?.pagination && <div className="pagination"><span className="pagination-summary">{activityData.pagination.total ? `Page ${Math.floor(activityData.pagination.offset / activityData.pagination.limit) + 1} of ${Math.max(1, Math.ceil(activityData.pagination.total / activityData.pagination.limit))} · ${activityData.pagination.total} events` : 'No matching activity'}</span><div className="pagination-actions">
-          <button type="button" disabled={activityData.pagination.offset === 0} onClick={() => setActivityOptions((current) => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button>
-          <button type="button" disabled={activityData.pagination.offset + activityData.pagination.limit >= activityData.pagination.total || activityData.pagination.offset >= 100000} onClick={() => setActivityOptions((current) => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
-        </div></div>}
-      </section>
+      {loading && currentQueueData && <p className="security-layer-copy" role="status">Updating review queue…</p>}
+      {page && <div className="pagination"><span className="pagination-summary">{page.total ? `Page ${currentPage} of ${totalPages} · ${page.total} reviews` : 'No matching reviews'}</span><div className="pagination-actions"><button type="button" disabled={page.offset === 0 || loading} onClick={() => setFilters((c) => ({ ...c, offset: Math.max(0, c.offset - c.limit) }))}>Previous</button><button type="button" disabled={currentPage >= totalPages || page.offset >= 100000 || loading} onClick={() => setFilters((c) => ({ ...c, offset: c.offset + c.limit }))}>Next</button></div></div>}
+      {reviewDetail}
+      <ReviewActivitySection refreshSignal={refreshSignal} onSelectReview={onSelectReview} />
+      <WorkloadTrendsSection refreshSignal={refreshSignal} />
     </section>
   )
 }

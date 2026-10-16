@@ -33,3 +33,11 @@ export function applyDeviceDrilldown(filters, deviceId) {
   return { ...next, offset: 0 }
 }
 
+export function isCurrentReviewQueueResult(data, queryKey) {
+  return data?.queryKey === queryKey ? data.result : null
+}
+
+export function requestIncidentReviewSelection(reviewId, onSelectReview) {
+  onSelectReview?.(reviewId)
+}
+

@@ -332,7 +332,12 @@ function SecurityReviewPanel({ refreshSignal }) {
 
   return (
     <section className="security-layer">
-      <IncidentReviewOperations refreshSignal={refreshSignal} onSelectReview={setSelectedReviewId} />
+      <IncidentReviewOperations
+        refreshSignal={refreshSignal}
+        onSelectReview={setSelectedReviewId}
+        reviewDetail={<IncidentReviewSection refreshSignal={refreshSignal}
+          selectedReviewId={selectedReviewId} onSelectReview={setSelectedReviewId} />}
+      />
       <div className="security-layer-heading">
         <div>
           <p className="panel-kicker">Deterministic Security Pipeline</p>
@@ -436,9 +441,6 @@ function SecurityReviewPanel({ refreshSignal }) {
           )}
         </article>
       </div>
-
-      <IncidentReviewSection refreshSignal={refreshSignal}
-        selectedReviewId={selectedReviewId} onSelectReview={setSelectedReviewId} />
 
       <SecurityDetail
         selection={selection}

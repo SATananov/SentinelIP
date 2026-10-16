@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import {
   attachIncidentEvidence,
@@ -66,9 +66,10 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
   }, [refreshSignal])
 
   const selectedId = selected?.id
-  useEffect(() => {
+  const displaySelected = selected && (!selectedReviewId || selectedReviewId === selected.id)
+  useLayoutEffect(() => {
     if (!selectedReviewId || selectedReviewId === selected?.id) return undefined
-    const request = requestGuard.current.begin(selectedReviewId)
+    const request = requestGuard.current.selectAndBegin(selectedReviewId)
     Promise.resolve().then(() => {
       if (!requestGuard.current.isCurrent(request)) return null
       setEvidence([]); setSuggestions([]); setTimeline([]); setNotes([])
@@ -167,6 +168,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
       </p>
       {error && <p className="security-detail-error">{error}</p>}
       {listError && <p className="security-detail-error">{listError}</p>}
+      {selectedReviewId && selectedReviewId !== selected?.id && !error && <p className="security-empty" role="status">Loading selected Incident Review…</p>}
       {reviews.length === 0 ? (
         <p className="security-empty">No analyst incident reviews.</p>
       ) : (
@@ -204,7 +206,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
         </div>
       )}
 
-      {selected && (
+      {displaySelected && (
         <div className="incident-review-detail">
           <div className="security-detail-heading">
             <div>

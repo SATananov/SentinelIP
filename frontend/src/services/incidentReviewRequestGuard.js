@@ -8,6 +8,10 @@ export function createIncidentReviewRequestGuard() {
       selectedReviewId = reviewId
       generation += 1
     },
+    selectAndBegin(reviewId) {
+      this.select(reviewId)
+      return this.begin(reviewId)
+    },
     invalidate() {
       selectedReviewId = null
       generation += 1
@@ -18,6 +22,23 @@ export function createIncidentReviewRequestGuard() {
     },
     isCurrent(request) {
       return request.reviewId === selectedReviewId && request.generation === generation
+    },
+  }
+}
+
+export function createOperationsRequestGuard() {
+  const generations = new Map()
+  return {
+    begin(resource) {
+      const generation = (generations.get(resource) ?? 0) + 1
+      generations.set(resource, generation)
+      return generation
+    },
+    invalidate(resource) {
+      generations.set(resource, (generations.get(resource) ?? 0) + 1)
+    },
+    isCurrent(resource, generation) {
+      return generations.get(resource) === generation
     },
   }
 }
