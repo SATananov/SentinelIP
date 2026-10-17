@@ -22,6 +22,7 @@ import RemoteSensorFleet from './components/RemoteSensorFleet.jsx'
 import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
 import InvestigationLookup from './components/InvestigationLookup.jsx'
+import DataLifecycle from './components/DataLifecycle.jsx'
 import { createInvestigationNavigationRequest, investigationPanelForKind } from './services/investigationNavigation.js'
 import {
   clearReviewIntakeRequest,
@@ -388,6 +389,7 @@ function App() {
       </section>
 
       <InvestigationLookup onOpenResult={openInvestigationResult} />
+      <DataLifecycle />
 
       <NetworkWorkspace investigationRequest={investigationNavigation} onOpenInvestigationContext={openInvestigationContext} />
 

@@ -10,6 +10,7 @@ from api.external_exposure_changes import register_external_exposure_change_rout
 from api.external_exposure_dashboard import register_external_exposure_dashboard_routes
 from api.incident_reviews import register_incident_review_routes
 from api.investigation import register_investigation_routes
+from api.data_lifecycle import register_data_lifecycle_routes
 from database.remote_sensors import RemoteSensorStore
 import io
 import sqlite3
@@ -1410,6 +1411,7 @@ register_remote_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_machine_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_remote_task_routes(app, lambda: RemoteSensorStore(DB_PATH))
 register_investigation_routes(app, lambda: DB_PATH)
+register_data_lifecycle_routes(app, lambda: DB_PATH)
 register_perimeter_ingestion_routes(app, lambda: RemoteSensorStore(DB_PATH), lambda: DB_PATH)
 register_external_exposure_assessment_routes(app, lambda: DB_PATH)
 register_external_exposure_classification_routes(app, lambda: DB_PATH)
