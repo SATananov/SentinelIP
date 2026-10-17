@@ -23,16 +23,45 @@ import {
 
 const STATUS_OPTIONS = ['REVOKED', 'DISABLED', 'PENDING', 'ONLINE', 'OFFLINE', 'UNKNOWN']
 
-function RemoteSensorFleet() {
+function RemoteSensorFleet({ investigationRequest = null }) {
   const [filters, setFilters] = useState({ limit: 20, offset: 0, site_id: '', status: '', platform: '', enabled: '' })
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
   const [selectedId, setSelectedId] = useState(null)
   const [historyRefreshGeneration, setHistoryRefreshGeneration] = useState(0)
   const [createdTask, setCreatedTask] = useState(null)
+  const [pendingSensorSelection, setPendingSensorSelection] = useState(null)
   const [retry, setRetry] = useState(0)
   const requestGuard = useRef(createFleetRequestGuard())
   const queryKey = useMemo(() => fleetQueryKey(filters), [filters])
+  const handledInvestigationRequest = useRef(null)
+
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request || handledInvestigationRequest.current === request.nonce) return
+    handledInvestigationRequest.current = request.nonce
+    if (!['SENSOR', 'SITE', 'SENSOR_TASK'].includes(request.kind)) {
+      queueMicrotask(() => {
+        if (handledInvestigationRequest.current === request.nonce) setPendingSensorSelection(null)
+      })
+      return
+    }
+    queueMicrotask(() => {
+      if (handledInvestigationRequest.current !== request.nonce) return
+      setCreatedTask(null)
+      if (request.kind === 'SITE') {
+        setSelectedId(null)
+        setPendingSensorSelection(null)
+        setFilters((current) => ({ ...current, site_id: request.id, offset: 0 }))
+        return
+      }
+      const targetSensorId = request.kind === 'SENSOR' ? request.id : request.item?.sensor_id
+      if (!targetSensorId) return
+      setPendingSensorSelection(String(targetSensorId))
+      setFilters((current) => ({ ...current, site_id: request.item?.site_id ? String(request.item.site_id) : current.site_id,
+        status: '', platform: '', enabled: '', offset: 0 }))
+    })
+  }, [investigationRequest])
 
   useEffect(() => {
     const guard = requestGuard.current
@@ -66,22 +95,27 @@ function RemoteSensorFleet() {
   const loading = currentRequest?.loading ?? !currentResult
   const error = currentRequest?.error ?? null
   const selected = currentResult?.items?.find((item) => item.id === selectedId) ?? null
-  const selectedDetail = projectFleetDetail(selected)
+  const selectedByNavigation = pendingSensorSelection && currentResult?.items?.find((item) => String(item.id) === pendingSensorSelection)
+  const selectedDetail = projectFleetDetail(selected ?? selectedByNavigation)
+  const selectedIdForView = selectedId ?? (selectedByNavigation ? Number(selectedByNavigation.id) : null)
   const viewState = fleetResultViewState({ loading, error, result: currentResult })
 
   function changeFilter(key, value) {
     setFilters((current) => updateFleetFilter(current, key, value))
     setSelectedId(null)
+    setPendingSensorSelection(null)
     setCreatedTask(null)
   }
 
   function changeLimit(value) {
     setFilters((current) => updateFleetLimit(current, Number(value)))
     setSelectedId(null)
+    setPendingSensorSelection(null)
     setCreatedTask(null)
   }
 
   function selectSensor(sensorId) {
+    setPendingSensorSelection(null)
     setSelectedId((current) => toggleFleetSelection(current, sensorId))
     setCreatedTask(null)
   }
@@ -120,8 +154,8 @@ function RemoteSensorFleet() {
             <table className="remote-sensor-table">
               <thead><tr><th>Sensor</th><th>Site</th><th>Platform</th><th>Registered</th><th>Last heartbeat</th><th>Status</th><th>Capabilities</th><th>Assignments</th></tr></thead>
               <tbody>{currentResult.items.map((sensor) => (
-                <tr key={sensor.id} className={selectedId === sensor.id ? 'remote-sensor-selected' : ''}>
-                  <td><button type="button" className="remote-sensor-select" aria-pressed={selectedId === sensor.id} onClick={() => selectSensor(sensor.id)}><strong>{sensor.name}</strong><small>ID {sensor.id} · {sensor.sensor_uuid}</small></button></td>
+                <tr key={sensor.id} className={selectedIdForView === sensor.id ? 'remote-sensor-selected' : ''}>
+                  <td><button type="button" className="remote-sensor-select" aria-pressed={selectedIdForView === sensor.id} onClick={() => selectSensor(sensor.id)}><strong>{sensor.name}</strong><small>ID {sensor.id} · {sensor.sensor_uuid}</small></button></td>
                   <td><strong>{sensor.site_name ?? 'Unavailable'}</strong><small>Site {sensor.site_id} · {fleetSiteState(sensor.site_enabled)}</small></td>
                   <td><span>{sensor.platform}</span><small>{PLATFORM_METADATA_LABEL} · {sensor.version}</small></td>
                   <td>{formatFleetTimestamp(sensor.registered_at)}</td>
@@ -160,7 +194,8 @@ function RemoteSensorFleet() {
           <section><h4>Assignments</h4><p>{selectedDetail.assignment_count} assigned scopes</p></section>
         </aside>
       )}
-      <RemoteSensorFleetManagement sensor={selectedDetail} onRefreshFleet={refreshFleet} />
+      <RemoteSensorFleetManagement sensor={selectedDetail} onRefreshFleet={refreshFleet}
+        investigationRequest={investigationRequest} />
       <RemoteSensorTaskOperations key={selectedDetail?.id ?? 'no-sensor'} sensor={selectedDetail}
         onTaskCreated={(task) => {
           if (task.sensor_id === selectedDetail?.id) {
@@ -169,7 +204,7 @@ function RemoteSensorFleet() {
           }
         }} />
       <RemoteSensorTaskHistory selectedSensor={selectedDetail} refreshSignal={historyRefreshGeneration}
-        createdTask={createdTask} />
+        createdTask={createdTask} investigationRequest={investigationRequest} />
     </section>
   )
 }

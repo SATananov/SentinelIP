@@ -21,6 +21,8 @@ import NetworkWorkspace from './components/NetworkWorkspace.jsx'
 import RemoteSensorFleet from './components/RemoteSensorFleet.jsx'
 import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
+import InvestigationLookup from './components/InvestigationLookup.jsx'
+import { createInvestigationNavigationRequest, investigationPanelForKind } from './services/investigationNavigation.js'
 import {
   clearReviewIntakeRequest,
   createReviewIntakeRequest,
@@ -35,6 +37,8 @@ function App() {
   const reviewIntakeToken = useRef(0)
   const [reviewIntakeRequest, setReviewIntakeRequest] = useState(null)
   const [reviewIntakeSubmitting, setReviewIntakeSubmitting] = useState(false)
+  const [investigationNavigation, setInvestigationNavigation] = useState(null)
+  const investigationNavigationNonce = useRef(0)
   const [health, setHealth] = useState(null)
 
   const [overview, setOverview] = useState({
@@ -74,6 +78,20 @@ function App() {
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(5)
+
+  const openInvestigationResult = useCallback((item, query) => {
+    investigationNavigationNonce.current += 1
+    const request = createInvestigationNavigationRequest(item, query, investigationNavigationNonce.current)
+    if (!request) return
+    setInvestigationNavigation(request)
+    if (request.kind === 'LEGACY_EVENT' && query?.queryType === 'IP_ADDRESS' && query.value) {
+      setIpFilter(query.value)
+      setTimeRange('all')
+      setPage(1)
+    }
+    const destinationId = investigationPanelForKind(request.kind)
+    window.requestAnimationFrame(() => document.getElementById(destinationId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }, [])
 
   const offset = (page - 1) * pageSize
 
@@ -357,12 +375,15 @@ function App() {
         </article>
       </section>
 
-      <NetworkWorkspace />
+      <InvestigationLookup onOpenResult={openInvestigationResult} />
 
-      <RemoteSensorFleet />
+      <NetworkWorkspace investigationRequest={investigationNavigation} />
+
+      <RemoteSensorFleet investigationRequest={investigationNavigation} />
 
       <SecurityReviewPanel
         refreshSignal={lastUpdated}
+        investigationRequest={investigationNavigation}
         reviewIntakeRequest={reviewIntakeRequest}
         onStartReview={startReviewFromEvidence}
         onClearReviewIntake={clearReviewIntake}
@@ -372,17 +393,19 @@ function App() {
 
       <ExternalActivityDashboard
         refreshSignal={lastUpdated}
+        investigationRequest={investigationNavigation}
         onStartReview={startReviewFromEvidence}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
       <ExternalExposureDashboard
         refreshSignal={lastUpdated}
+        investigationRequest={investigationNavigation}
         onStartReview={startReviewFromEvidence}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
-      <section className="panel">
+      <section className="panel" id="legacy-events-history">
         <div className="panel-heading">
           <div>
             <p className="panel-kicker">
@@ -624,6 +647,15 @@ function App() {
           </span>
         </div>
 
+        {investigationNavigation?.kind === 'LEGACY_EVENT' && (
+          <p className="investigation-truncated" role="status">
+            Events are filtered by the exact IP lookup context. Event {investigationNavigation.id}
+            {events.some((event) => String(event.id) === investigationNavigation.id)
+              ? ' is on this page.'
+              : ' is not on the current page; use the existing event filters and pagination to locate it.'}
+          </p>
+        )}
+
         <div className="filters">
           <label>
             <span>Severity</span>
@@ -778,7 +810,7 @@ function App() {
 
             {events.map((event) => (
               <div
-                className="event-row"
+                className={investigationNavigation?.kind === 'LEGACY_EVENT' && String(event.id) === investigationNavigation.id ? 'event-row investigation-event-selected' : 'event-row'}
                 key={event.id}
               >
                 <span className="event-time">

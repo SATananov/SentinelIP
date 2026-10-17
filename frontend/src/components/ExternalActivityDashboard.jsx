@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -10,7 +10,7 @@ import {
   YAxis,
 } from 'recharts'
 
-import { loadPerimeterDashboard, loadPerimeterHostCorrelations } from '../services/perimeterApi.js'
+import { loadInvestigationPerimeterDetail, loadPerimeterDashboard, loadPerimeterHostCorrelations } from '../services/perimeterApi.js'
 import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 
 function formatObserved(value) {
@@ -22,7 +22,15 @@ function formatBucket(value) {
   return value ? value.slice(5, 13).replace('T', ' ') : ''
 }
 
-function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false }) {
+const PERIMETER_DETAIL_FIELDS = [
+  ['event_type', 'Event type'], ['detection_type', 'Detection type'], ['correlation_type', 'Correlation type'],
+  ['state', 'State'], ['confidence', 'Confidence'], ['site_id', 'Site ID'], ['scope_id', 'Scope ID'],
+  ['device_id', 'Device ID'], ['source_ip', 'Source IP'], ['destination_ip', 'Destination IP'],
+  ['destination_port', 'Destination port'], ['direction', 'Direction'], ['action', 'Action'],
+  ['protocol', 'Protocol'], ['observed_at', 'Observed'], ['first_seen', 'First seen'], ['last_seen', 'Last seen'],
+]
+
+function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false, investigationRequest = null }) {
   const [data, setData] = useState(null)
   const [siteId, setSiteId] = useState('')
   const [sourceType, setSourceType] = useState('')
@@ -31,6 +39,35 @@ function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeS
   const [loading, setLoading] = useState(false)
   const [hostResult, setHostResult] = useState(null)
   const [hostError, setHostError] = useState(null)
+  const [investigationDetail, setInvestigationDetail] = useState(null)
+  const [investigationDetailError, setInvestigationDetailError] = useState('')
+  const investigationGeneration = useRef(0)
+
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request) return undefined
+    const supported = ['PERIMETER_EVENT', 'PERIMETER_DETECTION', 'PERIMETER_POLICY_CORRELATION', 'PERIMETER_HOST_CORRELATION']
+    const generation = ++investigationGeneration.current
+    const controller = new AbortController()
+    if (!supported.includes(request.kind)) return () => controller.abort()
+    if (request.item?.site_id) {
+      queueMicrotask(() => {
+        if (investigationGeneration.current === generation) setSiteId(String(request.item.site_id))
+      })
+    }
+    loadInvestigationPerimeterDetail(request.kind, request.id, controller.signal)
+      .then((record) => {
+        if (!controller.signal.aborted && investigationGeneration.current === generation) {
+          setInvestigationDetail({ kind: request.kind, id: request.id, record, nonce: request.nonce })
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && investigationGeneration.current === generation && error.name !== 'AbortError') {
+          setInvestigationDetailError({ nonce: request.nonce, message: error.message || 'Perimeter detail is unavailable.' })
+        }
+      })
+    return () => controller.abort()
+  }, [investigationRequest])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -74,7 +111,7 @@ function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeS
   const hostCorrelations = hostResult?.siteId === siteId ? hostResult.correlations : []
 
   return (
-    <section className="panel external-activity-panel">
+    <section className="panel external-activity-panel" id="external-activity">
       <div className="panel-heading external-activity-heading">
         <div>
           <p className="panel-kicker">Perimeter Monitoring</p>
@@ -119,6 +156,15 @@ function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeS
       </div>
 
       {error && <div className="error-box">{error}</div>}
+      {investigationDetailError?.nonce === investigationRequest?.nonce && <div className="error-box" role="alert">{investigationDetailError.message}</div>}
+      {investigationDetail?.nonce === investigationRequest?.nonce && <aside className="investigation-domain-detail" aria-label="Selected perimeter record">
+        <div className="panel-heading"><h3>{investigationDetail.kind.replaceAll('_', ' ')} · {investigationDetail.id}</h3>
+          <button type="button" onClick={() => setInvestigationDetail(null)}>Close detail</button></div>
+        <dl>{PERIMETER_DETAIL_FIELDS.filter(([key]) => {
+          const value = investigationDetail.record?.[key]
+          return (typeof value === 'string' || typeof value === 'number') && value !== ''
+        }).map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{investigationDetail.record[key]}</dd></div>)}</dl>
+      </aside>}
 
       <div className="external-summary-grid">
         <article><span>Inbound</span><strong>{summary.inbound_total || 0}</strong></article>

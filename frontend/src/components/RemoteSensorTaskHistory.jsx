@@ -20,15 +20,35 @@ function asUtc(value) {
   return value ? new Date(value).toISOString() : ''
 }
 
-function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTask = null }) {
+function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTask = null, investigationRequest = null }) {
   const [filters, setFilters] = useState({ limit: 20, offset: 0, sensor_id: '', site_id: '', scope_id: '', device_id: '', task_type: '', status: '', created_after_local: '', created_before_local: '' })
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
   const [selectedTaskId, setSelectedTaskId] = useState(null)
+  const [lookupTask, setLookupTask] = useState(null)
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const requestGuard = useRef(createTaskHistoryRequestGuard())
   const createdTaskRef = useRef(createdTask)
+  const handledInvestigationRequest = useRef(null)
+  const latestInvestigationRequest = useRef(null)
   const queryKey = useMemo(() => taskHistoryQueryKey(filters), [filters])
+
+  useEffect(() => {
+    const nav = investigationRequest
+    if (!nav) return
+    latestInvestigationRequest.current = nav.nonce
+    if (nav.kind !== 'SENSOR_TASK' || !nav.nonce || handledInvestigationRequest.current === nav.nonce) return
+    handledInvestigationRequest.current = nav.nonce
+    queueMicrotask(() => {
+      if (latestInvestigationRequest.current !== nav.nonce) return
+      setLookupTask({ ...nav.item, nonce: nav.nonce })
+      setSelectedTaskId(nav.id)
+      if (nav.item?.sensor_id) {
+        setFilters((current) => ({ ...current, sensor_id: String(nav.item.sensor_id), scope_id: '', device_id: '',
+          task_type: '', status: '', created_after_local: '', created_before_local: '', offset: 0 }))
+      }
+    })
+  }, [investigationRequest])
 
   useLayoutEffect(() => { createdTaskRef.current = createdTask }, [createdTask])
 
@@ -76,6 +96,7 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
   const viewState = taskHistoryViewState({ loading, error, result })
 
   function changeFilter(key, value) {
+    setLookupTask(null)
     setFilters((current) => updateTaskHistoryFilter(current, key, value))
     setSelectedTaskId(null)
   }
@@ -169,6 +190,22 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
             {selectedTask.failure_code && <div><dt>Failure</dt><dd>{selectedTask.failure_code} · {selectedTask.failure_message_safe}</dd></div>}
           </dl>
           <p className="security-layer-copy">Scope name and target are current context. Expiry is derived from the request evaluation time; stored task state is unchanged.</p>
+        </aside>
+      )}
+      {lookupTask?.nonce === investigationRequest?.nonce && !selectedTask && (
+        <aside className="remote-sensor-detail remote-task-detail" aria-label={`Task found by investigation search: ${lookupTask.entity_id}`}>
+          <div className="remote-sensor-detail-heading"><h4>Task found by Investigation Search</h4>
+            <button type="button" onClick={() => { setLookupTask(null); setSelectedTaskId(null) }}>Close details</button></div>
+          <dl>
+            <div><dt>Task ID</dt><dd className="mono">{lookupTask.entity_id}</dd></div>
+            <div><dt>Task context</dt><dd>{lookupTask.context_label || 'Unavailable'}</dd></div>
+            <div><dt>Sensor</dt><dd>{lookupTask.sensor_id ?? 'Unavailable'}</dd></div>
+            <div><dt>Site</dt><dd>{lookupTask.site_name ?? 'Unavailable'}{lookupTask.site_id ? ` · ${lookupTask.site_id}` : ''}</dd></div>
+            <div><dt>Scope</dt><dd>{lookupTask.scope_name ?? 'Unavailable'}{lookupTask.scope_id ? ` · ${lookupTask.scope_id}` : ''}</dd></div>
+            <div><dt>Device</dt><dd>{lookupTask.device_id ?? 'Not applicable'}</dd></div>
+            <div><dt>Created</dt><dd>{formatTaskTimestamp(lookupTask.occurred_at)}</dd></div>
+          </dl>
+          <p className="security-layer-copy">This is the bounded lookup projection. Task history below shows lifecycle detail when the task is in the current result page.</p>
         </aside>
       )}
     </section>

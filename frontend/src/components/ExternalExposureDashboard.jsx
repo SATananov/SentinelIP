@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { loadExternalExposureDashboard } from '../services/externalExposureApi.js'
+import { loadExternalExposureDashboard, loadInvestigationExposureDetail } from '../services/externalExposureApi.js'
 import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 
 function label(value) {
@@ -12,12 +12,22 @@ function observed(value) {
   return value.replace('T', ' ').replace('+00:00', ' UTC')
 }
 
-function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false }) {
+const EXPOSURE_DETAIL_FIELDS = [
+  ['change_type', 'Change type'], ['scope_id', 'Scope ID'], ['scope_type', 'Scope type'],
+  ['canonical_target', 'Authorized target'], ['device_id', 'Device ID'], ['target_ip', 'Target IP'],
+  ['port_number', 'Port'], ['transport', 'Transport'], ['presence_state', 'Presence'],
+  ['observed_at', 'Observed'], ['first_seen', 'First seen'], ['last_seen', 'Last seen'], ['exposure_id', 'Exposure ID'],
+]
+
+function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false, investigationRequest = null }) {
   const [data, setData] = useState(null)
   const [scopeId, setScopeId] = useState('')
   const [timeRange, setTimeRange] = useState('7d')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [investigationDetail, setInvestigationDetail] = useState(null)
+  const [investigationDetailError, setInvestigationDetailError] = useState('')
+  const investigationGeneration = useRef(0)
 
   const filters = useMemo(() => ({ scopeId, timeRange }), [scopeId, timeRange])
 
@@ -40,11 +50,40 @@ function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeS
     return () => controller.abort()
   }, [filters, refreshSignal])
 
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request) return undefined
+    const supported = ['EXTERNAL_EXPOSURE', 'EXTERNAL_EXPOSURE_CHANGE']
+    const generation = ++investigationGeneration.current
+    const controller = new AbortController()
+    if (!supported.includes(request.kind)) return () => controller.abort()
+    if (request.item?.scope_id) {
+      queueMicrotask(() => {
+        if (investigationGeneration.current === generation) {
+          setScopeId(String(request.item.scope_id))
+          setTimeRange('all')
+        }
+      })
+    }
+    loadInvestigationExposureDetail(request.kind, request.id, controller.signal)
+      .then((record) => {
+        if (!controller.signal.aborted && investigationGeneration.current === generation) {
+          setInvestigationDetail({ kind: request.kind, id: request.id, record, nonce: request.nonce })
+        }
+      })
+      .catch((requestError) => {
+        if (!controller.signal.aborted && investigationGeneration.current === generation && requestError.name !== 'AbortError') {
+          setInvestigationDetailError({ nonce: request.nonce, message: requestError.message || 'Exposure detail is unavailable.' })
+        }
+      })
+    return () => controller.abort()
+  }, [investigationRequest])
+
   const summary = data?.summary || {}
   const scopes = data?.options?.scopes || []
 
   return (
-    <section className="panel exposure-dashboard-panel">
+    <section className="panel exposure-dashboard-panel" id="external-exposure">
       <div className="panel-heading exposure-dashboard-heading">
         <div>
           <p className="panel-kicker">External Attack Surface</p>
@@ -81,6 +120,15 @@ function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeS
       </div>
 
       {error && <div className="error-box">{error}</div>}
+      {investigationDetailError?.nonce === investigationRequest?.nonce && <div className="error-box" role="alert">{investigationDetailError.message}</div>}
+      {investigationDetail?.nonce === investigationRequest?.nonce && <aside className="investigation-domain-detail" aria-label="Selected exposure record">
+        <div className="panel-heading"><h3>{investigationDetail.kind.replaceAll('_', ' ')} · {investigationDetail.id}</h3>
+          <button type="button" onClick={() => setInvestigationDetail(null)}>Close detail</button></div>
+        <dl>{EXPOSURE_DETAIL_FIELDS.filter(([key]) => {
+          const value = investigationDetail.record?.[key]
+          return (typeof value === 'string' || typeof value === 'number') && value !== ''
+        }).map(([key, fieldLabel]) => <div key={key}><dt>{fieldLabel}</dt><dd>{investigationDetail.record[key]}</dd></div>)}</dl>
+      </aside>}
 
       <div className="exposure-summary-grid">
         <article><span>Total Exposures</span><strong>{summary.total_exposures || 0}</strong></article>

@@ -36,3 +36,19 @@ export async function loadPerimeterHostCorrelations({ siteId = '', limit = 8, of
   }
   return response.json()
 }
+
+const INVESTIGATION_PERIMETER_ROUTES = {
+  PERIMETER_EVENT: '/perimeter-events',
+  PERIMETER_DETECTION: '/perimeter-detections',
+  PERIMETER_POLICY_CORRELATION: '/perimeter-policy-correlations',
+  PERIMETER_HOST_CORRELATION: '/perimeter-host-correlations',
+}
+
+export async function loadInvestigationPerimeterDetail(kind, id, signal) {
+  const route = INVESTIGATION_PERIMETER_ROUTES[kind]
+  const recordId = Number(id)
+  if (!route || !Number.isSafeInteger(recordId) || recordId <= 0) throw new Error('Perimeter detail is unavailable.')
+  const response = await fetch(`${API_BASE}${route}/${recordId}`, { method: 'GET', cache: 'no-store', signal })
+  if (!response.ok) throw new Error(`Perimeter detail unavailable (${response.status}).`)
+  return response.json()
+}

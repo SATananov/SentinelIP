@@ -16,7 +16,7 @@ import {
 import { fleetStatusLabel } from '../services/remoteSensorFleetState.js'
 import { canReenableSensor, canRevokeEnrollment, createManagementRequestGuard, enrollmentLifecycle } from '../services/remoteSensorManagementState.js'
 
-function RemoteSensorFleetManagement({ sensor, onRefreshFleet }) {
+function RemoteSensorFleetManagement({ sensor, onRefreshFleet, investigationRequest = null }) {
   const [sites, setSites] = useState([])
   const [siteId, setSiteId] = useState('')
   const [siteError, setSiteError] = useState('')
@@ -37,11 +37,27 @@ function RemoteSensorFleetManagement({ sensor, onRefreshFleet }) {
   const generation = useRef(createManagementRequestGuard())
   const eligibleGeneration = useRef(0)
   const contextRef = useRef('')
+  const latestInvestigationRequest = useRef(null)
   const sensorId = sensor?.id
   const sensorSiteId = sensor?.site_id
   const contextKey = `${siteId || ''}:${sensorId ?? ''}`
 
   useLayoutEffect(() => { contextRef.current = contextKey }, [contextKey])
+
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request) return
+    latestInvestigationRequest.current = request.nonce
+    if (request.kind !== 'SITE') return
+    queueMicrotask(() => {
+      if (latestInvestigationRequest.current !== request.nonce) return
+      const targetSiteId = String(request.id)
+      generation.current.invalidate()
+      setSiteId(targetSiteId)
+      setIssued(null)
+      setCopyMessage('')
+    })
+  }, [investigationRequest])
 
   function activeRun(scope) {
     return generation.current.isCurrent(scope) && scope.context === contextRef.current

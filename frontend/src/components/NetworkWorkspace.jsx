@@ -16,6 +16,7 @@ import {
   discoverPublicScope,
   discoverScopeDeviceServices,
   loadDeviceReview,
+  loadDevice,
   loadNetworkDevices,
   loadNetworks,
   loadScopeDevices,
@@ -59,7 +60,7 @@ function ScopeState({ confirmed, enabled, type, reauthorizationRequired = false 
   )
 }
 
-function NetworkWorkspace() {
+function NetworkWorkspace({ investigationRequest = null }) {
   const [cidrBusy, setCidrBusy] = useState(false)
   const [networks, setNetworks] = useState([])
   const [scopes, setScopes] = useState([])
@@ -97,8 +98,11 @@ function NetworkWorkspace() {
   const [publicError, setPublicError] = useState(null)
   const [candidateError, setCandidateError] = useState(null)
   const [deviceError, setDeviceError] = useState(null)
+  const [investigationNavigationError, setInvestigationNavigationError] = useState(null)
 
   const selectionRequest = useRef(0)
+  const handledInvestigationRequest = useRef(null)
+  const latestInvestigationRequest = useRef(null)
 
   const loadWorkspace = useCallback(async (signal) => {
     setWorkspaceLoading(true)
@@ -127,7 +131,7 @@ function NetworkWorkspace() {
     }
   }, [loadWorkspace])
 
-  async function selectPrivateNetwork(network) {
+  const selectPrivateNetwork = useCallback(async (network) => {
     const requestId = selectionRequest.current + 1
     selectionRequest.current = requestId
     setSelectedScope({ kind: 'PRIVATE_NETWORK', id: network.id })
@@ -146,9 +150,9 @@ function NetworkWorkspace() {
     } finally {
       if (selectionRequest.current === requestId) setSelectionLoading(false)
     }
-  }
+  }, [])
 
-  async function selectPublicTarget(scope) {
+  const selectPublicTarget = useCallback(async (scope) => {
     const requestId = selectionRequest.current + 1
     selectionRequest.current = requestId
     setSelectedScope({ kind: scope.scope_type, id: scope.id })
@@ -167,7 +171,7 @@ function NetworkWorkspace() {
     } finally {
       if (selectionRequest.current === requestId) setSelectionLoading(false)
     }
-  }
+  }, [])
 
   async function scanPrivateNetwork(network) {
     const scope = scopes.find((item) => item.network_id === network.id)
@@ -248,7 +252,9 @@ function NetworkWorkspace() {
     }
   }
 
-  async function selectDevice(deviceId) {
+  const selectDevice = useCallback(async (deviceId) => {
+    const requestId = selectionRequest.current + 1
+    selectionRequest.current = requestId
     setSelectedDeviceId(deviceId)
     setDeviceReview(null)
     setDeviceLoading(true)
@@ -256,13 +262,72 @@ function NetworkWorkspace() {
 
     try {
       const result = await loadDeviceReview(deviceId)
-      setDeviceReview(result)
+      if (selectionRequest.current === requestId) setDeviceReview(result)
     } catch (err) {
-      setDeviceError(err.message)
+      if (selectionRequest.current === requestId) setDeviceError(err.message)
     } finally {
-      setDeviceLoading(false)
+      if (selectionRequest.current === requestId) setDeviceLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request) return
+    latestInvestigationRequest.current = request.nonce
+    if (!['DEVICE', 'SCOPE'].includes(request.kind) || workspaceLoading ||
+        handledInvestigationRequest.current === request.nonce) return
+    handledInvestigationRequest.current = request.nonce
+    const id = Number(request.id)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      queueMicrotask(() => {
+        if (latestInvestigationRequest.current === request.nonce) {
+          setInvestigationNavigationError({ nonce: request.nonce, message: 'This Network Workspace destination is unavailable.' })
+        }
+      })
+      return
+    }
+    async function openRequestedContext() {
+      try {
+        let scope = scopes.find((item) => item.id === Number(request.item?.scope_id))
+        if (request.kind === 'SCOPE') scope = scopes.find((item) => item.id === id)
+        if (!scope && request.kind === 'DEVICE') {
+          const device = await loadDevice(id)
+          if (latestInvestigationRequest.current !== request.nonce) return
+          scope = scopes.find((item) => item.id === Number(device.scope_id))
+          if (!scope && device.network_id) scope = scopes.find((item) => item.network_id === device.network_id)
+        }
+        if (scope?.scope_type === 'PRIVATE_NETWORK') {
+          const network = networks.find((item) => item.id === scope.network_id)
+          if (!network) throw new Error('The device or scope is not present in the current network inventory.')
+          await selectPrivateNetwork(network)
+          if (latestInvestigationRequest.current !== request.nonce) return
+          if (request.kind === 'DEVICE') await selectDevice(id)
+          return
+        }
+        if (scope && ['PUBLIC_IPV4', 'PUBLIC_CIDR', 'HOSTNAME'].includes(scope.scope_type)) {
+          await selectPublicTarget(scope)
+          if (latestInvestigationRequest.current !== request.nonce) return
+          if (request.kind === 'DEVICE') await selectDevice(id)
+          return
+        }
+        if (request.kind === 'DEVICE') {
+          const review = await loadDeviceReview(id)
+          if (handledInvestigationRequest.current !== request.nonce) return
+          setDevices([review.device])
+          setSelectedDeviceId(id)
+          setDeviceReview(review)
+          return
+        }
+        throw new Error('The requested scope is unavailable in the current network inventory.')
+      } catch (error) {
+        if (latestInvestigationRequest.current === request.nonce) {
+          setInvestigationNavigationError({ nonce: request.nonce, message: error?.message || 'The requested network record is unavailable.' })
+        }
+      }
+    }
+    void openRequestedContext()
+  }, [investigationRequest, networks, scopes, workspaceLoading,
+    selectPrivateNetwork, selectPublicTarget, selectDevice])
 
   async function scanServices() {
     if (!selectedDeviceId || !selectedScope) return
@@ -433,7 +498,7 @@ function NetworkWorkspace() {
     deviceLoading || serviceScanLoading || publicScopeLoading || hostnamePreviewLoading || hostnameScopeLoading
 
   return (
-    <section className="network-workspace">
+    <section className="network-workspace" id="network-workspace">
       <div className="network-workspace-heading">
         <div>
           <p className="panel-kicker">Network Visibility</p>
@@ -444,6 +509,7 @@ function NetworkWorkspace() {
         </div>
         <span className="network-boundary">AUTHORIZED TARGETS ONLY</span>
       </div>
+      {investigationNavigationError?.nonce === investigationRequest?.nonce && <p className="network-error" role="status">{investigationNavigationError.message}</p>}
 
       {workspaceError && <div className="network-error" role="alert">{workspaceError}</div>}
 

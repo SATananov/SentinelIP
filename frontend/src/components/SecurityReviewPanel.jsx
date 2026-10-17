@@ -282,7 +282,7 @@ function SecurityDetail({
   )
 }
 
-function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, onStartReview,
+function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, investigationRequest = null, onStartReview,
   onClearReviewIntake, onReviewIntakeSubmitting, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState({
     threats: { total: 0, threats: [] },
@@ -301,6 +301,8 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, onStar
   const [webLoading, setWebLoading] = useState(true)
   const [webError, setWebError] = useState(null)
   const reviewSelectionVersion = useRef(0)
+  const detailGeneration = useRef(0)
+  const handledInvestigationRequest = useRef(null)
 
   const selectIncidentReview = useCallback((reviewId) => {
     reviewSelectionVersion.current += 1
@@ -345,7 +347,8 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, onStar
     return () => controller.abort()
   }, [])
 
-  async function selectRecord(kind, id) {
+  const selectRecord = useCallback(async (kind, id) => {
+    const generation = ++detailGeneration.current
     setSelection({ kind, id })
     setDetail(null)
     setDetailError(null)
@@ -353,22 +356,36 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, onStar
 
     try {
       const result = await loadSecurityDetail(kind, id)
-      setDetail(result)
+      if (detailGeneration.current === generation) setDetail(result)
     } catch (err) {
-      setDetailError(err.message)
+      if (detailGeneration.current === generation) setDetailError(err.message)
     } finally {
-      setDetailLoading(false)
+      if (detailGeneration.current === generation) setDetailLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    const request = investigationRequest
+    if (!request || handledInvestigationRequest.current === request.nonce) return
+    handledInvestigationRequest.current = request.nonce
+    detailGeneration.current += 1
+    if (!['INCIDENT_REVIEW', 'THREAT_DETECTION', 'THREAT_CORRELATION'].includes(request.kind)) return
+    queueMicrotask(() => {
+      if (handledInvestigationRequest.current !== request.nonce) return
+      if (request.kind === 'INCIDENT_REVIEW') selectIncidentReview(Number(request.id))
+      else void selectRecord(request.kind === 'THREAT_DETECTION' ? 'threat' : 'correlation', Number(request.id))
+    })
+  }, [investigationRequest, selectIncidentReview, selectRecord])
 
   function closeDetail() {
+    detailGeneration.current += 1
     setSelection(null)
     setDetail(null)
     setDetailError(null)
   }
 
   return (
-    <section className="security-layer">
+    <section className="security-layer" id="security-review">
       <IncidentReviewOperations
         refreshSignal={refreshSignal}
         reviewRefreshSignal={reviewOperationsRefreshSignal}

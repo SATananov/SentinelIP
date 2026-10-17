@@ -2397,6 +2397,140 @@ h2 {
   color: #7f8798;
 }
 
+.investigation-lookup {
+  scroll-margin-top: 18px;
+}
+
+.investigation-lookup-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.investigation-lookup-form.investigation-evidence-form {
+  grid-template-columns: minmax(170px, 0.8fr) minmax(220px, 1fr) minmax(120px, 0.7fr) auto;
+}
+
+.investigation-lookup-form label {
+  display: grid;
+  gap: 5px;
+  color: #8d95a5;
+  font-size: 0.75rem;
+}
+
+.investigation-lookup-form input,
+.investigation-lookup-form select {
+  min-width: 0;
+  width: 100%;
+}
+
+.investigation-value-field {
+  grid-column: span 1;
+}
+
+.investigation-results {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.investigation-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid #2b303a;
+  border-radius: 8px;
+  background: #11141a;
+}
+
+.investigation-result-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.investigation-entity-type,
+.investigation-context,
+.investigation-unavailable {
+  color: #8d95a5;
+  font-size: 0.76rem;
+}
+
+.investigation-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+}
+
+.investigation-error {
+  color: #ff9da6;
+}
+
+.investigation-truncated {
+  color: #d7dbe4;
+  border-left: 3px solid #7488ad;
+  padding: 8px 10px;
+  background: #151a23;
+}
+
+.investigation-domain-detail {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #343a46;
+  border-radius: 8px;
+  background: #11141a;
+}
+
+.investigation-domain-detail dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.investigation-domain-detail dl div {
+  min-width: 0;
+}
+
+.investigation-domain-detail dt {
+  color: #8d95a5;
+  font-size: 0.72rem;
+}
+
+.investigation-domain-detail dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.investigation-event-selected {
+  outline: 1px solid #7488ad;
+  background: #19202b;
+}
+
+@media (max-width: 760px) {
+  .investigation-lookup-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .investigation-lookup-form.investigation-evidence-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .investigation-domain-detail dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .investigation-lookup-form,
+  .investigation-domain-detail dl {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 900px) {
   .exposure-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
