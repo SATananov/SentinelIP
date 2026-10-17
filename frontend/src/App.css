@@ -2296,6 +2296,23 @@ h2 {
   padding-top: 18px;
 }
 
+.remote-sensor-task-operations {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid #343c4b;
+  border-radius: 10px;
+  background: #171c26;
+}
+.remote-sensor-task-operations h3,
+.remote-sensor-task-operations h4 { margin: 0 0 8px; }
+.remote-sensor-task-operations > button { justify-self: start; }
+.remote-task-operation-form { display: grid; gap: 12px; padding-top: 12px; border-top: 1px solid #2b303a; }
+.remote-task-operation-form label { display: grid; gap: 6px; max-width: 560px; color: #9aa4b7; font-size: 0.82rem; }
+.remote-task-operation-form select { min-width: 0; border: 1px solid #343c4b; border-radius: 7px; padding: 8px 10px; color: #e4e9f2; background: #151a23; }
+.remote-task-operation-form .pagination-actions { justify-content: flex-start; }
+
 .remote-task-history-actions {
   display: flex;
   flex-wrap: wrap;

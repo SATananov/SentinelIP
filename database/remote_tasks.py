@@ -6,9 +6,11 @@ import uuid
 from database.db import get_connection
 from database.remote_sensors import RemoteSensorStore
 from services.remote_sensor_models import Capability, RemoteSensorError, private_lan
+from services.scope_authorization import require_private_network_scope
 
 TASK_TYPES = frozenset({'DISCOVER_NETWORK', 'DISCOVER_SERVICES'})
 TASK_TTL_SECONDS = 900
+MAX_ACTIVE_TASKS_PER_SENSOR = 20
 TASK_STATES = frozenset({'PENDING', 'CLAIMED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'})
 TASK_FAILURE_MESSAGES = {
     'TASK_EXPIRED': 'Task expired before completion.',
@@ -172,6 +174,95 @@ class RemoteTaskStore:
             raise RemoteTaskError('SCOPE_NOT_ASSIGNED', 'No current assignment authorizes this task.', 403)
         return sensor, scope, assignment
 
+    def list_eligible_task_scopes(self, sensor_id, *, limit=100, offset=0):
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 100000:
+            raise RemoteTaskError('INVALID_TASK_SELECTOR_PAGINATION', 'Invalid task selector pagination.', 422)
+        with self.sensors._connection() as c:
+            sensor = self.sensors._sensor(c, sensor_id, active=True)
+            declared = set(sensor['capabilities'])
+            supported = []
+            if Capability.HOST_DISCOVERY.value in declared:
+                supported.append('DISCOVER_NETWORK')
+            if Capability.SERVICE_DISCOVERY.value in declared:
+                supported.append('DISCOVER_SERVICES')
+            if not supported:
+                return {'items': [], 'limit': limit, 'offset': offset, 'has_more': False}
+
+            def eligible_scope(scope_type, target, authorized, enabled, confirmed_at,
+                               confirmation_version, authorization_source, scope_network_id,
+                               network_id, network_cidr, network_authorized, network_enabled):
+                scope = {
+                    'scope_type': scope_type, 'canonical_target': target,
+                    'authorized': bool(authorized), 'enabled': bool(enabled),
+                    'authorization_confirmed_at': confirmed_at,
+                    'authorization_confirmation_version': confirmation_version,
+                    'authorization_source': authorization_source,
+                    'network_id': scope_network_id,
+                }
+                network = {
+                    'id': network_id, 'cidr': network_cidr,
+                    'authorized': bool(network_authorized), 'enabled': bool(network_enabled),
+                }
+                try:
+                    require_private_network_scope(network, scope)
+                    private_lan(target)
+                    return 1
+                except (ValueError, TypeError):
+                    return 0
+
+            c.create_function('remote_task_scope_eligible', 12, eligible_scope, deterministic=False)
+            rows = c.execute('''SELECT s.id, s.name, s.canonical_target
+                FROM sensor_scope_assignments a
+                JOIN remote_sensors rs ON rs.id=a.sensor_id AND rs.site_id=a.site_id
+                JOIN sites st ON st.id=rs.site_id
+                JOIN authorized_scopes s ON s.id=a.scope_id
+                JOIN network_scope_links l ON l.scope_id=s.id
+                JOIN networks n ON n.id=l.network_id
+                WHERE a.sensor_id=? AND a.site_id=? AND rs.enabled=1
+                  AND rs.credential_revoked_at IS NULL AND st.enabled=1
+                  AND s.scope_type='PRIVATE_NETWORK'
+                  AND remote_task_scope_eligible(s.scope_type,s.canonical_target,s.authorized,s.enabled,
+                    s.authorization_confirmed_at,s.authorization_confirmation_version,s.authorization_source,
+                    l.network_id,n.id,n.cidr,n.authorized,n.enabled)=1
+                  AND a.canonical_target=s.canonical_target
+                ORDER BY s.id ASC LIMIT ? OFFSET ?''',
+                (sensor_id, sensor['site_id'], limit + 1, offset)).fetchall()
+        items = [{
+            'scope_id': row['id'], 'scope_name': row['name'],
+            'canonical_target': row['canonical_target'],
+            'supported_task_types': supported,
+        } for row in rows[:limit]]
+        return {'items': items, 'limit': limit, 'offset': offset, 'has_more': len(rows) > limit}
+
+    def list_eligible_task_devices(self, sensor_id, scope_id, *, limit=100, offset=0):
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 100000:
+            raise RemoteTaskError('INVALID_TASK_SELECTOR_PAGINATION', 'Invalid task selector pagination.', 422)
+        with self.sensors._connection() as c:
+            sensor, scope, _ = self._context(c, sensor_id, scope_id)
+            if Capability.SERVICE_DISCOVERY.value not in sensor['capabilities']:
+                raise RemoteTaskError('CAPABILITY_NOT_ALLOWED', 'Sensor has not declared the required capability.', 403)
+            network_id = scope['network_id']
+            cidr = private_lan(scope['canonical_target'])
+
+            def device_eligible(address):
+                try:
+                    parsed = ipaddress.IPv4Address(address)
+                    return int(str(parsed) == address and parsed in cidr)
+                except (ValueError, TypeError):
+                    return 0
+
+            c.create_function('remote_task_device_eligible', 1, device_eligible, deterministic=False)
+            rows = c.execute('''SELECT d.id, d.last_ip_address
+                FROM devices d
+                WHERE d.network_id=? AND remote_task_device_eligible(d.last_ip_address)=1
+                ORDER BY d.id ASC LIMIT ? OFFSET ?''',
+                (network_id, limit + 1, offset)).fetchall()
+        return {
+            'items': [{'device_id': row['id'], 'scope_id': scope_id,
+                       'ip_address': row['last_ip_address']} for row in rows[:limit]],
+            'limit': limit, 'offset': offset, 'has_more': len(rows) > limit,
+        }
+
     def create_task(self, sensor_id, scope_id, task_type, *, device_id=None, ttl_seconds=TASK_TTL_SECONDS):
         if task_type not in TASK_TYPES:
             raise RemoteTaskError('INVALID_TASK_TYPE', 'Unsupported task type.')
@@ -203,6 +294,11 @@ class RemoteTaskStore:
                 if str(address) != device['last_ip_address'] or address not in cidr:
                     raise RemoteTaskError('TARGET_OUTSIDE_SCOPE', 'Device is outside the assigned network.', 403)
                 target_ip = str(address)
+            active_count = c.execute('''SELECT COUNT(*) FROM remote_sensor_tasks
+                WHERE sensor_id=? AND status IN ('PENDING','CLAIMED','RUNNING') AND expires_at>?''',
+                (sensor_id, now.isoformat())).fetchone()[0]
+            if active_count >= MAX_ACTIVE_TASKS_PER_SENSOR:
+                raise RemoteTaskError('TASK_QUEUE_FULL', 'Sensor task queue is at capacity.', 409)
             task_id = str(uuid.uuid4())
             c.execute('''INSERT INTO remote_sensor_tasks
                 (id,sensor_id,site_id,scope_id,task_type,status,target_device_id,target_ip,created_at,expires_at,created_by_source)

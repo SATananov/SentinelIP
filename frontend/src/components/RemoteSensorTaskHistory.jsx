@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { loadRemoteSensorTaskHistory } from '../services/remoteSensorApi.js'
 import {
   createTaskHistoryRequestGuard,
@@ -20,14 +20,17 @@ function asUtc(value) {
   return value ? new Date(value).toISOString() : ''
 }
 
-function RemoteSensorTaskHistory({ selectedSensor }) {
+function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTask = null }) {
   const [filters, setFilters] = useState({ limit: 20, offset: 0, sensor_id: '', site_id: '', scope_id: '', device_id: '', task_type: '', status: '', created_after_local: '', created_before_local: '' })
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
   const [selectedTaskId, setSelectedTaskId] = useState(null)
   const [refreshGeneration, setRefreshGeneration] = useState(0)
   const requestGuard = useRef(createTaskHistoryRequestGuard())
+  const createdTaskRef = useRef(createdTask)
   const queryKey = useMemo(() => taskHistoryQueryKey(filters), [filters])
+
+  useLayoutEffect(() => { createdTaskRef.current = createdTask }, [createdTask])
 
   useEffect(() => {
     const guard = requestGuard.current
@@ -42,7 +45,11 @@ function RemoteSensorTaskHistory({ selectedSensor }) {
       .then((result) => {
         if (!controller.signal.aborted && guard.isCurrent(generation)) {
           setData({ key: queryKey, result })
-          setSelectedTaskId((current) => result.items?.some((item) => item.id === current) ? current : null)
+          setSelectedTaskId((current) => {
+            const createdId = createdTaskRef.current?.id
+            if (createdId && result.items?.some((item) => item.id === createdId)) return createdId
+            return result.items?.some((item) => item.id === current) ? current : null
+          })
         }
       })
       .catch((error) => {
@@ -59,7 +66,7 @@ function RemoteSensorTaskHistory({ selectedSensor }) {
       controller.abort()
       guard.invalidate()
     }
-  }, [filters, queryKey, refreshGeneration])
+  }, [filters, queryKey, refreshGeneration, refreshSignal])
 
   const result = data?.key === queryKey ? data.result : null
   const currentRequest = request.key === queryKey ? request : null

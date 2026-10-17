@@ -106,5 +106,5 @@ test('task history view states and UI contain no polling or mutation controls', 
   const component = await readFile(new URL('../src/components/RemoteSensorTaskHistory.jsx', import.meta.url), 'utf8')
   assert.match(component, /Refresh tasks/)
   assert.doesNotMatch(component, /setInterval|setTimeout|createRemoteSensorTask|retryRemoteSensorTask|cancelRemoteSensorTask|result_digest|raw_result|error_message/)
-  assert.equal(Object.keys(api).some((name) => /^(create|retry|cancel|mutate).*task/i.test(name)), false)
+  assert.equal(Object.keys(api).some((name) => /^(retry|cancel|mutate).*task/i.test(name)), false)
 })

@@ -192,3 +192,27 @@ export function addRemoteSensorAssignment(sensorId, scopeId, signal) {
 export function removeRemoteSensorAssignment(sensorId, scopeId, signal) {
   return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/scope-assignments/${positiveId(scopeId, 'Scope ID')}`, { method: 'DELETE', signal })
 }
+
+export function listEligibleRemoteSensorTaskScopes(sensorId, options = {}, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/eligible-task-scopes?${boundedPage(options)}`, { signal })
+}
+
+export function listEligibleRemoteSensorTaskDevices(sensorId, scopeId, options = {}, signal) {
+  const query = new URLSearchParams(boundedPage(options))
+  query.set('scope_id', String(positiveId(scopeId, 'Scope ID')))
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/eligible-task-devices?${query}`, { signal })
+}
+
+export function createRemoteSensorNetworkTask(sensorId, scopeId, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/tasks/discover-network`, {
+    method: 'POST', body: { scope_id: positiveId(scopeId, 'Scope ID') }, signal,
+  })
+}
+
+export function createRemoteSensorServiceTask(sensorId, scopeId, deviceId, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/tasks/discover-services`, {
+    method: 'POST', body: {
+      scope_id: positiveId(scopeId, 'Scope ID'), device_id: positiveId(deviceId, 'Device ID'),
+    }, signal,
+  })
+}

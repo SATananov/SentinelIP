@@ -14,7 +14,7 @@ from database.db import get_connection, initialize_database
 from database.inventory import create_device
 from database.networks import create_network
 from database.remote_sensors import RemoteSensorStore
-from database.remote_tasks import RemoteTaskError, RemoteTaskStore
+from database.remote_tasks import MAX_ACTIVE_TASKS_PER_SENSOR, RemoteTaskError, RemoteTaskStore
 from database.scopes import get_scope_for_network, create_scope
 from services.remote_sensor_executor import LinuxRemoteSensorExecutor, task_context_from_claim
 from services.remote_sensor_models import (
@@ -94,6 +94,126 @@ def test_creation_and_target_derivation(context):
         assert row == ('DISCOVER_NETWORK', None)
         assert {row[2] for row in c.execute('PRAGMA foreign_key_list(remote_sensor_tasks)')} >= {
             'remote_sensors', 'authorized_scopes', 'devices'}
+
+
+def test_operator_creation_response_is_safe_and_task_selector_projections_are_bounded(context):
+    admin = context['admin']
+    sensor_id = context['sensor'].record['id']
+    scope_id = context['scope']['id']
+    created = admin.post(f'/sensors/{sensor_id}/tasks/discover-network', json={'scope_id': scope_id})
+    assert created.status_code == 201
+    task = created.json()
+    assert task == {
+        'id': task['id'], 'sensor_id': sensor_id, 'site_id': context['site']['id'],
+        'scope_id': scope_id, 'task_type': 'DISCOVER_NETWORK', 'status': 'PENDING',
+        'target_device_id': None, 'target_ip': None, 'created_at': NOW.isoformat(),
+        'expires_at': (NOW + timedelta(seconds=900)).isoformat(), 'attempt_count': 0,
+    }
+    assert not {'result_digest', 'created_by_source', 'error_message', 'error_code'} & task.keys()
+
+    scopes = admin.get(f'/sensors/{sensor_id}/eligible-task-scopes?limit=1&offset=0')
+    assert scopes.status_code == 200
+    assert scopes.json() == {'items': [{
+        'scope_id': scope_id, 'scope_name': context['scope']['name'],
+        'canonical_target': '192.168.1.0/24',
+        'supported_task_types': ['DISCOVER_NETWORK', 'DISCOVER_SERVICES'],
+    }], 'limit': 1, 'offset': 0, 'has_more': False}
+    devices = admin.get(f'/sensors/{sensor_id}/eligible-task-devices', params={'scope_id': scope_id, 'limit': 1})
+    assert devices.status_code == 200
+    assert devices.json() == {'items': [{'device_id': context['device']['id'],
+        'scope_id': scope_id, 'ip_address': '192.168.1.20'}], 'limit': 1, 'offset': 0, 'has_more': False}
+
+
+def test_eligible_task_scopes_exclude_unassigned_and_ineligible_scopes(context):
+    store, sensor, scope = context['store'], context['sensor'].record, context['scope']
+    eligible = RemoteTaskStore(store).list_eligible_task_scopes(sensor['id'])
+    assert [item['scope_id'] for item in eligible['items']] == [scope['id']]
+    candidate_network = create_network('10.4.0.0/24', 'Other LAN', '', True, True, context['path'])
+    unassigned = get_scope_for_network(candidate_network['id'], context['path'])
+    projection = RemoteTaskStore(store).list_eligible_task_scopes(sensor['id'])
+    assert unassigned['id'] not in {item['scope_id'] for item in projection['items']}
+    with get_connection(context['path']) as connection:
+        connection.execute('UPDATE networks SET enabled=0 WHERE id=?', (context['network']['id'],))
+    assert RemoteTaskStore(store).list_eligible_task_scopes(sensor['id'])['items'] == []
+
+
+def test_eligible_task_device_selector_filters_current_scope_and_capability(context):
+    tasks = RemoteTaskStore(context['store'])
+    result = tasks.list_eligible_task_devices(context['sensor'].record['id'], context['scope']['id'])
+    assert result['items'] == [{'device_id': context['device']['id'],
+                                'scope_id': context['scope']['id'], 'ip_address': '192.168.1.20'}]
+    with get_connection(context['path']) as connection:
+        connection.execute('UPDATE devices SET last_ip_address=? WHERE id=?', ('8.8.8.8', context['device']['id']))
+    assert tasks.list_eligible_task_devices(context['sensor'].record['id'], context['scope']['id'])['items'] == []
+    with get_connection(context['path']) as connection:
+        connection.execute("UPDATE remote_sensors SET capabilities='[\"HOST_DISCOVERY\"]' WHERE id=?",
+                           (context['sensor'].record['id'],))
+    with pytest.raises(RemoteTaskError) as exc:
+        tasks.list_eligible_task_devices(context['sensor'].record['id'], context['scope']['id'])
+    assert exc.value.code == 'CAPABILITY_NOT_ALLOWED'
+
+
+def test_task_creation_active_queue_cap_is_per_sensor_and_ignores_terminal_or_expired(context):
+    tasks = RemoteTaskStore(context['store'])
+    sensor_id, scope_id, device_id = context['sensor'].record['id'], context['scope']['id'], context['device']['id']
+    for index in range(MAX_ACTIVE_TASKS_PER_SENSOR - 1):
+        task_type = 'DISCOVER_SERVICES' if index % 2 else 'DISCOVER_NETWORK'
+        tasks.create_task(sensor_id, scope_id, task_type,
+                          device_id=device_id if task_type == 'DISCOVER_SERVICES' else None)
+    assert tasks.create_task(sensor_id, scope_id, 'DISCOVER_NETWORK')['status'] == 'PENDING'
+    with pytest.raises(RemoteTaskError) as exc:
+        tasks.create_task(sensor_id, scope_id, 'DISCOVER_SERVICES', device_id=device_id)
+    assert (exc.value.code, exc.value.status_code) == ('TASK_QUEUE_FULL', 409)
+    other_enrollment = context['store'].create_enrollment(context['site']['id'])
+    other_sensor = context['store'].consume_enrollment(other_enrollment.secret, name='Other sensor',
+        platform='Linux', version='1', reported_capabilities=['HOST_DISCOVERY'])
+    context['store'].assign_scope(other_sensor.record['id'], scope_id)
+    assert tasks.create_task(other_sensor.record['id'], scope_id, 'DISCOVER_NETWORK')['status'] == 'PENDING'
+    with get_connection(context['path']) as connection:
+        connection.execute("UPDATE remote_sensor_tasks SET status='COMPLETED' WHERE sensor_id=? AND id=(SELECT id FROM remote_sensor_tasks WHERE sensor_id=? LIMIT 1)",
+                           (sensor_id, sensor_id))
+        connection.execute("UPDATE remote_sensor_tasks SET expires_at=? WHERE sensor_id=? AND status='PENDING' AND id=(SELECT id FROM remote_sensor_tasks WHERE sensor_id=? AND status='PENDING' LIMIT 1)",
+                           ((NOW - timedelta(seconds=1)).isoformat(), sensor_id, sensor_id))
+    assert tasks.create_task(sensor_id, scope_id, 'DISCOVER_NETWORK')['status'] == 'PENDING'
+
+
+def test_task_queue_cap_allows_nineteen_and_serializes_competing_twentieth_requests(context):
+    tasks = RemoteTaskStore(context['store'])
+    sensor_id, scope_id = context['sensor'].record['id'], context['scope']['id']
+    for _ in range(MAX_ACTIVE_TASKS_PER_SENSOR - 1):
+        tasks.create_task(sensor_id, scope_id, 'DISCOVER_NETWORK')
+
+    def attempt():
+        try:
+            tasks.create_task(sensor_id, scope_id, 'DISCOVER_NETWORK')
+            return 'created'
+        except RemoteTaskError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: attempt(), range(2)))
+    assert sorted(outcomes) == ['TASK_QUEUE_FULL', 'created']
+    with get_connection(context['path']) as connection:
+        active = connection.execute("SELECT COUNT(*) FROM remote_sensor_tasks WHERE sensor_id=? AND status IN ('PENDING','CLAIMED','RUNNING') AND expires_at>?",
+                                    (sensor_id, NOW.isoformat())).fetchone()[0]
+    assert active == MAX_ACTIVE_TASKS_PER_SENSOR
+
+
+def test_task_queue_full_creation_does_not_insert_and_new_routes_keep_local_boundary(context):
+    tasks = RemoteTaskStore(context['store'])
+    sensor_id, scope_id = context['sensor'].record['id'], context['scope']['id']
+    for _ in range(MAX_ACTIVE_TASKS_PER_SENSOR):
+        tasks.create_task(sensor_id, scope_id, 'DISCOVER_NETWORK')
+    with get_connection(context['path']) as connection:
+        before = connection.execute('SELECT COUNT(*) FROM remote_sensor_tasks').fetchone()[0]
+    response = context['admin'].post(f'/sensors/{sensor_id}/tasks/discover-network', json={'scope_id': scope_id})
+    assert response.status_code == 409
+    assert response.json()['detail']['code'] == 'TASK_QUEUE_FULL'
+    with get_connection(context['path']) as connection:
+        after = connection.execute('SELECT COUNT(*) FROM remote_sensor_tasks').fetchone()[0]
+    assert after == before
+    assert context['machine'].get(f'/sensors/{sensor_id}/eligible-task-scopes').status_code == 403
+    assert context['machine'].get(f'/sensors/{sensor_id}/eligible-task-devices', params={'scope_id': scope_id}).status_code == 403
 
 
 @pytest.mark.parametrize('extra', ['target', 'ip_address', 'command', 'shell', 'nmap_flags', 'scope_cidr'])

@@ -51,6 +51,14 @@ def local_management(request: Request, response: Response):
         raise HTTPException(403, 'Remote sensor management requires direct local operator access.')
 
 
+def operator_task_creation_projection(task):
+    """Serialize only the task fields needed to confirm an operator create."""
+    return {key: task[key] for key in (
+        'id', 'sensor_id', 'site_id', 'scope_id', 'task_type', 'status',
+        'target_device_id', 'target_ip', 'created_at', 'expires_at', 'attempt_count',
+    )}
+
+
 def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSensorStore]):
     # Register flat routes, matching the existing app's route-inspection contract.
     def route(path, *, method, status_code=200):
@@ -67,11 +75,12 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
 
     def create_task(sensor_id, scope_id, task_type, device_id=None):
         try:
-            return RemoteTaskStore(store_provider()).create_task(
+            task = RemoteTaskStore(store_provider()).create_task(
                 sensor_id, scope_id, task_type, device_id=device_id
             )
         except RemoteTaskError as exc:
             raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
+        return operator_task_creation_projection(task)
 
     @route('/sites', method='POST', status_code=201)
     def create_site(body: SiteCreate):
@@ -162,6 +171,37 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
             )
         except RemoteTaskError as exc:
             raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
+
+    @route('/sensors/{sensor_id}/eligible-task-scopes', method='GET')
+    def eligible_task_scopes(
+        sensor_id: int,
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=100000),
+    ):
+        try:
+            return RemoteTaskStore(store_provider()).list_eligible_task_scopes(
+                sensor_id, limit=limit, offset=offset,
+            )
+        except RemoteTaskError as exc:
+            raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
+        except RemoteSensorError as exc:
+            raise HTTPException(403, 'Sensor is unavailable for task operations.') from exc
+
+    @route('/sensors/{sensor_id}/eligible-task-devices', method='GET')
+    def eligible_task_devices(
+        sensor_id: int,
+        scope_id: int = Query(gt=0),
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=100000),
+    ):
+        try:
+            return RemoteTaskStore(store_provider()).list_eligible_task_devices(
+                sensor_id, scope_id, limit=limit, offset=offset,
+            )
+        except RemoteTaskError as exc:
+            raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
+        except RemoteSensorError as exc:
+            raise HTTPException(403, 'Sensor or assigned scope is unavailable for task operations.') from exc
 
     @route('/sensors/{sensor_id}', method='GET')
     def get_sensor(sensor_id: int):

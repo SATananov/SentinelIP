@@ -81,6 +81,8 @@ test('management request generations ignore stale success and error across entit
 
 test('no task mutation, command, or unsupported delete helper is exported', () => {
   const exported = Object.keys(api)
-  assert.equal(exported.some((name) => /^delete(RemoteSensor|RemoteSite)|^rename|^move|^updateSensorCapabilities|^(create|retry|cancel|mutate).*task|command/i.test(name)), false)
+  const taskHelpers = exported.filter((name) => /^(create|retry|cancel|mutate).*task|command/i.test(name))
+  assert.deepEqual(taskHelpers.sort(), ['createRemoteSensorNetworkTask', 'createRemoteSensorServiceTask'].sort())
+  assert.equal(exported.some((name) => /^delete(RemoteSensor|RemoteSite)|^rename|^move|^updateSensorCapabilities/i.test(name)), false)
   assert.equal(typeof api.loadRemoteSensorTaskHistory, 'function')
 })

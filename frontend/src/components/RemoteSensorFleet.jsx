@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadRemoteSensorFleet } from '../services/remoteSensorApi.js'
 import RemoteSensorFleetManagement from './RemoteSensorFleetManagement.jsx'
+import RemoteSensorTaskOperations from './RemoteSensorTaskOperations.jsx'
 import RemoteSensorTaskHistory from './RemoteSensorTaskHistory.jsx'
 import {
   createFleetRequestGuard,
@@ -27,6 +28,8 @@ function RemoteSensorFleet() {
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
   const [selectedId, setSelectedId] = useState(null)
+  const [historyRefreshGeneration, setHistoryRefreshGeneration] = useState(0)
+  const [createdTask, setCreatedTask] = useState(null)
   const [retry, setRetry] = useState(0)
   const requestGuard = useRef(createFleetRequestGuard())
   const queryKey = useMemo(() => fleetQueryKey(filters), [filters])
@@ -69,11 +72,18 @@ function RemoteSensorFleet() {
   function changeFilter(key, value) {
     setFilters((current) => updateFleetFilter(current, key, value))
     setSelectedId(null)
+    setCreatedTask(null)
   }
 
   function changeLimit(value) {
     setFilters((current) => updateFleetLimit(current, Number(value)))
     setSelectedId(null)
+    setCreatedTask(null)
+  }
+
+  function selectSensor(sensorId) {
+    setSelectedId((current) => toggleFleetSelection(current, sensorId))
+    setCreatedTask(null)
   }
 
   function refreshFleet() {
@@ -111,7 +121,7 @@ function RemoteSensorFleet() {
               <thead><tr><th>Sensor</th><th>Site</th><th>Platform</th><th>Registered</th><th>Last heartbeat</th><th>Status</th><th>Capabilities</th><th>Assignments</th></tr></thead>
               <tbody>{currentResult.items.map((sensor) => (
                 <tr key={sensor.id} className={selectedId === sensor.id ? 'remote-sensor-selected' : ''}>
-                  <td><button type="button" className="remote-sensor-select" aria-pressed={selectedId === sensor.id} onClick={() => setSelectedId((current) => toggleFleetSelection(current, sensor.id))}><strong>{sensor.name}</strong><small>ID {sensor.id} · {sensor.sensor_uuid}</small></button></td>
+                  <td><button type="button" className="remote-sensor-select" aria-pressed={selectedId === sensor.id} onClick={() => selectSensor(sensor.id)}><strong>{sensor.name}</strong><small>ID {sensor.id} · {sensor.sensor_uuid}</small></button></td>
                   <td><strong>{sensor.site_name ?? 'Unavailable'}</strong><small>Site {sensor.site_id} · {fleetSiteState(sensor.site_enabled)}</small></td>
                   <td><span>{sensor.platform}</span><small>{PLATFORM_METADATA_LABEL} · {sensor.version}</small></td>
                   <td>{formatFleetTimestamp(sensor.registered_at)}</td>
@@ -127,7 +137,7 @@ function RemoteSensorFleet() {
             <span className="pagination-summary">{currentResult.items.length} sensors · evaluated {formatFleetTimestamp(currentResult.evaluated_at)}</span>
             <div className="pagination-actions">
               <button type="button" disabled={filters.offset === 0 || loading} onClick={() => setFilters((current) => updateFleetPage(current, 'previous', currentResult.has_more))}>Previous</button>
-              <button type="button" disabled={!currentResult.has_more || loading || filters.offset >= 100000} onClick={() => { setFilters((current) => updateFleetPage(current, 'next', currentResult.has_more)); setSelectedId(null) }}>Next</button>
+              <button type="button" disabled={!currentResult.has_more || loading || filters.offset >= 100000} onClick={() => { setFilters((current) => updateFleetPage(current, 'next', currentResult.has_more)); setSelectedId(null); setCreatedTask(null) }}>Next</button>
             </div>
           </div>
         </>
@@ -135,7 +145,7 @@ function RemoteSensorFleet() {
 
       {selectedDetail && (
         <aside className="remote-sensor-detail" aria-label={`Sensor details: ${selectedDetail.name}`}>
-          <div className="remote-sensor-detail-heading"><h3>{selectedDetail.name}</h3><button type="button" onClick={() => setSelectedId(null)}>Close details</button></div>
+          <div className="remote-sensor-detail-heading"><h3>{selectedDetail.name}</h3><button type="button" onClick={() => { setSelectedId(null); setCreatedTask(null) }}>Close details</button></div>
           <h4>Identity / Status</h4>
           <dl>
             <div><dt>Sensor ID</dt><dd>{selectedDetail.id}</dd></div>
@@ -151,7 +161,15 @@ function RemoteSensorFleet() {
         </aside>
       )}
       <RemoteSensorFleetManagement sensor={selectedDetail} onRefreshFleet={refreshFleet} />
-      <RemoteSensorTaskHistory selectedSensor={selectedDetail} />
+      <RemoteSensorTaskOperations key={selectedDetail?.id ?? 'no-sensor'} sensor={selectedDetail}
+        onTaskCreated={(task) => {
+          if (task.sensor_id === selectedDetail?.id) {
+            setCreatedTask(task)
+            setHistoryRefreshGeneration((value) => value + 1)
+          }
+        }} />
+      <RemoteSensorTaskHistory selectedSensor={selectedDetail} refreshSignal={historyRefreshGeneration}
+        createdTask={createdTask} />
     </section>
   )
 }
