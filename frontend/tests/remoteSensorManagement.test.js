@@ -79,7 +79,8 @@ test('management request generations ignore stale success and error across entit
   assert.equal(guard.isCurrent(current), false)
 })
 
-test('no unsupported mutation, task, or command helper is exported', () => {
+test('no task mutation, command, or unsupported delete helper is exported', () => {
   const exported = Object.keys(api)
-  assert.equal(exported.some((name) => /^delete(RemoteSensor|RemoteSite)|^rename|^move|^updateSensorCapabilities|task|command|history/i.test(name)), false)
+  assert.equal(exported.some((name) => /^delete(RemoteSensor|RemoteSite)|^rename|^move|^updateSensorCapabilities|^(create|retry|cancel|mutate).*task|command/i.test(name)), false)
+  assert.equal(typeof api.loadRemoteSensorTaskHistory, 'function')
 })

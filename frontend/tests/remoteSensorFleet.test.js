@@ -42,7 +42,7 @@ test('invalid fleet query values are rejected before request and are not forward
 test('fleet read helper performs GET only, disables caching, and propagates errors', async () => {
   assert.equal(typeof remoteSensorApi.buildRemoteSensorFleetQuery, 'function')
   assert.equal(typeof remoteSensorApi.loadRemoteSensorFleet, 'function')
-  assert.equal(Object.keys(remoteSensorApi).some((key) => /task|command|deleteSensor|deleteSite/i.test(key)), false)
+  assert.equal(Object.keys(remoteSensorApi).some((key) => /create.*task|retry.*task|cancel.*task|mutate.*task|command|deleteSensor|deleteSite/i.test(key)), false)
   const originalFetch = globalThis.fetch
   const calls = []
   globalThis.fetch = async (...args) => {

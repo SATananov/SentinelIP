@@ -2290,6 +2290,64 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.remote-task-history {
+  margin-top: 22px;
+  border-top: 1px solid #2b303a;
+  padding-top: 18px;
+}
+
+.remote-task-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.remote-task-history-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.remote-task-history-filters label {
+  display: grid;
+  gap: 5px;
+  color: #8d95a5;
+  font-size: 0.75rem;
+}
+
+.remote-task-history-filters input,
+.remote-task-history-filters select {
+  min-width: 0;
+  width: 100%;
+}
+
+.remote-task-table {
+  min-width: 940px;
+}
+
+.remote-task-expired {
+  display: block;
+  color: #e5ba68;
+  font-weight: 600;
+}
+
+.remote-task-detail {
+  margin-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .remote-task-history-filters {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .remote-task-history-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
 .exposure-table-wrap {
   overflow-x: auto;
 }

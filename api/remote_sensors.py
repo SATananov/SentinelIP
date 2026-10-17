@@ -1,6 +1,7 @@
 """Direct-loopback management, separate from machine enrollment/authentication."""
 import ipaddress
 from collections.abc import Callable
+from datetime import datetime
 from typing import Literal
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
@@ -139,6 +140,28 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
             raise HTTPException(404, str(exc)) from exc
         except RemoteSensorError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @route('/sensor-tasks', method='GET')
+    def list_sensor_tasks(
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=100000),
+        sensor_id: int | None = Query(default=None, gt=0),
+        site_id: int | None = Query(default=None, gt=0),
+        scope_id: int | None = Query(default=None, gt=0),
+        device_id: int | None = Query(default=None, gt=0),
+        task_type: Literal['DISCOVER_NETWORK', 'DISCOVER_SERVICES'] | None = None,
+        status: Literal['PENDING', 'CLAIMED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'] | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+    ):
+        try:
+            return RemoteTaskStore(store_provider()).list_task_history(
+                limit=limit, offset=offset, sensor_id=sensor_id, site_id=site_id,
+                scope_id=scope_id, device_id=device_id, task_type=task_type, status=status,
+                created_after=created_after, created_before=created_before,
+            )
+        except RemoteTaskError as exc:
+            raise HTTPException(exc.status_code, {'code': exc.code, 'detail': str(exc)}) from exc
 
     @route('/sensors/{sensor_id}', method='GET')
     def get_sensor(sensor_id: int):

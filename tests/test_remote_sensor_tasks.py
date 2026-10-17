@@ -308,3 +308,129 @@ def test_no_execution_escape_routes_and_scope_assignment_is_management_only(cont
                         json={'scope_id':scope['id']}).status_code == 403
     assert machine.post(f"/sensors/{sensor['id']}/scope-assignments",headers=headers(context),
                         json={'scope_id':scope['id']}).status_code == 403
+
+
+def test_operator_task_history_is_bounded_safe_and_read_only(context):
+    store, sensor, scope, device = context['store'], context['sensor'].record, context['scope'], context['device']
+    history = RemoteTaskStore(store)
+    network_task = history.create_task(sensor['id'], scope['id'], 'DISCOVER_NETWORK')
+    service_task = history.create_task(sensor['id'], scope['id'], 'DISCOVER_SERVICES', device_id=device['id'])
+    with get_connection(store.db_path) as connection:
+        connection.execute("""UPDATE remote_sensor_tasks SET status='FAILED',failed_at=?,error_code=?,
+            error_message=?,result_digest=?,created_by_source=? WHERE id=?""",
+            ((NOW + timedelta(seconds=1)).isoformat(), 'SCANNER_TIMEOUT', 'raw exception / secret output',
+             'private-digest', 'internal-source', network_task['id']))
+        connection.execute('UPDATE remote_sensor_tasks SET created_at=? WHERE id=?',
+                           ((NOW + timedelta(seconds=2)).isoformat(), network_task['id']))
+        connection.execute("UPDATE remote_sensor_tasks SET expires_at=? WHERE id=?",
+                           ((NOW - timedelta(seconds=1)).isoformat(), service_task['id']))
+        before = connection.execute('SELECT * FROM remote_sensor_tasks ORDER BY id').fetchall()
+
+    response = context['admin'].get('/sensor-tasks?limit=1')
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    body = response.json()
+    assert body['limit'] == 1 and body['offset'] == 0 and body['has_more'] is True
+    row = body['items'][0]
+    assert row['id'] == network_task['id']
+    assert row['status'] == 'FAILED' and row['expired'] is False
+    assert row['failure_code'] == 'SCANNER_TIMEOUT'
+    assert row['failure_message_safe'] == 'Sensor scanner timed out.'
+    assert row['sensor_name'] == 'Sensor A' and row['site_name'] == 'Home'
+    assert row['scope_name'] is not None and row['canonical_target'] == '192.168.1.0/24'
+    assert set(row) == {
+        'id', 'sensor_id', 'sensor_name', 'site_id', 'site_name', 'scope_id', 'scope_name',
+        'canonical_target', 'target_device_id', 'target_ip', 'task_type', 'status', 'created_at',
+        'expires_at', 'claimed_at', 'started_at', 'completed_at', 'failed_at', 'attempt_count',
+        'failure_code', 'failure_message_safe', 'expired',
+    }
+    assert not any(key in row for key in ('error_message', 'result_digest', 'created_by_source', 'payload', 'result'))
+    assert 'raw exception' not in response.text and 'private-digest' not in response.text
+    with get_connection(store.db_path) as connection:
+        after = connection.execute('SELECT * FROM remote_sensor_tasks ORDER BY id').fetchall()
+    assert before == after
+
+
+def test_operator_task_history_filters_expiry_and_safe_unknown_failure(context):
+    store, sensor, scope, device = context['store'], context['sensor'].record, context['scope'], context['device']
+    history = RemoteTaskStore(store)
+    pending = history.create_task(sensor['id'], scope['id'], 'DISCOVER_NETWORK')
+    service = history.create_task(sensor['id'], scope['id'], 'DISCOVER_SERVICES', device_id=device['id'])
+    failed = history.create_task(sensor['id'], scope['id'], 'DISCOVER_NETWORK')
+    with get_connection(store.db_path) as connection:
+        connection.execute("UPDATE remote_sensor_tasks SET expires_at=? WHERE id=?",
+                           ((NOW - timedelta(seconds=1)).isoformat(), pending['id']))
+        connection.execute("UPDATE remote_sensor_tasks SET status='COMPLETED',error_code=?,completed_at=? WHERE id=?",
+                           ('CANCELLED', NOW.isoformat(), service['id']))
+        connection.execute("UPDATE remote_sensor_tasks SET status='FAILED',error_code=?,error_message=?,failed_at=? WHERE id=?",
+                           ('SECRET_TRACE_VALUE', 'private traceback', NOW.isoformat(), failed['id']))
+    response = context['admin'].get('/sensor-tasks', params={
+        'sensor_id': sensor['id'], 'site_id': context['site']['id'], 'scope_id': scope['id'],
+        'device_id': device['id'], 'task_type': 'DISCOVER_SERVICES', 'status': 'COMPLETED',
+        'created_after': (NOW - timedelta(days=1)).isoformat(),
+        'created_before': (NOW + timedelta(days=1)).isoformat(),
+    })
+    assert response.status_code == 200
+    assert [row['id'] for row in response.json()['items']] == [service['id']]
+    assert response.json()['items'][0]['expired'] is False
+    overdue = context['admin'].get('/sensor-tasks', params={'sensor_id': sensor['id'], 'status': 'PENDING'}).json()
+    assert overdue['items'][0]['expired'] is True
+    unknown = context['admin'].get('/sensor-tasks', params={'sensor_id': sensor['id'], 'status': 'FAILED'}).json()
+    assert unknown['items'][0]['failure_code'] == 'UNKNOWN_FAILURE'
+    assert unknown['items'][0]['failure_message_safe'] == 'Unknown task failure.'
+    assert 'SECRET_TRACE_VALUE' not in str(unknown) and 'private traceback' not in str(unknown)
+    for params in (
+        {'created_after': NOW.isoformat()},
+        {'created_after': '2026-10-13T00:00:00', 'created_before': (NOW + timedelta(days=1)).isoformat()},
+        {'created_after': NOW.isoformat(), 'created_before': (NOW - timedelta(seconds=1)).isoformat()},
+        {'created_after': NOW.isoformat(), 'created_before': (NOW + timedelta(days=91)).isoformat()},
+        {'device_id': 0},
+    ):
+        assert context['admin'].get('/sensor-tasks', params=params).status_code == 422
+
+
+def test_operator_task_history_reuses_direct_local_boundary(context):
+    assert context['machine'].get('/sensor-tasks').status_code == 403
+    for headers_to_reject in (
+        {'X-Forwarded-For': '127.0.0.1'},
+        {'Forwarded': 'for=127.0.0.1'},
+        {'Authorization': 'Bearer arbitrary'},
+        {'X-SentinelIP-Sensor-ID': '1'},
+        {'X-SentinelIP-Sensor-Token': 'secret'},
+    ):
+        response = context['admin'].get('/sensor-tasks', headers=headers_to_reject)
+        assert response.status_code == 403
+
+
+def test_task_history_evaluates_expiry_with_one_request_clock(context):
+    task = create_network_task(context)
+    calls = []
+    fixed = context['clock'][0]
+    context['store'].clock = lambda: calls.append(fixed) or fixed
+    response = context['admin'].get('/sensor-tasks')
+    assert response.status_code == 200
+    assert response.json()['evaluated_at'] == fixed.isoformat()
+    assert calls == [fixed]
+    assert response.json()['items'][0]['id'] == task['id']
+
+
+def test_operator_task_history_projects_every_persisted_state_without_marking_terminal_expired(context):
+    store, sensor, scope = context['store'], context['sensor'].record, context['scope']
+    history = RemoteTaskStore(store)
+    statuses = ('PENDING', 'CLAIMED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')
+    tasks = [history.create_task(sensor['id'], scope['id'], 'DISCOVER_NETWORK') for _ in statuses]
+    with get_connection(store.db_path) as connection:
+        for task, status in zip(tasks, statuses, strict=True):
+            connection.execute('''UPDATE remote_sensor_tasks SET status=?,expires_at=?,attempt_count=2,
+                failed_at=CASE WHEN ? IN ('FAILED','CANCELLED') THEN ? ELSE NULL END,
+                completed_at=CASE WHEN ?='COMPLETED' THEN ? ELSE NULL END WHERE id=?''',
+                (status, (NOW - timedelta(seconds=1)).isoformat(), status, NOW.isoformat(),
+                 status, NOW.isoformat(), task['id']))
+    response = context['admin'].get('/sensor-tasks?limit=100')
+    assert response.status_code == 200
+    rows = {row['id']: row for row in response.json()['items']}
+    for task, status in zip(tasks, statuses, strict=True):
+        row = rows[task['id']]
+        assert row['status'] == status
+        assert row['attempt_count'] == 2
+        assert row['expired'] is (status not in {'COMPLETED', 'FAILED', 'CANCELLED'})

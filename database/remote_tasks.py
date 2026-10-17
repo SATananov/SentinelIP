@@ -1,5 +1,5 @@
 """Typed, assignment-bound remote sensor task persistence."""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import uuid
 
@@ -9,6 +9,23 @@ from services.remote_sensor_models import Capability, RemoteSensorError, private
 
 TASK_TYPES = frozenset({'DISCOVER_NETWORK', 'DISCOVER_SERVICES'})
 TASK_TTL_SECONDS = 900
+TASK_STATES = frozenset({'PENDING', 'CLAIMED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'})
+TASK_FAILURE_MESSAGES = {
+    'TASK_EXPIRED': 'Task expired before completion.',
+    'SENSOR_DISABLED': 'Sensor was unavailable for this task.',
+    'SCOPE_DISABLED': 'Assigned scope was unavailable for this task.',
+    'SCOPE_NOT_ASSIGNED': 'The task scope was no longer assigned.',
+    'CAPABILITY_NOT_ALLOWED': 'The sensor did not have the required declared capability.',
+    'TARGET_OUTSIDE_SCOPE': 'The task target was outside the assigned scope.',
+    'CANCELLED': 'Task was cancelled by the sensor.',
+    'SCANNER_TIMEOUT': 'Sensor scanner timed out.',
+    'SCANNER_FAILED': 'Sensor scanner reported a failure.',
+    'INVALID_RESULT': 'Sensor returned an invalid result.',
+    'RESULT_OUTSIDE_SCOPE': 'Sensor result was outside the assigned scope.',
+}
+TASK_FAILURE_CODES = frozenset(TASK_FAILURE_MESSAGES)
+TERMINAL_TASK_STATES = frozenset({'COMPLETED', 'FAILED', 'CANCELLED'})
+TASK_HISTORY_MAX_RANGE = timedelta(days=90)
 
 
 class RemoteTaskError(ValueError):
@@ -26,6 +43,116 @@ class RemoteTaskStore:
     @staticmethod
     def _task(row):
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _history_datetime(value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except ValueError:
+                return None
+        else:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+
+    @classmethod
+    def _history_timestamp(cls, value):
+        parsed = cls._history_datetime(value)
+        return parsed.isoformat() if parsed is not None else None
+
+    def list_task_history(self, *, limit=100, offset=0, sensor_id=None, site_id=None,
+                          scope_id=None, device_id=None, task_type=None, status=None,
+                          created_after=None, created_before=None):
+        """Return a bounded operator-safe task projection without mutating tasks."""
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 100000:
+            raise RemoteTaskError('INVALID_HISTORY_PAGINATION', 'Invalid task history pagination.', 422)
+        for value, label in ((sensor_id, 'sensor_id'), (site_id, 'site_id'),
+                             (scope_id, 'scope_id'), (device_id, 'device_id')):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise RemoteTaskError('INVALID_HISTORY_FILTER', f'{label} must be a positive integer.', 422)
+        if task_type is not None and task_type not in TASK_TYPES:
+            raise RemoteTaskError('INVALID_HISTORY_FILTER', 'Unsupported task type filter.', 422)
+        if status is not None and status not in TASK_STATES:
+            raise RemoteTaskError('INVALID_HISTORY_FILTER', 'Unsupported task status filter.', 422)
+
+        after = self._history_datetime(created_after)
+        before = self._history_datetime(created_before)
+        if ((created_after is not None and after is None)
+                or (created_before is not None and before is None)):
+            raise RemoteTaskError('INVALID_HISTORY_FILTER', 'Creation time filters must be valid timezone-aware timestamps.', 422)
+        if (after is None) != (before is None):
+            raise RemoteTaskError('INVALID_HISTORY_FILTER', 'Provide both creation time bounds.', 422)
+        if after is not None and (after >= before or before - after > TASK_HISTORY_MAX_RANGE):
+            raise RemoteTaskError('INVALID_HISTORY_FILTER', 'Creation time range must be ordered and no longer than 90 days.', 422)
+
+        evaluated_at = self.sensors._now()
+        clauses = []
+        parameters = []
+        for column, value in (
+            ('t.sensor_id', sensor_id), ('t.site_id', site_id), ('t.scope_id', scope_id),
+            ('t.target_device_id', device_id), ('t.task_type', task_type), ('t.status', status),
+        ):
+            if value is not None:
+                clauses.append(f'{column}=?')
+                parameters.append(value)
+        if after is not None:
+            clauses.extend(('t.created_at>=?', 't.created_at<=?'))
+            parameters.extend((after.isoformat(), before.isoformat()))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+        with self.sensors._connection() as connection:
+            rows = connection.execute(f'''SELECT
+                    t.id, t.sensor_id, rs.name AS sensor_name,
+                    t.site_id, s.name AS site_name,
+                    t.scope_id, sc.name AS scope_name, sc.canonical_target,
+                    t.target_device_id, t.target_ip, t.task_type, t.status,
+                    t.created_at, t.expires_at, t.claimed_at, t.started_at,
+                    t.completed_at, t.failed_at, t.attempt_count, t.error_code
+                FROM remote_sensor_tasks t
+                LEFT JOIN remote_sensors rs ON rs.id=t.sensor_id AND rs.site_id=t.site_id
+                LEFT JOIN sites s ON s.id=t.site_id
+                LEFT JOIN authorized_scopes sc ON sc.id=t.scope_id
+                {where}
+                ORDER BY t.created_at DESC, t.id DESC
+                LIMIT ? OFFSET ?''', (*parameters, limit + 1, offset)).fetchall()
+
+        items = []
+        for row in rows[:limit]:
+            persisted_status = row['status'] if row['status'] in TASK_STATES else 'UNKNOWN'
+            task_type_value = row['task_type'] if row['task_type'] in TASK_TYPES else 'UNKNOWN'
+            expires_at = self._history_datetime(row['expires_at'])
+            failure_code = None
+            failure_message_safe = None
+            if persisted_status in {'FAILED', 'CANCELLED'}:
+                failure_code = row['error_code'] if row['error_code'] in TASK_FAILURE_CODES else 'UNKNOWN_FAILURE'
+                failure_message_safe = TASK_FAILURE_MESSAGES.get(failure_code, 'Unknown task failure.')
+            items.append({
+                'id': row['id'], 'sensor_id': row['sensor_id'], 'sensor_name': row['sensor_name'],
+                'site_id': row['site_id'], 'site_name': row['site_name'],
+                'scope_id': row['scope_id'], 'scope_name': row['scope_name'],
+                'canonical_target': row['canonical_target'],
+                'target_device_id': row['target_device_id'], 'target_ip': row['target_ip'],
+                'task_type': task_type_value, 'status': persisted_status,
+                'created_at': self._history_timestamp(row['created_at']),
+                'expires_at': self._history_timestamp(row['expires_at']),
+                'claimed_at': self._history_timestamp(row['claimed_at']),
+                'started_at': self._history_timestamp(row['started_at']),
+                'completed_at': self._history_timestamp(row['completed_at']),
+                'failed_at': self._history_timestamp(row['failed_at']),
+                'attempt_count': row['attempt_count'], 'failure_code': failure_code,
+                'failure_message_safe': failure_message_safe,
+                'expired': bool(expires_at is not None and expires_at < evaluated_at
+                                and persisted_status not in TERMINAL_TASK_STATES),
+            })
+        return {
+            'evaluated_at': evaluated_at.isoformat(), 'items': items,
+            'limit': limit, 'offset': offset, 'has_more': len(rows) > limit,
+        }
 
     def _context(self, connection, sensor_id, scope_id):
         try:

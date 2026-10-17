@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadRemoteSensorFleet } from '../services/remoteSensorApi.js'
 import RemoteSensorFleetManagement from './RemoteSensorFleetManagement.jsx'
+import RemoteSensorTaskHistory from './RemoteSensorTaskHistory.jsx'
 import {
   createFleetRequestGuard,
   fleetCapabilitiesLabel,
@@ -150,6 +151,7 @@ function RemoteSensorFleet() {
         </aside>
       )}
       <RemoteSensorFleetManagement sensor={selectedDetail} onRefreshFleet={refreshFleet} />
+      <RemoteSensorTaskHistory selectedSensor={selectedDetail} />
     </section>
   )
 }

@@ -1,5 +1,7 @@
 const API_BASE = 'http://127.0.0.1:8000'
 const FLEET_STATUSES = new Set(['REVOKED', 'DISABLED', 'PENDING', 'ONLINE', 'OFFLINE', 'UNKNOWN'])
+const TASK_TYPES = new Set(['DISCOVER_NETWORK', 'DISCOVER_SERVICES'])
+const TASK_STATES = new Set(['PENDING', 'CLAIMED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'])
 
 function positiveId(value, label) {
   const id = Number(value)
@@ -77,6 +79,59 @@ export async function loadRemoteSensorFleet(filters = {}, signal) {
       // Keep the status-only message when the response has no JSON body.
     }
     throw new Error(`Sensor fleet request failed (${response.status})${detail}`)
+  }
+  return response.json()
+}
+
+export function buildRemoteSensorTaskHistoryQuery(filters = {}) {
+  const limit = filters.limit ?? 100
+  const offset = filters.offset ?? 0
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Task history limit must be between 1 and 100.')
+  if (!Number.isInteger(offset) || offset < 0 || offset > 100000) throw new Error('Task history offset must be between 0 and 100000.')
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  for (const key of ['sensor_id', 'site_id', 'scope_id', 'device_id']) {
+    if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') {
+      params.set(key, String(positiveId(filters[key], key.replace('_', ' ').toUpperCase())))
+    }
+  }
+  if (filters.task_type) {
+    if (!TASK_TYPES.has(filters.task_type)) throw new Error('Task type filter is unsupported.')
+    params.set('task_type', filters.task_type)
+  }
+  if (filters.status) {
+    if (!TASK_STATES.has(filters.status)) throw new Error('Task status filter is unsupported.')
+    params.set('status', filters.status)
+  }
+  for (const key of ['created_after', 'created_before']) {
+    if (filters[key] !== undefined && filters[key] !== '') {
+      if (typeof filters[key] !== 'string' || !/(Z|[+-]\d{2}:\d{2})$/i.test(filters[key]) || !Number.isFinite(Date.parse(filters[key]))) {
+        throw new Error('Creation time filters must be timezone-aware timestamps.')
+      }
+      params.set(key, new Date(filters[key]).toISOString())
+    }
+  }
+  if (params.has('created_after') !== params.has('created_before')) throw new Error('Provide both creation time bounds.')
+  if (params.has('created_after')) {
+    const after = Date.parse(params.get('created_after'))
+    const before = Date.parse(params.get('created_before'))
+    if (after >= before || before - after > 90 * 24 * 60 * 60 * 1000) {
+      throw new Error('Creation time range must be ordered and no longer than 90 days.')
+    }
+  }
+  return params.toString()
+}
+
+export async function loadRemoteSensorTaskHistory(filters = {}, signal) {
+  const query = buildRemoteSensorTaskHistoryQuery(filters)
+  const response = await fetch(`${API_BASE}/sensor-tasks?${query}`, { signal, cache: 'no-store' })
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const body = await response.json()
+      detail = typeof body?.detail === 'string' ? `: ${body.detail}`
+        : typeof body?.detail?.detail === 'string' ? `: ${body.detail.detail}` : ''
+    } catch { /* Use a status-only error for non-JSON responses. */ }
+    throw new Error(`Task history request failed (${response.status})${detail}`)
   }
   return response.json()
 }
