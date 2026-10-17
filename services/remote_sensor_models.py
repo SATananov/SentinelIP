@@ -1,8 +1,9 @@
 """Platform-neutral remote sensor policy; no execution or inventory ingestion."""
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import ipaddress
+import math
 
 
 class RemoteSensorError(ValueError):
@@ -43,6 +44,16 @@ class SensorStatus(str, Enum):
     DISABLED = "DISABLED"
 
 
+class FleetSensorStatus(str, Enum):
+    """Read-only operator status; intentionally separate from runtime status."""
+    REVOKED = "REVOKED"
+    DISABLED = "DISABLED"
+    PENDING = "PENDING"
+    ONLINE = "ONLINE"
+    OFFLINE = "OFFLINE"
+    UNKNOWN = "UNKNOWN"
+
+
 HEARTBEAT_WINDOW = timedelta(minutes=5)
 RFC1918 = tuple(ipaddress.IPv4Network(c) for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
@@ -63,6 +74,42 @@ def sensor_status(*, enabled, site_enabled, last_seen_at, now):
         return SensorStatus.PENDING.value
     elapsed = now - datetime.fromisoformat(last_seen_at)
     return (SensorStatus.ONLINE if timedelta(0) <= elapsed <= HEARTBEAT_WINDOW else SensorStatus.OFFLINE).value
+
+
+def fleet_sensor_health(*, enabled, site_enabled, credential_revoked_at, last_seen_at, now):
+    """Return fleet-specific status and integer heartbeat age at one aware UTC instant."""
+    if now.tzinfo is None:
+        raise RemoteSensorError("An aware fleet evaluation clock is required.")
+    age = None
+    valid_heartbeat = last_seen_at is not None
+    if valid_heartbeat:
+        try:
+            heartbeat = datetime.fromisoformat(last_seen_at)
+            if heartbeat.tzinfo is None:
+                valid_heartbeat = False
+            else:
+                elapsed = (now.astimezone(timezone.utc) - heartbeat.astimezone(timezone.utc)).total_seconds()
+                if elapsed < 0:
+                    valid_heartbeat = False
+                else:
+                    age = math.ceil(elapsed)
+        except (TypeError, ValueError, OverflowError):
+            valid_heartbeat = False
+    if credential_revoked_at is not None:
+        return FleetSensorStatus.REVOKED.value, age
+    if not enabled:
+        return FleetSensorStatus.DISABLED.value, age
+    if site_enabled is None:
+        return FleetSensorStatus.UNKNOWN.value, age
+    if not site_enabled:
+        return FleetSensorStatus.DISABLED.value, age
+    if last_seen_at is None:
+        return FleetSensorStatus.PENDING.value, None
+    if not valid_heartbeat:
+        return FleetSensorStatus.UNKNOWN.value, None
+    if age <= HEARTBEAT_WINDOW.total_seconds():
+        return FleetSensorStatus.ONLINE.value, age
+    return FleetSensorStatus.OFFLINE.value, age
 
 
 def private_lan(cidr):

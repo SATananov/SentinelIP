@@ -13,7 +13,7 @@ from services.remote_sensor_models import (
     IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError,
     RemoteSensorCapacityError, RemoteSensorConflictError, RemoteSensorRateLimitError,
     RemoteSensorReplayError,
-    capabilities, private_lan, sensor_status,
+    capabilities, fleet_sensor_health, private_lan, sensor_status,
 )
 from services.scope_authorization import require_private_network_scope
 from services.telemetry_auth import TOKEN_ITERATIONS, hash_sensor_token, verify_sensor_token
@@ -213,6 +213,95 @@ class RemoteSensorStore:
             return [self._sensor(c, r[0]) for r in c.execute(
                 "SELECT id FROM remote_sensors WHERE site_id=? ORDER BY id LIMIT ? OFFSET ?", (site_id, limit, offset)
             ).fetchall()]
+
+    def list_fleet_sensors(self, *, limit=100, offset=0, site_id=None,
+                           status=None, platform=None, enabled=None):
+        """Read a bounded all-sites inventory using one request-wide evaluation clock."""
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 100000:
+            raise RemoteSensorError("Invalid fleet pagination.")
+        if site_id is not None and (type(site_id) is not int or site_id <= 0):
+            raise RemoteSensorError("Invalid site filter.")
+        if status is not None and status not in {"REVOKED", "DISABLED", "PENDING", "ONLINE", "OFFLINE", "UNKNOWN"}:
+            raise RemoteSensorError("Invalid fleet status filter.")
+        if platform is not None and (not isinstance(platform, str) or not platform or len(platform) > 64):
+            raise RemoteSensorError("Invalid platform filter.")
+        if enabled is not None and type(enabled) is not bool:
+            raise RemoteSensorError("Invalid enabled filter.")
+
+        evaluated_at = self._now()
+        with self._connection() as c:
+            if site_id is not None and c.execute("SELECT 1 FROM sites WHERE id=?", (site_id,)).fetchone() is None:
+                raise LookupError("Site not found.")
+
+            def fleet_status_sql(last_seen_at, sensor_enabled, revoked_at, site_enabled):
+                return fleet_sensor_health(
+                    enabled=bool(sensor_enabled), site_enabled=None if site_enabled is None else bool(site_enabled),
+                    credential_revoked_at=revoked_at, last_seen_at=last_seen_at, now=evaluated_at,
+                )[0]
+
+            c.create_function("fleet_status", 4, fleet_status_sql, deterministic=False)
+            query = """
+                WITH page_sensors AS (
+                    SELECT rs.id, rs.sensor_uuid, rs.name, rs.site_id,
+                           s.name AS site_name, s.enabled AS site_enabled,
+                           rs.platform, rs.version, rs.enabled, rs.registered_at,
+                           rs.last_seen_at, rs.credential_revoked_at, rs.capabilities
+                    FROM remote_sensors rs
+                    LEFT JOIN sites s ON s.id=rs.site_id
+                    WHERE (? IS NULL OR rs.site_id=?)
+                      AND (? IS NULL OR rs.platform=?)
+                      AND (? IS NULL OR rs.enabled=?)
+                      AND (? IS NULL OR fleet_status(rs.last_seen_at, rs.enabled,
+                           rs.credential_revoked_at, s.enabled)=?)
+                    ORDER BY rs.site_id ASC, lower(trim(rs.name)) ASC, rs.id ASC
+                    LIMIT ? OFFSET ?
+                ), page_assignments AS (
+                    SELECT a.sensor_id, COUNT(*) AS assignment_count
+                    FROM sensor_scope_assignments a
+                    WHERE a.sensor_id IN (SELECT id FROM page_sensors)
+                    GROUP BY a.sensor_id
+                )
+                SELECT p.*, COALESCE(a.assignment_count, 0) AS assignment_count
+                FROM page_sensors p
+                LEFT JOIN page_assignments a ON a.sensor_id=p.id
+                ORDER BY p.site_id ASC, lower(trim(p.name)) ASC, p.id ASC
+            """
+            rows = c.execute(query, (
+                site_id, site_id, platform, platform,
+                None if enabled is None else int(enabled), None if enabled is None else int(enabled),
+                status, status, limit + 1, offset,
+            )).fetchall()
+
+        has_more = len(rows) > limit
+        items = []
+        for row in rows[:limit]:
+            row = dict(row)
+            fleet_status, heartbeat_age = fleet_sensor_health(
+                enabled=bool(row["enabled"]),
+                site_enabled=None if row["site_enabled"] is None else bool(row["site_enabled"]),
+                credential_revoked_at=row["credential_revoked_at"],
+                last_seen_at=row["last_seen_at"], now=evaluated_at,
+            )
+            try:
+                raw_capabilities = json.loads(row["capabilities"])
+                declared_capabilities = list(capabilities(raw_capabilities))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                declared_capabilities = None
+            items.append({
+                "id": row["id"], "sensor_uuid": row["sensor_uuid"], "name": row["name"],
+                "site_id": row["site_id"], "site_name": row["site_name"],
+                "site_enabled": None if row["site_enabled"] is None else bool(row["site_enabled"]),
+                "platform": row["platform"], "version": row["version"],
+                "enabled": bool(row["enabled"]), "registered_at": row["registered_at"],
+                "last_seen_at": row["last_seen_at"], "status": fleet_status,
+                "heartbeat_age_seconds": heartbeat_age,
+                "capabilities": declared_capabilities,
+                "assignment_count": row["assignment_count"],
+            })
+        return {
+            "evaluated_at": evaluated_at.isoformat(), "items": items,
+            "limit": limit, "offset": offset, "has_more": has_more,
+        }
 
     def set_sensor_enabled(self, sensor_id, enabled):
         enabled = _boolean(enabled)

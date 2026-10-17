@@ -18,6 +18,7 @@ import {
 
 import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
 import NetworkWorkspace from './components/NetworkWorkspace.jsx'
+import RemoteSensorFleet from './components/RemoteSensorFleet.jsx'
 import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
 import {
@@ -357,6 +358,8 @@ function App() {
       </section>
 
       <NetworkWorkspace />
+
+      <RemoteSensorFleet />
 
       <SecurityReviewPanel
         refreshSignal={lastUpdated}

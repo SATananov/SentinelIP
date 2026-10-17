@@ -69,6 +69,7 @@ def test_revoked_enrollment_cannot_be_consumed(context):
 def test_browser_and_proxy_access_rejected(context, headers):
     client, store = context
     assert client.post('/sites', json={'name':'Not allowed'}, headers=headers).status_code == 403
+    assert client.get('/sensors', headers=headers).status_code == 403
     assert store.list_sites() == []
 
 
@@ -80,7 +81,29 @@ def test_remote_peer_cannot_manage_even_with_sensor_credential(context):
     client = TestClient(api.app, base_url='http://127.0.0.1', client=('192.168.1.8', 5555))
     response = client.post('/sites', json={'name':'No'}, headers={'Authorization': f'Bearer {sensor.secret}'})
     assert response.status_code == 403
+    assert client.get('/sensors', headers={'Authorization': f'Bearer {sensor.secret}'}).status_code == 403
+    assert client.get('/sensors', headers={'X-SentinelIP-Sensor-ID': str(sensor.record['id'])}).status_code == 403
+    assert client.get('/sensors', headers={'X-SentinelIP-Sensor-Token': 'not-a-management-credential'}).status_code == 403
+    assert client.get('/sensors', headers={'X-Sensor-UUID': sensor.record['sensor_uuid']}).status_code == 403
     assert len(store.list_sites()) == 1
+
+
+def test_fleet_route_filters_pagination_and_unknown_site(context):
+    client, store = context
+    site = store.create_site('Home')
+    invite = store.create_enrollment(site['id'])
+    sensor = store.consume_enrollment(invite.secret, name='Linux one', platform='linux', version='1')
+    response = client.get('/sensors?limit=1&offset=0&site_id=1&platform=linux&enabled=true')
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    payload = response.json()
+    assert payload['limit'] == 1 and payload['offset'] == 0 and payload['has_more'] is False
+    assert payload['items'][0]['id'] == sensor.record['id']
+    assert payload['items'][0]['site_name'] == 'Home'
+    assert client.get('/sensors?site_id=999').status_code == 404
+    assert client.get('/sensors?status=HEALTHY').status_code == 422
+    assert client.get('/sensors?limit=101').status_code == 422
+    assert client.get('/sensors?offset=100001').status_code == 422
 
 
 def test_no_execution_result_or_sensor_transport_routes(context):

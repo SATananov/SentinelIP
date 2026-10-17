@@ -2138,6 +2138,84 @@ h2 {
   }
 }
 
+.remote-sensor-fleet { margin-top: 24px; }
+.remote-sensor-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.remote-sensor-filters label { display: grid; gap: 6px; color: #9aa4b7; font-size: 0.82rem; }
+.remote-sensor-filters input, .remote-sensor-filters select {
+  min-width: 0;
+  border: 1px solid #343c4b;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #e4e9f2;
+  background: #151a23;
+}
+.remote-sensor-table-wrap { overflow-x: auto; }
+.remote-sensor-table { width: 100%; border-collapse: collapse; min-width: 950px; }
+.remote-sensor-table th, .remote-sensor-table td {
+  border-bottom: 1px solid #2b303a;
+  padding: 11px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.remote-sensor-table th { color: #9aa4b7; font-size: 0.76rem; font-weight: 600; }
+.remote-sensor-table td { color: #dce2ec; font-size: 0.86rem; }
+.remote-sensor-table td small, .remote-sensor-detail dd small {
+  display: block;
+  margin-top: 4px;
+  color: #8994a8;
+  font-size: 0.75rem;
+}
+.remote-sensor-select {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.remote-sensor-select strong { color: #eef2f8; }
+.remote-sensor-select small { max-width: 230px; overflow-wrap: anywhere; }
+.remote-sensor-selected { background: rgba(81, 111, 156, 0.12); }
+.remote-sensor-status {
+  display: inline-block;
+  padding: 3px 8px;
+  border: 1px solid #586174;
+  border-radius: 999px;
+  color: #dce2ec;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.remote-sensor-status-online { border-color: #3b8a68; color: #9ce0bd; }
+.remote-sensor-status-offline, .remote-sensor-status-revoked { border-color: #a25a55; color: #f0aaa4; }
+.remote-sensor-status-disabled { border-color: #927d4d; color: #ead28f; }
+.remote-sensor-status-pending, .remote-sensor-status-unknown { border-color: #69758c; color: #c2cada; }
+.remote-sensor-detail {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #343c4b;
+  border-radius: 10px;
+  background: #171c26;
+}
+.remote-sensor-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.remote-sensor-detail-heading h3 { margin: 0; }
+.remote-sensor-detail dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 16px 0 0; }
+.remote-sensor-detail dl div { min-width: 0; }
+.remote-sensor-detail dt { color: #929db1; font-size: 0.77rem; }
+.remote-sensor-detail dd { margin: 5px 0 0; color: #e4e9f2; overflow-wrap: anywhere; }
+.remote-sensor-error { margin: 12px 0; padding: 10px 12px; border: 1px solid #945653; border-radius: 8px; color: #f1b3ad; }
+
+@media (max-width: 560px) {
+  .remote-sensor-detail-heading { align-items: flex-start; }
+  .remote-sensor-detail-heading button { flex: 0 0 auto; }
+}
+
 /* External Exposure Dashboard */
 .exposure-dashboard-panel {
   margin-top: 24px;

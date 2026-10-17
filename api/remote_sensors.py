@@ -1,6 +1,7 @@
 """Direct-loopback management, separate from machine enrollment/authentication."""
 import ipaddress
 from collections.abc import Callable
+from typing import Literal
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
@@ -41,6 +42,8 @@ def local_management(request: Request, response: Response):
         local = False
     if (request.headers.get('authorization') is not None
             or request.headers.get('x-sensor-uuid') is not None
+            or request.headers.get('x-sentinelip-sensor-id') is not None
+            or request.headers.get('x-sentinelip-sensor-token') is not None
             or not local or request.url.hostname not in {'localhost', '127.0.0.1', '::1'}
             or any(h in request.headers for h in ('forwarded', 'x-forwarded-for', 'x-forwarded-host'))
             or request.headers.get('origin') not in (None, 'http://localhost:5173', 'http://127.0.0.1:5173')):
@@ -101,6 +104,25 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
     @route('/sites/{site_id}/sensors', method='GET')
     def list_sensors(site_id: int, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
         return call('list_sensors', site_id, limit, offset)
+
+    @route('/sensors', method='GET')
+    def list_fleet_sensors(
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=100000),
+        site_id: int | None = Query(default=None, ge=1),
+        status: Literal['REVOKED', 'DISABLED', 'PENDING', 'ONLINE', 'OFFLINE', 'UNKNOWN'] | None = None,
+        platform: str | None = Query(default=None, min_length=1, max_length=64),
+        enabled: Literal['true', 'false'] | None = None,
+    ):
+        try:
+            return store_provider().list_fleet_sensors(
+                limit=limit, offset=offset, site_id=site_id, status=status,
+                platform=platform, enabled=None if enabled is None else enabled == 'true',
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except RemoteSensorError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @route('/sensors/{sensor_id}', method='GET')
     def get_sensor(sensor_id: int):
