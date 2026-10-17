@@ -1,6 +1,39 @@
 const API_BASE = 'http://127.0.0.1:8000'
 const FLEET_STATUSES = new Set(['REVOKED', 'DISABLED', 'PENDING', 'ONLINE', 'OFFLINE', 'UNKNOWN'])
 
+function positiveId(value, label) {
+  const id = Number(value)
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`${label} must be a positive integer.`)
+  return id
+}
+
+function boundedPage(options = {}) {
+  const limit = options.limit ?? 100
+  const offset = options.offset ?? 0
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Limit must be between 1 and 100.')
+  if (!Number.isInteger(offset) || offset < 0 || offset > 100000) throw new Error('Offset must be between 0 and 100000.')
+  return new URLSearchParams({ limit: String(limit), offset: String(offset) }).toString()
+}
+
+async function managementRequest(path, { method = 'GET', body, signal } = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method, signal, cache: 'no-store',
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const payload = await response.json()
+      if (typeof payload?.detail === 'string') detail = `: ${payload.detail}`
+      else if (typeof payload?.detail?.detail === 'string') detail = `: ${payload.detail.detail}`
+    } catch { /* Keep a status-only message for non-JSON errors. */ }
+    throw new Error(`Sensor management request failed (${response.status})${detail}`)
+  }
+  if (response.status === 204) return null
+  return response.json()
+}
+
 export function buildRemoteSensorFleetQuery(filters = {}) {
   const limit = filters.limit ?? 100
   const offset = filters.offset ?? 0
@@ -46,4 +79,61 @@ export async function loadRemoteSensorFleet(filters = {}, signal) {
     throw new Error(`Sensor fleet request failed (${response.status})${detail}`)
   }
   return response.json()
+}
+
+export function listRemoteSensorSites(options = {}, signal) {
+  return managementRequest(`/sites?${boundedPage(options)}`, { signal })
+}
+
+export function createRemoteSensorSite({ name, description = '', enabled = true }, signal) {
+  if (typeof name !== 'string' || !name.trim() || name.length > 128) throw new Error('Site name is required and must be at most 128 characters.')
+  if (typeof description !== 'string' || description.length > 1000 || typeof enabled !== 'boolean') throw new Error('Site details are invalid.')
+  return managementRequest('/sites', { method: 'POST', body: { name: name.trim(), description, enabled }, signal })
+}
+
+export function setRemoteSensorSiteEnabled(siteId, enabled, signal) {
+  if (typeof enabled !== 'boolean') throw new Error('Site enabled state must be boolean.')
+  return managementRequest(`/sites/${positiveId(siteId, 'Site ID')}`, { method: 'PATCH', body: { enabled }, signal })
+}
+
+export function listRemoteSensorEnrollments(siteId, options = {}, signal) {
+  return managementRequest(`/sites/${positiveId(siteId, 'Site ID')}/sensor-enrollments?${boundedPage(options)}`, { signal })
+}
+
+export function issueRemoteSensorEnrollment(siteId, ttlSeconds = 900, signal) {
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 3600) throw new Error('Enrollment lifetime must be between 60 and 3600 seconds.')
+  return managementRequest(`/sites/${positiveId(siteId, 'Site ID')}/sensor-enrollments`, { method: 'POST', body: { ttl_seconds: ttlSeconds }, signal })
+}
+
+export function revokeRemoteSensorEnrollment(enrollmentId, signal) {
+  return managementRequest(`/sensor-enrollments/${positiveId(enrollmentId, 'Enrollment ID')}`, { method: 'DELETE', signal })
+}
+
+export function setRemoteSensorEnabled(sensorId, enabled, signal) {
+  if (typeof enabled !== 'boolean') throw new Error('Sensor enabled state must be boolean.')
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}`, { method: 'PATCH', body: { enabled }, signal })
+}
+
+export function revokeRemoteSensorCredential(sensorId, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/credential`, { method: 'DELETE', signal })
+}
+
+export function listRemoteSensorAssignments(sensorId, options = {}, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/scope-assignments?${boundedPage(options)}`, { signal })
+}
+
+export function listEligibleSensorScopes(siteId, sensorId, options = {}, signal) {
+  const query = new URLSearchParams(boundedPage(options))
+  query.set('sensor_id', String(positiveId(sensorId, 'Sensor ID')))
+  return managementRequest(`/sites/${positiveId(siteId, 'Site ID')}/eligible-sensor-scopes?${query}`, { signal })
+}
+
+export function addRemoteSensorAssignment(sensorId, scopeId, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/scope-assignments`, {
+    method: 'POST', body: { scope_id: positiveId(scopeId, 'Scope ID') }, signal,
+  })
+}
+
+export function removeRemoteSensorAssignment(sensorId, scopeId, signal) {
+  return managementRequest(`/sensors/${positiveId(sensorId, 'Sensor ID')}/scope-assignments/${positiveId(scopeId, 'Scope ID')}`, { method: 'DELETE', signal })
 }

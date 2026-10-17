@@ -105,6 +105,22 @@ def register_remote_routes(app: FastAPI, store_provider: Callable[[], RemoteSens
     def list_sensors(site_id: int, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
         return call('list_sensors', site_id, limit, offset)
 
+    @route('/sites/{site_id}/eligible-sensor-scopes', method='GET')
+    def eligible_sensor_scopes(
+        site_id: int,
+        sensor_id: int = Query(gt=0),
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=100000),
+    ):
+        try:
+            return store_provider().list_eligible_assignment_scopes(
+                site_id, sensor_id, limit=limit, offset=offset,
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except RemoteSensorError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @route('/sensors', method='GET')
     def list_fleet_sensors(
         limit: int = Query(100, ge=1, le=100),

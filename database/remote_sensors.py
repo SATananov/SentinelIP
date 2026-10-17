@@ -422,13 +422,108 @@ class RemoteSensorStore:
             c.execute("""INSERT OR IGNORE INTO sensor_scope_assignments
                 (sensor_id,scope_id,site_id,canonical_target,created_at) VALUES (?,?,?,?,?)""",
                 (sensor_id, scope_id, sensor['site_id'], scope['canonical_target'], now))
-            return dict(c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id)).fetchone())
+            result = dict(c.execute("""SELECT a.*,s.name AS scope_name,s.scope_type,
+                s.enabled AS scope_enabled,s.authorized AS scope_authorized
+                FROM sensor_scope_assignments a JOIN authorized_scopes s ON s.id=a.scope_id
+                WHERE a.sensor_id=? AND a.scope_id=?""", (sensor_id, scope_id)).fetchone())
+            result['scope_enabled'] = bool(result['scope_enabled'])
+            result['scope_authorized'] = bool(result['scope_authorized'])
+            return result
 
     def list_assignments(self, sensor_id, limit=100, offset=0):
         self._page(limit, offset)
         with self._connection() as c:
             self._sensor(c, sensor_id)
-            return [dict(r) for r in c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? ORDER BY scope_id LIMIT ? OFFSET ?", (sensor_id, limit, offset))]
+            rows = c.execute("""SELECT a.*,s.name AS scope_name,s.scope_type,
+                s.enabled AS scope_enabled,s.authorized AS scope_authorized
+                FROM sensor_scope_assignments a LEFT JOIN authorized_scopes s ON s.id=a.scope_id
+                WHERE a.sensor_id=? ORDER BY a.scope_id LIMIT ? OFFSET ?""", (sensor_id, limit, offset)).fetchall()
+            assignments = []
+            for row in rows:
+                assignment = dict(row)
+                if assignment['scope_enabled'] is not None:
+                    assignment['scope_enabled'] = bool(assignment['scope_enabled'])
+                if assignment['scope_authorized'] is not None:
+                    assignment['scope_authorized'] = bool(assignment['scope_authorized'])
+                assignments.append(assignment)
+            return assignments
+
+    def list_eligible_assignment_scopes(self, site_id, sensor_id, limit=100, offset=0):
+        """Return a bounded selector projection using the same policy as assignment."""
+        if (type(limit) is not int or not 1 <= limit <= 100
+                or type(offset) is not int or not 0 <= offset <= 100000):
+            raise RemoteSensorError("Invalid eligible-scope pagination.")
+
+        def eligible(scope_type, canonical_target, authorized, enabled,
+                     confirmed_at, confirmation_version, authorization_source,
+                     scope_network_id, network_id, network_cidr,
+                     network_authorized, network_enabled):
+            scope = {
+                'scope_type': scope_type, 'canonical_target': canonical_target,
+                'authorized': bool(authorized), 'enabled': bool(enabled),
+                'authorization_confirmed_at': confirmed_at,
+                'authorization_confirmation_version': confirmation_version,
+                'authorization_source': authorization_source,
+                'network_id': scope_network_id,
+            }
+            network = {
+                'id': network_id, 'cidr': network_cidr,
+                'authorized': bool(network_authorized), 'enabled': bool(network_enabled),
+            }
+            try:
+                require_private_network_scope(network, scope)
+                private_lan(canonical_target)
+                return 1
+            except (RemoteSensorError, ValueError, TypeError):
+                return 0
+
+        with self._connection() as c:
+            site = c.execute("SELECT enabled FROM sites WHERE id=?", (site_id,)).fetchone()
+            if site is None:
+                raise LookupError("Site not found.")
+            sensor = c.execute("SELECT site_id,enabled,credential_revoked_at FROM remote_sensors WHERE id=?", (sensor_id,)).fetchone()
+            if sensor is None:
+                raise LookupError("Sensor not found.")
+            if sensor['site_id'] != site_id:
+                raise RemoteSensorError("Sensor does not belong to this site.")
+            if not site['enabled'] or not sensor['enabled'] or sensor['credential_revoked_at'] is not None:
+                raise RemoteSensorError("An active sensor and site are required for assignment.")
+
+            c.create_function("remote_scope_eligible", 12, eligible, deterministic=False)
+            rows = c.execute("""
+                SELECT s.id, s.name, s.canonical_target, s.scope_type,
+                       s.enabled, s.authorized
+                FROM authorized_scopes s
+                JOIN network_scope_links l ON l.scope_id=s.id
+                JOIN networks n ON n.id=l.network_id
+                LEFT JOIN remote_scope_sites binding ON binding.scope_id=s.id
+                WHERE s.scope_type='PRIVATE_NETWORK' AND s.authorized=1 AND s.enabled=1
+                  AND s.authorization_confirmed_at IS NOT NULL
+                  AND s.authorization_confirmation_version IS NOT NULL
+                  AND s.authorization_source IS NOT NULL
+                  AND n.authorized=1 AND n.enabled=1
+                  AND (binding.site_id IS NULL OR binding.site_id=?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sensor_scope_assignments a
+                      WHERE a.sensor_id=? AND a.scope_id=s.id
+                  )
+                  AND remote_scope_eligible(
+                      s.scope_type,s.canonical_target,s.authorized,s.enabled,
+                      s.authorization_confirmed_at,s.authorization_confirmation_version,
+                      s.authorization_source,l.network_id,n.id,n.cidr,n.authorized,n.enabled
+                  )=1
+                ORDER BY s.id ASC LIMIT ? OFFSET ?
+            """, (site_id, sensor_id, limit + 1, offset)).fetchall()
+        items = []
+        for row in rows[:limit]:
+            item = dict(row)
+            item['enabled'] = bool(item['enabled'])
+            item['authorized'] = bool(item['authorized'])
+            items.append(item)
+        return {
+            'items': items,
+            'limit': limit, 'offset': offset, 'has_more': len(rows) > limit,
+        }
 
     def get_sensor_grants(self, sensor_id):
         """Return only this active sensor's current, valid PRIVATE_NETWORK grants."""

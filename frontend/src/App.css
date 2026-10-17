@@ -2210,6 +2210,21 @@ h2 {
 .remote-sensor-detail dt { color: #929db1; font-size: 0.77rem; }
 .remote-sensor-detail dd { margin: 5px 0 0; color: #e4e9f2; overflow-wrap: anywhere; }
 .remote-sensor-error { margin: 12px 0; padding: 10px 12px; border: 1px solid #945653; border-radius: 8px; color: #f1b3ad; }
+.remote-sensor-management { margin-top: 20px; padding: 16px; border: 1px solid #343c4b; border-radius: 10px; background: #171c26; }
+.remote-sensor-management h3, .remote-sensor-management h4 { margin: 0 0 12px; }
+.remote-sensor-management > label, .remote-sensor-management-form label { display: grid; gap: 6px; color: #9aa4b7; font-size: 0.82rem; }
+.remote-sensor-management select, .remote-sensor-management input:not([type="checkbox"]) { min-width: 0; border: 1px solid #343c4b; border-radius: 7px; padding: 8px 10px; color: #e4e9f2; background: #151a23; }
+.remote-sensor-management-actions, .remote-sensor-management-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 14px; }
+.remote-sensor-management-form { padding: 14px 0; border-top: 1px solid #2b303a; }
+.remote-sensor-management-form h4 { flex-basis: 100%; }
+.remote-sensor-management-form label { min-width: min(240px, 100%); }
+.remote-sensor-management button { max-width: 100%; }
+.remote-sensor-issued-token { display: grid; gap: 10px; margin: 12px 0; padding: 14px; border: 1px solid #927d4d; border-radius: 8px; }
+.remote-sensor-issued-token code { overflow-wrap: anywhere; color: #f5dfaa; }
+.remote-sensor-enrollment-list, .remote-sensor-management ul { display: grid; gap: 10px; padding-left: 20px; }
+.remote-sensor-enrollment-list li, .remote-sensor-management li { display: grid; gap: 8px; padding: 10px; border-bottom: 1px solid #2b303a; overflow-wrap: anywhere; }
+.remote-sensor-selected-management { margin-top: 18px; padding-top: 16px; border-top: 1px solid #343c4b; }
+.remote-sensor-selected-management > section { margin-top: 16px; }
 
 @media (max-width: 560px) {
   .remote-sensor-detail-heading { align-items: flex-start; }

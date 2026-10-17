@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { loadRemoteSensorFleet } from '../services/remoteSensorApi.js'
+import RemoteSensorFleetManagement from './RemoteSensorFleetManagement.jsx'
 import {
   createFleetRequestGuard,
   fleetCapabilitiesLabel,
@@ -74,6 +75,11 @@ function RemoteSensorFleet() {
     setSelectedId(null)
   }
 
+  function refreshFleet() {
+    setRequest({ key: queryKey, loading: true, error: null })
+    setRetry((value) => value + 1)
+  }
+
   return (
     <section className="panel remote-sensor-fleet" aria-labelledby="remote-sensor-fleet-title">
       <div className="panel-heading">
@@ -82,7 +88,7 @@ function RemoteSensorFleet() {
           <h2 id="remote-sensor-fleet-title">Remote Sensor Fleet</h2>
           <p className="security-layer-copy">Sensor connectivity and declared metadata. Platform and capabilities are {PLATFORM_METADATA_LABEL.toLowerCase()}.</p>
         </div>
-        <button type="button" onClick={() => { setRequest({ key: queryKey, loading: true, error: null }); setRetry((value) => value + 1) }} disabled={loading}>Refresh fleet</button>
+        <button type="button" onClick={refreshFleet} disabled={loading}>Refresh fleet</button>
       </div>
 
       <div className="remote-sensor-filters" aria-label="Sensor fleet filters">
@@ -129,6 +135,7 @@ function RemoteSensorFleet() {
       {selectedDetail && (
         <aside className="remote-sensor-detail" aria-label={`Sensor details: ${selectedDetail.name}`}>
           <div className="remote-sensor-detail-heading"><h3>{selectedDetail.name}</h3><button type="button" onClick={() => setSelectedId(null)}>Close details</button></div>
+          <h4>Identity / Status</h4>
           <dl>
             <div><dt>Sensor ID</dt><dd>{selectedDetail.id}</dd></div>
             <div><dt>UUID</dt><dd className="mono">{selectedDetail.sensor_uuid}</dd></div>
@@ -137,11 +144,12 @@ function RemoteSensorFleet() {
             <div><dt>Registered</dt><dd>{formatFleetTimestamp(selectedDetail.registered_at)}</dd></div>
             <div><dt>Last heartbeat</dt><dd>{selectedDetail.last_seen_at ? `${formatFleetTimestamp(selectedDetail.last_seen_at)} · ${formatFleetHeartbeatAge(selectedDetail.heartbeat_age_seconds)}` : 'Never'}</dd></div>
             <div><dt>Status</dt><dd><span className={`remote-sensor-status remote-sensor-status-${String(selectedDetail.status).toLowerCase()}`}>{fleetStatusLabel(selectedDetail.status)}</span></dd></div>
-            <div><dt>Capabilities</dt><dd>{fleetCapabilitiesLabel(selectedDetail.capabilities)}</dd></div>
-            <div><dt>Assignments</dt><dd>{selectedDetail.assignment_count}</dd></div>
           </dl>
+          <section><h4>Declared Capabilities</h4><p>{fleetCapabilitiesLabel(selectedDetail.capabilities)}</p></section>
+          <section><h4>Assignments</h4><p>{selectedDetail.assignment_count} assigned scopes</p></section>
         </aside>
       )}
+      <RemoteSensorFleetManagement sensor={selectedDetail} onRefreshFleet={refreshFleet} />
     </section>
   )
 }
