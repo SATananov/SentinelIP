@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { loadRemoteSensorTaskHistory } from '../services/remoteSensorApi.js'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { taskContextPivots } from '../services/investigationPivots.js'
 import {
   createTaskHistoryRequestGuard,
   formatTaskTimestamp,
@@ -20,7 +22,8 @@ function asUtc(value) {
   return value ? new Date(value).toISOString() : ''
 }
 
-function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTask = null, investigationRequest = null }) {
+function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTask = null, investigationRequest = null,
+  onOpenInvestigationContext = null }) {
   const [filters, setFilters] = useState({ limit: 20, offset: 0, sensor_id: '', site_id: '', scope_id: '', device_id: '', task_type: '', status: '', created_after_local: '', created_before_local: '' })
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
@@ -37,10 +40,18 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
     const nav = investigationRequest
     if (!nav) return
     latestInvestigationRequest.current = nav.nonce
-    if (nav.kind !== 'SENSOR_TASK' || !nav.nonce || handledInvestigationRequest.current === nav.nonce) return
+    if (!['SENSOR_TASK', 'SENSOR_TASK_DEVICE_FILTER'].includes(nav.kind) || !nav.nonce ||
+        handledInvestigationRequest.current === nav.nonce) return
     handledInvestigationRequest.current = nav.nonce
     queueMicrotask(() => {
       if (latestInvestigationRequest.current !== nav.nonce) return
+      if (nav.kind === 'SENSOR_TASK_DEVICE_FILTER') {
+        setLookupTask(null)
+        setSelectedTaskId(null)
+        setFilters((current) => ({ ...current, sensor_id: '', site_id: '', scope_id: '',
+          device_id: nav.id, task_type: '', status: '', created_after_local: '', created_before_local: '', offset: 0 }))
+        return
+      }
       setLookupTask({ ...nav.item, nonce: nav.nonce })
       setSelectedTaskId(nav.id)
       if (nav.item?.sensor_id) {
@@ -190,6 +201,7 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
             {selectedTask.failure_code && <div><dt>Failure</dt><dd>{selectedTask.failure_code} · {selectedTask.failure_message_safe}</dd></div>}
           </dl>
           <p className="security-layer-copy">Scope name and target are current context. Expiry is derived from the request evaluation time; stored task state is unchanged.</p>
+          <InvestigationPivotActions pivots={taskContextPivots(selectedTask)} onNavigate={onOpenInvestigationContext} />
         </aside>
       )}
       {lookupTask?.nonce === investigationRequest?.nonce && !selectedTask && (
@@ -206,6 +218,7 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
             <div><dt>Created</dt><dd>{formatTaskTimestamp(lookupTask.occurred_at)}</dd></div>
           </dl>
           <p className="security-layer-copy">This is the bounded lookup projection. Task history below shows lifecycle detail when the task is in the current result page.</p>
+          <InvestigationPivotActions pivots={taskContextPivots(lookupTask)} onNavigate={onOpenInvestigationContext} />
         </aside>
       )}
     </section>

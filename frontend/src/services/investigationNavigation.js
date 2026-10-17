@@ -5,6 +5,11 @@ export const INVESTIGATION_DESTINATION_KINDS = new Set([
   'EXTERNAL_EXPOSURE_CHANGE',
 ])
 
+const INVESTIGATION_CONTEXT_KINDS = new Set([
+  ...INVESTIGATION_DESTINATION_KINDS,
+  'SENSOR_TASK_DEVICE_FILTER',
+])
+
 export const INVESTIGATION_PANEL_BY_KIND = Object.freeze({
   DEVICE: 'network-workspace', SCOPE: 'network-workspace',
   SENSOR: 'remote-sensor-fleet-title', SITE: 'remote-sensor-fleet-title', SENSOR_TASK: 'remote-sensor-fleet-title',
@@ -13,10 +18,11 @@ export const INVESTIGATION_PANEL_BY_KIND = Object.freeze({
   PERIMETER_POLICY_CORRELATION: 'external-activity', PERIMETER_HOST_CORRELATION: 'external-activity',
   EXTERNAL_EXPOSURE: 'external-exposure', EXTERNAL_EXPOSURE_CHANGE: 'external-exposure',
   LEGACY_EVENT: 'legacy-events-history',
+  SENSOR_TASK_DEVICE_FILTER: 'remote-sensor-fleet-title',
 })
 
 export function createInvestigationNavigationRequest(item, query, nonce) {
-  if (!item || !INVESTIGATION_DESTINATION_KINDS.has(item.destination_kind) ||
+  if (!item || !INVESTIGATION_CONTEXT_KINDS.has(item.destination_kind) ||
       typeof item.destination_id !== 'string' || !item.destination_id ||
       !Number.isSafeInteger(nonce) || nonce < 1) return null
   return { kind: item.destination_kind, id: item.destination_id, nonce, item, query }

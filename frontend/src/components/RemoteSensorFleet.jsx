@@ -23,7 +23,7 @@ import {
 
 const STATUS_OPTIONS = ['REVOKED', 'DISABLED', 'PENDING', 'ONLINE', 'OFFLINE', 'UNKNOWN']
 
-function RemoteSensorFleet({ investigationRequest = null }) {
+function RemoteSensorFleet({ investigationRequest = null, onOpenInvestigationContext = null }) {
   const [filters, setFilters] = useState({ limit: 20, offset: 0, site_id: '', status: '', platform: '', enabled: '' })
   const [data, setData] = useState(null)
   const [request, setRequest] = useState({ key: null, loading: false, error: null })
@@ -204,7 +204,8 @@ function RemoteSensorFleet({ investigationRequest = null }) {
           }
         }} />
       <RemoteSensorTaskHistory selectedSensor={selectedDetail} refreshSignal={historyRefreshGeneration}
-        createdTask={createdTask} investigationRequest={investigationRequest} />
+        createdTask={createdTask} investigationRequest={investigationRequest}
+        onOpenInvestigationContext={onOpenInvestigationContext} />
     </section>
   )
 }

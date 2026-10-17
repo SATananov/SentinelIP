@@ -2485,6 +2485,13 @@ h2 {
   background: #11141a;
 }
 
+.investigation-pivot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
 .investigation-domain-detail dl {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

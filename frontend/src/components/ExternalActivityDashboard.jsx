@@ -12,6 +12,8 @@ import {
 
 import { loadInvestigationPerimeterDetail, loadPerimeterDashboard, loadPerimeterHostCorrelations } from '../services/perimeterApi.js'
 import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { explicitRecordPivots } from '../services/investigationPivots.js'
 
 function formatObserved(value) {
   if (!value) return '—'
@@ -30,7 +32,8 @@ const PERIMETER_DETAIL_FIELDS = [
   ['protocol', 'Protocol'], ['observed_at', 'Observed'], ['first_seen', 'First seen'], ['last_seen', 'Last seen'],
 ]
 
-function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false, investigationRequest = null }) {
+function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false,
+  investigationRequest = null, onOpenInvestigationContext = null }) {
   const [data, setData] = useState(null)
   const [siteId, setSiteId] = useState('')
   const [sourceType, setSourceType] = useState('')
@@ -164,6 +167,8 @@ function ExternalActivityDashboard({ refreshSignal, onStartReview, reviewIntakeS
           const value = investigationDetail.record?.[key]
           return (typeof value === 'string' || typeof value === 'number') && value !== ''
         }).map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{investigationDetail.record[key]}</dd></div>)}</dl>
+        <InvestigationPivotActions pivots={explicitRecordPivots(investigationDetail.kind, investigationDetail.record)}
+          onNavigate={onOpenInvestigationContext} />
       </aside>}
 
       <div className="external-summary-grid">

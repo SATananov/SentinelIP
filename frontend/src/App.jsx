@@ -79,8 +79,16 @@ function App() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(5)
 
-  const openInvestigationResult = useCallback((item, query) => {
+  const openInvestigationContext = useCallback((kind, id, context = {}, query = null) => {
     investigationNavigationNonce.current += 1
+    const destinationId = String(id ?? '')
+    const item = {
+      entity_type: context.entity_type ?? kind,
+      entity_id: destinationId,
+      destination_kind: kind,
+      destination_id: destinationId,
+      ...context,
+    }
     const request = createInvestigationNavigationRequest(item, query, investigationNavigationNonce.current)
     if (!request) return
     setInvestigationNavigation(request)
@@ -89,9 +97,13 @@ function App() {
       setTimeRange('all')
       setPage(1)
     }
-    const destinationId = investigationPanelForKind(request.kind)
-    window.requestAnimationFrame(() => document.getElementById(destinationId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    const destinationPanelId = investigationPanelForKind(request.kind)
+    window.requestAnimationFrame(() => document.getElementById(destinationPanelId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }, [])
+
+  const openInvestigationResult = useCallback((item, query) => {
+    openInvestigationContext(item.destination_kind, item.destination_id, item, query)
+  }, [openInvestigationContext])
 
   const offset = (page - 1) * pageSize
 
@@ -377,13 +389,14 @@ function App() {
 
       <InvestigationLookup onOpenResult={openInvestigationResult} />
 
-      <NetworkWorkspace investigationRequest={investigationNavigation} />
+      <NetworkWorkspace investigationRequest={investigationNavigation} onOpenInvestigationContext={openInvestigationContext} />
 
-      <RemoteSensorFleet investigationRequest={investigationNavigation} />
+      <RemoteSensorFleet investigationRequest={investigationNavigation} onOpenInvestigationContext={openInvestigationContext} />
 
       <SecurityReviewPanel
         refreshSignal={lastUpdated}
         investigationRequest={investigationNavigation}
+        onOpenInvestigationContext={openInvestigationContext}
         reviewIntakeRequest={reviewIntakeRequest}
         onStartReview={startReviewFromEvidence}
         onClearReviewIntake={clearReviewIntake}
@@ -394,6 +407,7 @@ function App() {
       <ExternalActivityDashboard
         refreshSignal={lastUpdated}
         investigationRequest={investigationNavigation}
+        onOpenInvestigationContext={openInvestigationContext}
         onStartReview={startReviewFromEvidence}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
@@ -401,6 +415,7 @@ function App() {
       <ExternalExposureDashboard
         refreshSignal={lastUpdated}
         investigationRequest={investigationNavigation}
+        onOpenInvestigationContext={openInvestigationContext}
         onStartReview={startReviewFromEvidence}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />

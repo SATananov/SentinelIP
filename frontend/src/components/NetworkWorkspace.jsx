@@ -1,5 +1,7 @@
 import { canScanPublicCidr } from '../services/publicCidrState.js'
 import PublicCidrTargets from './PublicCidrTargets.jsx'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { deviceContextPivots } from '../services/investigationPivots.js'
 import {
   useCallback,
   useEffect,
@@ -60,7 +62,7 @@ function ScopeState({ confirmed, enabled, type, reauthorizationRequired = false 
   )
 }
 
-function NetworkWorkspace({ investigationRequest = null }) {
+function NetworkWorkspace({ investigationRequest = null, onOpenInvestigationContext = null }) {
   const [cidrBusy, setCidrBusy] = useState(false)
   const [networks, setNetworks] = useState([])
   const [scopes, setScopes] = useState([])
@@ -867,7 +869,7 @@ function NetworkWorkspace({ investigationRequest = null }) {
               ) : deviceLoading ? (
                 <p className="empty-state">Loading device review…</p>
               ) : deviceReview ? (
-                <DeviceReview review={deviceReview} />
+                <DeviceReview review={deviceReview} onOpenInvestigationContext={onOpenInvestigationContext} />
               ) : (
                 <p className="empty-state">Device review is unavailable.</p>
               )}
@@ -879,7 +881,7 @@ function NetworkWorkspace({ investigationRequest = null }) {
   )
 }
 
-function DeviceReview({ review }) {
+function DeviceReview({ review, onOpenInvestigationContext }) {
   const { device, ports, services, findings, cveMatches } = review
   const groups = [
     { title: 'Ports', items: ports },
@@ -890,6 +892,7 @@ function DeviceReview({ review }) {
 
   return (
     <>
+      <InvestigationPivotActions pivots={deviceContextPivots(device)} onNavigate={onOpenInvestigationContext} />
       <div className="network-device-summary">
         <div><span>IP</span><strong className="mono">{device.last_ip_address}</strong></div>
         <div><span>Hostname</span><strong>{device.hostname ?? 'Unknown'}</strong></div>

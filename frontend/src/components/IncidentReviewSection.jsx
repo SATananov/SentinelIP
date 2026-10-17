@@ -14,6 +14,8 @@ import {
 } from '../services/securityApi.js'
 import { createIncidentReviewRequestGuard } from '../services/incidentReviewRequestGuard.js'
 import CreateIncidentReviewForm from './CreateIncidentReviewForm.jsx'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { evidenceSourcePivot, reviewAttributionPivots } from '../services/investigationPivots.js'
 import {
   completeCreatedIncidentReview,
   createIncidentReviewListGuard,
@@ -26,7 +28,7 @@ function displayTime(value) {
 
 function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelectReview = null,
   getSelectionVersion = null, onReviewCreated = null, intakeRequest = null,
-  onClearIntakeRequest = null, onPromotionSubmitting = null }) {
+  onClearIntakeRequest = null, onPromotionSubmitting = null, onOpenInvestigationContext = null }) {
   const [reviews, setReviews] = useState([])
   const [selected, setSelected] = useState(null)
   const [evidence, setEvidence] = useState([])
@@ -295,6 +297,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
           <p className="incident-review-disclaimer">
             Evidence links and suggestions do not mean causal relationship, attack, compromise, intrusion, exploitation, or vulnerability.
           </p>
+          <InvestigationPivotActions pivots={reviewAttributionPivots(selected)} onNavigate={onOpenInvestigationContext} />
 
           {selected.state === 'CLOSED' ? (
             <section className="incident-review-resolution">
@@ -398,6 +401,7 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
                     <span><strong>{item.evidence_type}</strong> #{item.evidence_id}</span>
                     <small>{displayTime(item.observed_at)} · {item.source_status}</small>
                     {item.source_status === 'MISSING' && <span className="incident-review-missing">Source missing</span>}
+                    <InvestigationPivotActions pivots={[evidenceSourcePivot(item)].filter(Boolean)} onNavigate={onOpenInvestigationContext} />
                     <button
                       className="security-detail-close"
                       type="button"

@@ -20,6 +20,13 @@ import {
   investigationResultLabel,
   resetInvestigationQueryState,
 } from '../src/services/investigationLookupState.js'
+import {
+  deviceContextPivots,
+  evidenceSourcePivot,
+  explicitRecordPivots,
+  reviewAttributionPivots,
+  taskContextPivots,
+} from '../src/services/investigationPivots.js'
 
 const validUuid = '3b12f1df-5232-4804-897e-917bf397618a'
 const reviewKey = `IR-${'a'.repeat(32)}`
@@ -133,8 +140,10 @@ test('result labels are explicit and unknown types are neutral', () => {
 })
 
 test('all 17B destination kinds map to existing app panels and repeated opens carry a nonce', () => {
-  assert.deepEqual([...INVESTIGATION_DESTINATION_KINDS].sort(), Object.keys(INVESTIGATION_PANEL_BY_KIND).sort())
+  assert.deepEqual([...INVESTIGATION_DESTINATION_KINDS].sort(),
+    Object.keys(INVESTIGATION_PANEL_BY_KIND).filter((kind) => kind !== 'SENSOR_TASK_DEVICE_FILTER').sort())
   for (const kind of INVESTIGATION_DESTINATION_KINDS) assert.ok(investigationPanelForKind(kind))
+  assert.ok(investigationPanelForKind('SENSOR_TASK_DEVICE_FILTER'))
   assert.equal(investigationPanelForKind('WEB_DETECTION'), null)
   const item = { entity_type: 'DEVICE', entity_id: '9', destination_kind: 'DEVICE', destination_id: '9' }
   const first = createInvestigationNavigationRequest(item, { queryType: 'DEVICE_ID' }, 1)
@@ -142,6 +151,37 @@ test('all 17B destination kinds map to existing app panels and repeated opens ca
   assert.equal(first.id, second.id)
   assert.notEqual(first.nonce, second.nonce)
   assert.equal(createInvestigationNavigationRequest({ ...item, destination_kind: 'UNSUPPORTED' }, {}, 3), null)
+})
+
+test('task pivots use only its explicit sensor, site, scope, and target_device_id', () => {
+  const pivots = taskContextPivots({ sensor_id: 2, site_id: 3, scope_id: 4, target_device_id: 5, target_ip: '10.0.0.5' })
+  assert.deepEqual(pivots.map(({ kind }) => kind), ['SENSOR', 'SITE', 'SCOPE', 'DEVICE'])
+  assert.equal(taskContextPivots({ sensor_id: 2, site_id: 3, scope_id: 4, target_ip: '10.0.0.5' })
+    .some(({ kind }) => kind === 'DEVICE'), false)
+})
+
+test('device pivots include explicit scope and bounded device-filtered task history only', () => {
+  assert.deepEqual(deviceContextPivots({ id: 8, scope_id: 9 }).map(({ kind }) => kind), ['SCOPE', 'SENSOR_TASK_DEVICE_FILTER'])
+  assert.deepEqual(deviceContextPivots({ id: 8 }).map(({ kind }) => kind), ['SENSOR_TASK_DEVICE_FILTER'])
+  assert.deepEqual(deviceContextPivots({ id: 0 }), [])
+})
+
+test('review evidence pivots open only available supported canonical evidence references', () => {
+  assert.equal(evidenceSourcePivot({ evidence_type: 'THREAT_DETECTION', evidence_id: 4, source_status: 'AVAILABLE' }).kind,
+    'THREAT_DETECTION')
+  assert.equal(evidenceSourcePivot({ evidence_type: 'WEB_DETECTION', evidence_id: 4, source_status: 'AVAILABLE' }), null)
+  assert.equal(evidenceSourcePivot({ evidence_type: 'THREAT_DETECTION', evidence_id: 4, source_status: 'MISSING' }), null)
+  assert.deepEqual(reviewAttributionPivots({ site_id: 1, scope_id: 2, device_id: 3 }).map(({ kind }) => kind),
+    ['SITE', 'SCOPE', 'DEVICE'])
+  assert.deepEqual(reviewAttributionPivots({}).length, 0)
+})
+
+test('threat and perimeter pivots use explicit IDs and never infer from address fields', () => {
+  assert.deepEqual(explicitRecordPivots('THREAT_DETECTION', { source_ip: '192.0.2.4' }), [])
+  assert.deepEqual(explicitRecordPivots('THREAT_DETECTION', { device_id: 10 }).map(({ kind }) => kind), ['DEVICE'])
+  assert.deepEqual(explicitRecordPivots('PERIMETER_HOST_CORRELATION', { site_id: 1, scope_id: 2, device_id: 3 })
+    .map(({ kind }) => kind), ['SITE', 'SCOPE', 'DEVICE'])
+  assert.deepEqual(explicitRecordPivots('EXTERNAL_EXPOSURE_CHANGE', { target_ip: '192.0.2.4' }), [])
 })
 
 test('lookup component remains typed, compact, read-only, and without polling or storage', async () => {
@@ -157,10 +197,11 @@ test('lookup component remains typed, compact, read-only, and without polling or
 
 test('App and existing panels use narrow controlled investigation navigation hooks', async () => {
   const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8')
-  const [network, fleet, review, perimeter, exposure, taskHistory] = await Promise.all([
+  const [network, fleet, review, reviewEvidence, perimeter, exposure, taskHistory] = await Promise.all([
     readFile(new URL('../src/components/NetworkWorkspace.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RemoteSensorFleet.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/SecurityReviewPanel.jsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/IncidentReviewSection.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ExternalActivityDashboard.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/ExternalExposureDashboard.jsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RemoteSensorTaskHistory.jsx', import.meta.url), 'utf8'),
@@ -174,5 +215,8 @@ test('App and existing panels use narrow controlled investigation navigation hoo
   assert.match(perimeter, /loadInvestigationPerimeterDetail/)
   assert.match(exposure, /loadInvestigationExposureDetail/)
   assert.match(taskHistory, /Task found by Investigation Search/)
+  assert.match(taskHistory, /SENSOR_TASK_DEVICE_FILTER/)
+  assert.match(network, /deviceContextPivots/)
+  assert.match(reviewEvidence, /evidenceSourcePivot/)
   assert.doesNotMatch(app, /react-router|<BrowserRouter|<Routes/)
 })

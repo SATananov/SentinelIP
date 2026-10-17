@@ -8,6 +8,8 @@ import {
 import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
 import IncidentReviewSection from './IncidentReviewSection.jsx'
 import IncidentReviewOperations from './IncidentReviewOperations.jsx'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { explicitRecordPivots } from '../services/investigationPivots.js'
 
 const KIND_LABELS = {
   threat: 'Threat',
@@ -143,9 +145,12 @@ function SecurityDetail({
   error,
   onClose,
   onStartReview,
+  onOpenInvestigationContext,
   reviewIntakeSubmitting,
 }) {
   if (!selection) return null
+  const pivotRecordType = selection.kind === 'threat' ? 'THREAT_DETECTION'
+    : selection.kind === 'correlation' ? 'THREAT_CORRELATION' : null
 
   const type = (
     detail?.threat_type ??
@@ -188,6 +193,8 @@ function SecurityDetail({
 
       {detail && !loading && (
         <>
+          {pivotRecordType && <InvestigationPivotActions pivots={explicitRecordPivots(pivotRecordType, detail)}
+            onNavigate={onOpenInvestigationContext} />}
           <div className="security-detail-grid">
             <DetailField label="Type" value={humanize(type)} />
             <DetailField label="State" value={humanize(state)} />
@@ -283,6 +290,7 @@ function SecurityDetail({
 }
 
 function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, investigationRequest = null, onStartReview,
+  onOpenInvestigationContext = null,
   onClearReviewIntake, onReviewIntakeSubmitting, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState({
     threats: { total: 0, threats: [] },
@@ -395,7 +403,8 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, invest
           getSelectionVersion={getReviewSelectionVersion}
           onReviewCreated={refreshIncidentReviewOperations}
           intakeRequest={reviewIntakeRequest} onClearIntakeRequest={onClearReviewIntake}
-          onPromotionSubmitting={onReviewIntakeSubmitting} />}
+          onPromotionSubmitting={onReviewIntakeSubmitting}
+          onOpenInvestigationContext={onOpenInvestigationContext} />}
       />
       <div className="security-layer-heading">
         <div>
@@ -508,6 +517,7 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, invest
         error={detailError}
         onClose={closeDetail}
         onStartReview={onStartReview}
+        onOpenInvestigationContext={onOpenInvestigationContext}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 

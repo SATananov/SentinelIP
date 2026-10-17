@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { loadExternalExposureDashboard, loadInvestigationExposureDetail } from '../services/externalExposureApi.js'
 import { buildReviewEvidenceContext } from '../services/reviewEvidenceContext.js'
+import InvestigationPivotActions from './InvestigationPivotActions.jsx'
+import { explicitRecordPivots } from '../services/investigationPivots.js'
 
 function label(value) {
   return value ? value.replaceAll('_', ' ') : '—'
@@ -19,7 +21,8 @@ const EXPOSURE_DETAIL_FIELDS = [
   ['observed_at', 'Observed'], ['first_seen', 'First seen'], ['last_seen', 'Last seen'], ['exposure_id', 'Exposure ID'],
 ]
 
-function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false, investigationRequest = null }) {
+function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeSubmitting = false,
+  investigationRequest = null, onOpenInvestigationContext = null }) {
   const [data, setData] = useState(null)
   const [scopeId, setScopeId] = useState('')
   const [timeRange, setTimeRange] = useState('7d')
@@ -128,6 +131,8 @@ function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeS
           const value = investigationDetail.record?.[key]
           return (typeof value === 'string' || typeof value === 'number') && value !== ''
         }).map(([key, fieldLabel]) => <div key={key}><dt>{fieldLabel}</dt><dd>{investigationDetail.record[key]}</dd></div>)}</dl>
+        <InvestigationPivotActions pivots={explicitRecordPivots(investigationDetail.kind, investigationDetail.record)}
+          onNavigate={onOpenInvestigationContext} />
       </aside>}
 
       <div className="exposure-summary-grid">
