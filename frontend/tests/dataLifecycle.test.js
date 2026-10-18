@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import { loadDataLifecyclePreview } from '../src/services/dataLifecycleApi.js'
+import { cleanupDataLifecycle, loadDataLifecyclePreview } from '../src/services/dataLifecycleApi.js'
 import {
   DATA_LIFECYCLE_CLASS_LABELS,
   DATA_LIFECYCLE_POLICY_LABELS,
@@ -47,6 +47,26 @@ test('preview service reports status safely without leaking response body', asyn
   }
 })
 
+test('cleanup service accepts only the two fixed classes and sends a fixed body', async () => {
+  const originalFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, options) => {
+    request = { url, options }
+    return { ok: true, json: async () => ({ deleted_count: 1 }) }
+  }
+  try {
+    await cleanupDataLifecycle('DNS_OBSERVATIONS')
+    assert.equal(request.url, 'http://127.0.0.1:8000/data-lifecycle/cleanup')
+    assert.equal(request.options.method, 'POST')
+    assert.deepEqual(JSON.parse(request.options.body), { data_class: 'DNS_OBSERVATIONS' })
+    assert.deepEqual(Object.keys(JSON.parse(request.options.body)), ['data_class'])
+    await cleanupDataLifecycle('WEB_OBSERVATIONS')
+    await assert.rejects(cleanupDataLifecycle('EVENTS'), /Unsupported/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('policy and data-class labels are explicit and unknown values stay neutral', () => {
   assert.deepEqual(DATA_LIFECYCLE_POLICY_LABELS, {
     ACTIVE_RETENTION_POLICY: 'Active retention policy',
@@ -84,14 +104,18 @@ test('manual refresh guard aborts prior request and ignores stale results', () =
   assert.equal(guard.isCurrent(latest), false)
 })
 
-test('UI stays preview-only, counts-only, manually refreshed, and never polls or mutates', async () => {
+test('UI cleanup is bounded, confirmed, preview-gated, manual, and never polls', async () => {
   const component = await readFile(new URL('../src/components/DataLifecycle.jsx', import.meta.url), 'utf8')
   const service = await readFile(new URL('../src/services/dataLifecycleApi.js', import.meta.url), 'utf8')
-  assert.match(component, /Preview only — no data is deleted/)
+  assert.match(component, /eligible_rows <= 0/)
+  assert.match(component, /window\.confirm/)
+  assert.match(component, /Delete up to 100/)
+  assert.match(component, /cleanupDataLifecycle/)
   assert.match(component, /onClick=\{refresh\}/)
   assert.doesNotMatch(component, /setInterval|setTimeout|useInterval/)
-  assert.doesNotMatch(component, /Delete|Purge|Clean all|cleanupData/)
+  assert.doesNotMatch(component, /Clean all|delete_all|batch_size|retention_until.*input/i)
   assert.doesNotMatch(component, /row_id|hostname|queried_domain|metadata_json/)
-  assert.doesNotMatch(service, /POST|PATCH|DELETE|cleanup/)
+  assert.match(service, /POST/)
+  assert.doesNotMatch(service, /generic|payload\s*\}/i)
   assert.match(component, /protected_by_review \+ item\.protected_by_dependency/)
 })

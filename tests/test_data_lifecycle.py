@@ -7,8 +7,9 @@ from fastapi import FastAPI, HTTPException, Response
 from starlette.requests import Request
 
 from api.data_lifecycle import register_data_lifecycle_routes
+from api.data_lifecycle import CleanupRequest
 from api.remote_sensors import local_management
-from database.data_lifecycle import _parse_retention, preview_data_lifecycle
+from database.data_lifecycle import _parse_retention, cleanup_data_lifecycle, preview_data_lifecycle
 from database.db import get_connection, initialize_database
 from database.telemetry import create_web_observation, provision_sensor
 from database.web_detections import upsert_detections
@@ -282,3 +283,114 @@ def test_schema_remains_43_and_preview_is_read_only(lifecycle_context):
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == before
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] == tables_before
+
+
+def test_dns_cleanup_is_bounded_oldest_first_and_counts_only(lifecycle_context):
+    path = lifecycle_context["path"]
+    for i in range(105):
+        insert_dns(path, (NOW - timedelta(days=105-i)).isoformat(), f"expired-{i}")
+    insert_dns(path, (NOW + timedelta(days=1)).isoformat(), "future")
+    insert_dns(path, "broken-date", "malformed")
+    result = cleanup_data_lifecycle("DNS_OBSERVATIONS", path, NOW)
+    assert result == {
+        "data_class": "DNS_OBSERVATIONS", "evaluated_at": "2026-10-17T12:00:00Z",
+        "eligible_before": 105, "deleted_count": 100, "protected_count": 0,
+        "remaining_eligible": 5, "batch_limit": 100,
+    }
+    assert "id" not in json.dumps(result) and "example.test" not in json.dumps(result)
+    # Oldest deadlines were removed first; the five newest expired rows remain.
+    with get_connection(path) as connection:
+        rows = connection.execute("SELECT external_event_id FROM dns_observations ORDER BY id").fetchall()
+        assert len(rows) == 7
+        assert {row[0] for row in rows} == {"expired-100", "expired-101", "expired-102", "expired-103", "expired-104", "future", "malformed"}
+    repeated = cleanup_data_lifecycle("DNS_OBSERVATIONS", path, NOW)
+    assert repeated["deleted_count"] == 5
+    assert cleanup_data_lifecycle("DNS_OBSERVATIONS", path, NOW)["deleted_count"] == 0
+
+
+def test_web_cleanup_preserves_detection_snapshot_and_review_link(lifecycle_context):
+    path = lifecycle_context["path"]
+    observation_id = insert_web(path, (NOW - timedelta(days=1)).isoformat(), "reviewed", make_detection=True)
+    with get_connection(path) as connection:
+        connection.row_factory = __import__('sqlite3').Row
+        detection = connection.execute("SELECT id, structured_evidence FROM web_detections").fetchone()
+        connection.execute("INSERT INTO incident_reviews (incident_key,title,summary,state,priority,confidence,created_at,updated_at,disposition) VALUES ('review-key','Review','', 'OPEN','MEDIUM','MEDIUM',?,?, 'UNREVIEWED')", (NOW.isoformat(), NOW.isoformat()))
+        review_id = connection.execute("SELECT id FROM incident_reviews").fetchone()[0]
+        connection.execute("INSERT INTO incident_review_evidence (incident_id,evidence_type,evidence_id,observed_at,added_at) VALUES (?,'WEB_DETECTION',?,?,?)", (review_id, detection["id"], NOW.isoformat(), NOW.isoformat()))
+    result = cleanup_data_lifecycle("WEB_OBSERVATIONS", path, NOW)
+    assert result["deleted_count"] == 1
+    with get_connection(path) as connection:
+        connection.row_factory = __import__('sqlite3').Row
+        current = connection.execute("SELECT primary_observation_id, structured_evidence FROM web_detections WHERE id=?", (detection["id"],)).fetchone()
+        assert current["primary_observation_id"] is None
+        assert current["structured_evidence"] == detection["structured_evidence"]
+        assert connection.execute("SELECT observation_id FROM web_detection_observations WHERE detection_id=?", (detection["id"],)).fetchone()[0] is None
+        assert connection.execute("SELECT COUNT(*) FROM incident_review_evidence WHERE incident_id=? AND evidence_type='WEB_DETECTION' AND evidence_id=?", (review_id, detection["id"])).fetchone()[0] == 1
+
+
+def test_web_cleanup_protects_unsafe_snapshot_once_and_recomputes(lifecycle_context):
+    path = lifecycle_context["path"]
+    obs = insert_web(path, (NOW - timedelta(days=2)).isoformat(), "unsafe", make_detection=True, invalid_snapshot=True)
+    with get_connection(path) as connection:
+        det_id = connection.execute("SELECT id FROM web_detections").fetchone()[0]
+    insert_web(path, (NOW + timedelta(days=1)).isoformat(), "future")
+    insert_web(path, "invalid-date", "bad")
+    result = cleanup_data_lifecycle("WEB_OBSERVATIONS", path, NOW)
+    assert result["eligible_before"] == 0
+    assert result["deleted_count"] == 0
+    assert result["protected_count"] == 1
+    assert result["remaining_eligible"] == 0
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM web_observations WHERE id=?", (obs,)).fetchone()[0] == 1
+
+
+def test_cleanup_trigger_failure_rolls_back_whole_batch(lifecycle_context):
+    path = lifecycle_context["path"]
+    ids = [insert_dns(path, (NOW - timedelta(days=1)).isoformat(), f"rollback-{i}") for i in range(3)]
+    with get_connection(path) as connection:
+        connection.execute("CREATE TRIGGER fail_cleanup BEFORE DELETE ON dns_observations WHEN OLD.id = %d BEGIN SELECT RAISE(ABORT, 'forced'); END" % ids[1])
+    with pytest.raises(Exception):
+        cleanup_data_lifecycle("DNS_OBSERVATIONS", path, NOW)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM dns_observations WHERE id IN (?,?,?)", ids).fetchone()[0] == 3
+
+
+def test_cleanup_rejects_unapproved_class_and_schema_stays_43(lifecycle_context):
+    with pytest.raises(ValueError):
+        cleanup_data_lifecycle("EVENTS", lifecycle_context["path"], NOW)
+    with get_connection(lifecycle_context["path"]) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+
+
+def test_dns_cleanup_uses_inclusive_boundary_and_one_clock(lifecycle_context, monkeypatch):
+    path = lifecycle_context["path"]
+    insert_dns(path, NOW.isoformat(), "exact-boundary")
+    import database.data_lifecycle as lifecycle
+    calls = []
+    monkeypatch.setattr(lifecycle, "_utc_now", lambda: calls.append(1) or NOW)
+    result = cleanup_data_lifecycle("DNS_OBSERVATIONS", path)
+    assert result["deleted_count"] == 1
+    assert result["evaluated_at"] == "2026-10-17T12:00:00Z"
+    assert calls == [1]
+
+
+def test_cleanup_route_is_direct_local_strict_and_no_store(lifecycle_context):
+    route = next(route for route in lifecycle_context["app"].routes
+                 if getattr(route, "path", None) == "/data-lifecycle/cleanup")
+    assert "POST" in route.methods
+    assert any(dependency.dependency is local_management for dependency in route.dependencies)
+    with pytest.raises(Exception):
+        CleanupRequest.model_validate({"data_class": "DNS_OBSERVATIONS", "batch_size": 1})
+    request = Request({
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/data-lifecycle/cleanup", "raw_path": b"/data-lifecycle/cleanup",
+        "query_string": b"", "root_path": "", "headers": [(b"host", b"127.0.0.1")],
+        "client": ("127.0.0.1", 5050), "server": ("127.0.0.1", 8000),
+    })
+    response = Response()
+    body = CleanupRequest(data_class="DNS_OBSERVATIONS")
+    local_management(request, response)
+    result = route.endpoint(request=request, response=response, body=body)
+    assert response.headers["cache-control"] == "no-store"
+    assert result["deleted_count"] == 0
