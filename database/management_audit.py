@@ -4,6 +4,72 @@ from datetime import datetime, timezone
 import json
 
 
+AUDIT_PROJECTION_COLUMNS = (
+    "id", "event_type", "entity_type", "entity_id", "site_id", "scope_id", "sensor_id",
+    "actor_type", "occurred_at", "previous_state", "new_state", "scope_type",
+    "enrollment_expires_at", "task_type", "target_device_id",
+    "previous_expected_tcp_ports", "new_expected_tcp_ports", "cleanup_data_class",
+    "cleanup_evaluated_at", "cleanup_eligible_before", "cleanup_deleted_count",
+    "cleanup_protected_count", "cleanup_remaining_eligible", "cleanup_batch_limit",
+)
+
+
+def query_events(*, event_type=None, entity_type=None, entity_id=None, site_id=None,
+                 limit=50, offset=0, db_path=None):
+    """Read a bounded, fixed projection of management audit history."""
+    from database.db import DB_PATH, get_connection
+
+    if db_path is None:
+        db_path = DB_PATH
+    if event_type is not None and event_type not in EVENT_ENTITY:
+        raise ValueError("Unsupported management audit event type.")
+    if entity_type is not None and entity_type not in set(EVENT_ENTITY.values()):
+        raise ValueError("Unsupported management audit entity type.")
+    if entity_id is not None and entity_type is None:
+        raise ValueError("Entity type is required with entity ID.")
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+        raise ValueError("Invalid management audit pagination.")
+    if site_id is not None and (type(site_id) is not int or site_id <= 0):
+        raise ValueError("Invalid management audit site ID.")
+
+    filters = []
+    parameters = []
+    for column, value in (("event_type", event_type), ("entity_type", entity_type),
+                          ("entity_id", entity_id), ("site_id", site_id)):
+        if value is not None:
+            filters.append(f"{column} = ?")
+            parameters.append(value)
+    where = " WHERE " + " AND ".join(filters) if filters else ""
+    with get_connection(db_path) as connection:
+        rows = connection.execute(
+            f"SELECT {','.join(AUDIT_PROJECTION_COLUMNS)} FROM management_audit_events{where} "
+            "ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?",
+            (*parameters, limit + 1, offset),
+        ).fetchall()
+
+    def ports(value):
+        if value is None:
+            return None
+        try:
+            result = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if (not isinstance(result, list) or len(result) > 64
+                or any(type(port) is not int or not 1 <= port <= 65535 for port in result)
+                or result != sorted(set(result))):
+            return None
+        return result
+
+    items = []
+    for row in rows[:limit]:
+        item = dict(zip(AUDIT_PROJECTION_COLUMNS, row))
+        item["previous_expected_tcp_ports"] = ports(item["previous_expected_tcp_ports"])
+        item["new_expected_tcp_ports"] = ports(item["new_expected_tcp_ports"])
+        items.append(item)
+    return {"items": items, "limit": limit, "offset": offset,
+            "returned": len(items), "has_more": len(rows) > limit}
+
+
 EVENT_ENTITY = {
     "SITE_CREATED": "SITE", "SITE_ENABLED": "SITE", "SITE_DISABLED": "SITE",
     "NETWORK_CREATED": "NETWORK", "NETWORK_ENABLED": "NETWORK",
