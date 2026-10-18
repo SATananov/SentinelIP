@@ -1687,6 +1687,59 @@ MIGRATIONS = (
             "CREATE TRIGGER incident_review_events_no_delete BEFORE DELETE ON incident_review_events BEGIN SELECT RAISE(ABORT,'incident review events are append-only'); END",
         ),
     ),
+    (
+        44,
+        (
+            """
+            CREATE TABLE management_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL CHECK (event_type IN (
+                    'SITE_CREATED','SITE_ENABLED','SITE_DISABLED',
+                    'NETWORK_CREATED','NETWORK_ENABLED','NETWORK_DISABLED','NETWORK_DELETED',
+                    'SCOPE_AUTHORIZED','SCOPE_REAUTHORIZED',
+                    'EXPOSURE_POLICY_CONFIGURED','EXPOSURE_POLICY_REMOVED',
+                    'ENROLLMENT_ISSUED','ENROLLMENT_REVOKED','ENROLLMENT_CONSUMED',
+                    'SENSOR_REGISTERED','SENSOR_ENABLED','SENSOR_DISABLED','SENSOR_CREDENTIAL_REVOKED',
+                    'SENSOR_SCOPE_ASSIGNED','SENSOR_SCOPE_UNASSIGNED','SENSOR_TASK_CREATED',
+                    'DATA_LIFECYCLE_CLEANUP_EXECUTED'
+                )),
+                entity_type TEXT NOT NULL CHECK (entity_type IN (
+                    'SITE','NETWORK','SCOPE','EXTERNAL_EXPOSURE_POLICY','SENSOR_ENROLLMENT',
+                    'SENSOR','SENSOR_SCOPE_ASSIGNMENT','SENSOR_TASK','DATA_LIFECYCLE'
+                )),
+                entity_id TEXT NOT NULL,
+                site_id INTEGER,
+                scope_id INTEGER,
+                sensor_id INTEGER,
+                scope_type TEXT CHECK (scope_type IS NULL OR scope_type IN ('PRIVATE_NETWORK','PUBLIC_IPV4','PUBLIC_CIDR','HOSTNAME')),
+                enrollment_expires_at TEXT,
+                task_type TEXT CHECK (task_type IS NULL OR task_type IN ('DISCOVER_NETWORK','DISCOVER_SERVICES')),
+                target_device_id INTEGER,
+                actor_type TEXT NOT NULL CHECK (actor_type IN ('LOCAL_OPERATOR','API_CLIENT','SENSOR')),
+                occurred_at TEXT NOT NULL,
+                previous_state TEXT,
+                new_state TEXT,
+                previous_expected_tcp_ports TEXT,
+                new_expected_tcp_ports TEXT,
+                cleanup_data_class TEXT CHECK (cleanup_data_class IS NULL OR cleanup_data_class IN ('DNS_OBSERVATIONS','WEB_OBSERVATIONS')),
+                cleanup_evaluated_at TEXT,
+                cleanup_eligible_before INTEGER CHECK (cleanup_eligible_before IS NULL OR cleanup_eligible_before >= 0),
+                cleanup_deleted_count INTEGER CHECK (cleanup_deleted_count IS NULL OR cleanup_deleted_count >= 0),
+                cleanup_protected_count INTEGER CHECK (cleanup_protected_count IS NULL OR cleanup_protected_count >= 0),
+                cleanup_remaining_eligible INTEGER CHECK (cleanup_remaining_eligible IS NULL OR cleanup_remaining_eligible >= 0),
+                cleanup_batch_limit INTEGER CHECK (cleanup_batch_limit IS NULL OR cleanup_batch_limit > 0)
+            )
+            """,
+            "CREATE INDEX idx_management_audit_events_time ON management_audit_events(occurred_at, id)",
+            "CREATE INDEX idx_management_audit_events_site_time ON management_audit_events(site_id, occurred_at, id)",
+            "CREATE INDEX idx_management_audit_events_entity_time ON management_audit_events(entity_type, entity_id, occurred_at, id)",
+            "CREATE INDEX idx_management_audit_events_type_time ON management_audit_events(event_type, occurred_at, id)",
+            """CREATE TRIGGER management_audit_events_no_update BEFORE UPDATE ON management_audit_events
+               BEGIN SELECT RAISE(ABORT, 'management audit events are append-only'); END""",
+            """CREATE TRIGGER management_audit_events_no_delete BEFORE DELETE ON management_audit_events
+               BEGIN SELECT RAISE(ABORT, 'management audit events are append-only'); END""",
+        ),
+    ),
 
 )
 

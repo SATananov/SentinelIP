@@ -1,22 +1,28 @@
 import database.migrations as migrations
 from database.db import initialize_database, get_connection
-from database.scopes import create_scope, create_hostname_scope
 from database.inventory import create_scope_device, get_device
-from database.networks import create_network
-from services.scope_authorization import HOSTNAME_CONFIRMATION_VERSION
+from tests.historical_migration_helpers import insert_scope
 
 
 def test_upgrade_from_28_preserves_scopes_devices_and_is_idempotent(monkeypatch, tmp_path):
     path = tmp_path / 'upgrade.db'
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, 'MIGRATIONS', all_migrations[:28])
-    create_network('192.168.1.0/24', 'Fixture', '', True, True, path)
-    public = create_scope(scope_type='PUBLIC_IPV4', canonical_target='8.8.8.8', authorized=True,
-        enabled=True, authorization_confirmed_at='2026-10-12',
-        authorization_confirmation_version='public_ipv4_authorization_v1', authorization_source='fixture', db_path=path)
-    hostname = create_hostname_scope(canonical_hostname='example.test', approved_addresses=['8.8.8.8'],
-        authorization_confirmed_at='2026-10-12', authorization_confirmation_version=HOSTNAME_CONFIRMATION_VERSION,
-        authorization_source='fixture', resolution_version='fixture', db_path=path)
+    initialize_database(path)
+    stamp = '2026-10-12'
+    with get_connection(path) as conn:
+        network_id = conn.execute(
+            "INSERT INTO networks (cidr,name,description,authorized,enabled,created_at,updated_at) VALUES (?,?,?,1,1,?,?)",
+            ('192.168.1.0/24', 'Fixture', '', stamp, stamp),
+        ).lastrowid
+        private = insert_scope(conn, scope_type='PRIVATE_NETWORK', target='192.168.1.0/24', stamp=stamp)
+        conn.execute("INSERT INTO network_scope_links(network_id,scope_id) VALUES (?,?)", (network_id, private['id']))
+        public = insert_scope(conn, scope_type='PUBLIC_IPV4', target='8.8.8.8', stamp=stamp)
+        hostname = insert_scope(conn, scope_type='HOSTNAME', target='example.test', stamp=stamp)
+        conn.execute("UPDATE authorized_scopes SET resolution_verified_at=?,resolution_version=?,resolution_status='CURRENT' WHERE id=?",
+                     (stamp, 'fixture', hostname['id']))
+        conn.execute("INSERT INTO scope_hostname_addresses(scope_id,ipv4_address,approved,approved_at,verified_at,resolution_version) VALUES (?, '8.8.8.8',1,?,?,?)",
+                     (hostname['id'], stamp, stamp, 'fixture'))
     devices = [create_scope_device(scope['id'], ip_address='8.8.8.8', first_seen='2026-10-12',
         last_seen='2026-10-12', status='ONLINE', db_path=path) for scope in (public, hostname)]
     with get_connection(path) as conn:

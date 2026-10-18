@@ -186,7 +186,7 @@ def test_fleet_read_is_read_only_and_schema_stays_43(fleet):
         ).fetchone())
     assert after == before
     assert related_after == related_before
-    assert schema == 43
+    assert schema == 44
 
 
 def test_fleet_route_contract_reuses_management_guard_and_maps_site_not_found(fleet):

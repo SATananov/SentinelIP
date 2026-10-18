@@ -9,6 +9,7 @@ import uuid
 import re
 
 from database.db import DB_PATH, get_connection, initialize_database
+from database.management_audit import record_event
 from services.remote_sensor_models import (
     IssuedSecret, LocalScopeGrant, RemoteSensorError, RemoteSensorAuthError,
     RemoteSensorCapacityError, RemoteSensorConflictError, RemoteSensorRateLimitError,
@@ -91,6 +92,9 @@ class RemoteSensorStore:
                 "INSERT INTO sites (name,description,enabled,created_at,updated_at) VALUES (?,?,?,?,?)",
                 (name, description, enabled, now, now),
             ).lastrowid
+            record_event(c, event_type="SITE_CREATED", entity_type="SITE", entity_id=site_id,
+                         site_id=site_id, actor_type="LOCAL_OPERATOR",
+                         new_state="ENABLED" if enabled else "DISABLED")
             return self._site(c, site_id)
 
     def get_site(self, site_id):
@@ -112,8 +116,14 @@ class RemoteSensorStore:
     def set_site_enabled(self, site_id, enabled):
         enabled = _boolean(enabled)
         with self._connection(write=True) as c:
-            self._site(c, site_id)
+            site = self._site(c, site_id)
+            prior = int(site['enabled'])
             c.execute("UPDATE sites SET enabled=?,updated_at=? WHERE id=?", (enabled, self._now().isoformat(), site_id))
+            if prior != enabled:
+                record_event(c, event_type="SITE_ENABLED" if enabled else "SITE_DISABLED",
+                             entity_type="SITE", entity_id=site_id, site_id=site_id,
+                             actor_type="LOCAL_OPERATOR", previous_state="ENABLED" if prior else "DISABLED",
+                             new_state="ENABLED" if enabled else "DISABLED")
             return self._site(c, site_id)
 
     @staticmethod
@@ -132,6 +142,9 @@ class RemoteSensorStore:
                 (site_id, _secret_hash(token), now.isoformat(), (now + timedelta(seconds=ttl_seconds)).isoformat()),
             ).lastrowid
             row = c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone()
+            record_event(c, event_type="ENROLLMENT_ISSUED", entity_type="SENSOR_ENROLLMENT",
+                         entity_id=enrollment_id, site_id=site_id, actor_type="LOCAL_OPERATOR",
+                         new_state="ISSUED", enrollment_expires_at=row['expires_at'])
             return IssuedSecret(self._enrollment(row), token)
 
     def list_enrollments(self, site_id, limit=100, offset=0):
@@ -147,7 +160,12 @@ class RemoteSensorStore:
             row = c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone()
             if row is None:
                 raise RemoteSensorError("Enrollment not found.")
-            c.execute("UPDATE sensor_enrollment_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE id=?", (self._now().isoformat(), enrollment_id))
+            if row['revoked_at'] is None:
+                c.execute("UPDATE sensor_enrollment_tokens SET revoked_at=? WHERE id=?", (self._now().isoformat(), enrollment_id))
+                record_event(c, event_type="ENROLLMENT_REVOKED", entity_type="SENSOR_ENROLLMENT",
+                             entity_id=enrollment_id, site_id=row['site_id'], actor_type="LOCAL_OPERATOR",
+                             previous_state="CONSUMED" if row['consumed_at'] is not None else "ISSUED",
+                             new_state="REVOKED")
             return self._enrollment(c.execute("SELECT * FROM sensor_enrollment_tokens WHERE id=?", (enrollment_id,)).fetchone())
 
     def consume_enrollment(self, token, *, name, platform, version, reported_capabilities=(), sensor_uuid=None):
@@ -184,6 +202,12 @@ class RemoteSensorStore:
                  salt.hex(), digest, TOKEN_ITERATIONS, stamp, stamp, stamp),
             ).lastrowid
             c.execute("UPDATE sensor_enrollment_tokens SET consumed_at=?,sensor_id=? WHERE id=?", (stamp, sensor_id, row['id']))
+            record_event(c, event_type="ENROLLMENT_CONSUMED", entity_type="SENSOR_ENROLLMENT",
+                         entity_id=row['id'], site_id=row['site_id'], sensor_id=sensor_id,
+                         actor_type="SENSOR", previous_state="ISSUED", new_state="CONSUMED")
+            record_event(c, event_type="SENSOR_REGISTERED", entity_type="SENSOR",
+                         entity_id=sensor_id, site_id=row['site_id'], sensor_id=sensor_id,
+                         actor_type="SENSOR", new_state="REGISTERED")
             return IssuedSecret(self._sensor(c, sensor_id), credential)
 
     def _sensor(self, c, sensor_id, *, active=False):
@@ -309,7 +333,14 @@ class RemoteSensorStore:
             sensor = self._sensor(c, sensor_id)
             if enabled and sensor['credential_revoked_at'] is not None:
                 raise RemoteSensorError("Revoked sensors require a new enrollment.")
+            prior = int(sensor['enabled'])
             c.execute("UPDATE remote_sensors SET enabled=?,updated_at=? WHERE id=?", (enabled, self._now().isoformat(), sensor_id))
+            if prior != enabled:
+                record_event(c, event_type="SENSOR_ENABLED" if enabled else "SENSOR_DISABLED",
+                             entity_type="SENSOR", entity_id=sensor_id, site_id=sensor['site_id'],
+                             sensor_id=sensor_id, actor_type="LOCAL_OPERATOR",
+                             previous_state="ENABLED" if prior else "DISABLED",
+                             new_state="ENABLED" if enabled else "DISABLED")
             return self._sensor(c, sensor_id)
 
     def revoke_sensor(self, sensor_id):
@@ -317,9 +348,20 @@ class RemoteSensorStore:
         salt = secrets.token_bytes(16)
         digest = hash_sensor_token(secrets.token_urlsafe(32), salt)
         with self._connection(write=True) as c:
-            self._sensor(c, sensor_id)
-            c.execute("UPDATE remote_sensors SET enabled=0,credential_salt=?,credential_hash=?,credential_revoked_at=COALESCE(credential_revoked_at,?),updated_at=? WHERE id=?",
-                      (salt.hex(), digest, self._now().isoformat(), self._now().isoformat(), sensor_id))
+            sensor = self._sensor(c, sensor_id)
+            now = self._now().isoformat()
+            if sensor['credential_revoked_at'] is None:
+                if sensor['enabled']:
+                    record_event(c, event_type="SENSOR_DISABLED", entity_type="SENSOR",
+                                 entity_id=sensor_id, site_id=sensor['site_id'], sensor_id=sensor_id,
+                                 actor_type="LOCAL_OPERATOR", previous_state="ENABLED", new_state="DISABLED",
+                                 )
+                c.execute("UPDATE remote_sensors SET enabled=0,credential_salt=?,credential_hash=?,credential_revoked_at=?,updated_at=? WHERE id=?",
+                          (salt.hex(), digest, now, now, sensor_id))
+                record_event(c, event_type="SENSOR_CREDENTIAL_REVOKED", entity_type="SENSOR",
+                             entity_id=sensor_id, site_id=sensor['site_id'], sensor_id=sensor_id,
+                             actor_type="LOCAL_OPERATOR", previous_state="CREDENTIAL_ACTIVE",
+                             new_state="CREDENTIAL_REVOKED")
             return self._sensor(c, sensor_id)
 
     def _authenticate(self, c, sensor_id, credential):
@@ -419,9 +461,14 @@ class RemoteSensorStore:
             existing = c.execute("SELECT * FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id)).fetchone()
             if existing and existing['canonical_target'] != scope['canonical_target']:
                 raise RemoteSensorError("Assignment target changed; remove and explicitly reassign.")
-            c.execute("""INSERT OR IGNORE INTO sensor_scope_assignments
+            inserted = c.execute("""INSERT OR IGNORE INTO sensor_scope_assignments
                 (sensor_id,scope_id,site_id,canonical_target,created_at) VALUES (?,?,?,?,?)""",
                 (sensor_id, scope_id, sensor['site_id'], scope['canonical_target'], now))
+            if inserted.rowcount:
+                record_event(c, event_type="SENSOR_SCOPE_ASSIGNED", entity_type="SENSOR_SCOPE_ASSIGNMENT",
+                             entity_id=f"{sensor_id}:{scope_id}", site_id=sensor['site_id'],
+                             scope_id=scope_id, sensor_id=sensor_id, actor_type="LOCAL_OPERATOR",
+                             new_state="ASSIGNED")
             result = dict(c.execute("""SELECT a.*,s.name AS scope_name,s.scope_type,
                 s.enabled AS scope_enabled,s.authorized AS scope_authorized
                 FROM sensor_scope_assignments a JOIN authorized_scopes s ON s.id=a.scope_id
@@ -555,8 +602,14 @@ class RemoteSensorStore:
 
     def remove_assignment(self, sensor_id, scope_id):
         with self._connection(write=True) as c:
-            self._sensor(c, sensor_id)
-            c.execute("DELETE FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id))
+            sensor = self._sensor(c, sensor_id)
+            row = c.execute("SELECT site_id FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id)).fetchone()
+            if row is not None:
+                record_event(c, event_type="SENSOR_SCOPE_UNASSIGNED", entity_type="SENSOR_SCOPE_ASSIGNMENT",
+                             entity_id=f"{sensor_id}:{scope_id}", site_id=row['site_id'] or sensor['site_id'],
+                             scope_id=scope_id, sensor_id=sensor_id, actor_type="LOCAL_OPERATOR",
+                             previous_state="ASSIGNED", new_state="UNASSIGNED")
+                c.execute("DELETE FROM sensor_scope_assignments WHERE sensor_id=? AND scope_id=?", (sensor_id, scope_id))
 
     def validate_assigned_target(self, sensor_id, credential, scope_id, target):
         """Core policy precondition only; does not authorize a job or ingest evidence."""

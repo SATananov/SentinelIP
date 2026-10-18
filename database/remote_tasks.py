@@ -5,6 +5,7 @@ import uuid
 
 from database.db import get_connection
 from database.remote_sensors import RemoteSensorStore
+from database.management_audit import record_event
 from services.remote_sensor_models import Capability, RemoteSensorError, private_lan
 from services.scope_authorization import require_private_network_scope
 
@@ -305,6 +306,10 @@ class RemoteTaskStore:
                 VALUES (?,?,?,?,?,'PENDING',?,?,?,?,?)''',
                 (task_id, sensor_id, sensor['site_id'], scope_id, task_type, device_id, target_ip,
                  now.isoformat(), (now + timedelta(seconds=ttl_seconds)).isoformat(), 'local_management'))
+            record_event(c, event_type='SENSOR_TASK_CREATED', entity_type='SENSOR_TASK',
+                         entity_id=task_id, sensor_id=sensor_id, site_id=sensor['site_id'],
+                         scope_id=scope_id, actor_type='LOCAL_OPERATOR', new_state='CREATED',
+                         task_type=task_type, target_device_id=device_id)
             return self._task(c.execute('SELECT * FROM remote_sensor_tasks WHERE id=?', (task_id,)).fetchone())
 
     def _revalidate(self, connection, task):

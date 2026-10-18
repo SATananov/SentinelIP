@@ -131,12 +131,17 @@ def test_change_api_is_read_only_bounded_and_filterable(monkeypatch, tmp_path):
 
 def test_migration_40_backfills_presence_without_inventing_historical_change(tmp_path, monkeypatch):
     import database.migrations as migrations
+    from tests.historical_migration_helpers import insert_scope
 
     path = tmp_path / "migration40.db"
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:39])
     initialize_database(path)
-    scope, device = _scope_device(path)
+    with get_connection(path) as connection:
+        scope = insert_scope(connection, scope_type="PUBLIC_IPV4", target="8.8.8.8", name="12D target",
+                             stamp="2026-10-13T13:00:00")
+    device = create_scope_device(scope["id"], first_seen="2026-10-13T13:00:00",
+                                 last_seen="2026-10-13T13:00:00", status="ONLINE", db_path=path)
     at = datetime(2026, 10, 13, 13, 10, 0)
     at_text = at.isoformat(timespec="seconds")
     with get_connection(path) as connection:
@@ -162,4 +167,10 @@ def test_migration_40_backfills_presence_without_inventing_historical_change(tmp
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 40
         assert connection.execute("SELECT presence_state FROM external_exposure_presence").fetchone()[0] == "PRESENT"
         assert connection.execute("SELECT COUNT(*) FROM external_exposure_changes").fetchone()[0] == 0
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='management_audit_events'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

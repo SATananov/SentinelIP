@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from database.db import DB_PATH, get_connection
+from database.management_audit import record_event
 from services.finding_models import FindingConfidence, FindingSeverity
 from services.web_detection_models import (
     WebDetection, WebDetectionState, WebDetectionType, WebEvidence,
@@ -317,11 +318,21 @@ def cleanup_data_lifecycle(data_class, db_path=DB_PATH, evaluated_at=None):
             )
         remaining_eligible = len(remaining_expired - remaining_protected)
         protected_count = len(remaining_protected)
+        evaluated_text = _iso_utc(evaluated_at)
+        record_event(
+            connection, event_type="DATA_LIFECYCLE_CLEANUP_EXECUTED",
+            entity_type="DATA_LIFECYCLE", entity_id="DATA_LIFECYCLE",
+            actor_type="LOCAL_OPERATOR", cleanup_data_class=data_class,
+            cleanup_evaluated_at=evaluated_text, cleanup_eligible_before=eligible_before,
+            cleanup_deleted_count=deleted_count, cleanup_protected_count=protected_count,
+            cleanup_remaining_eligible=remaining_eligible,
+            cleanup_batch_limit=MAX_CLEANUP_BATCH,
+        )
         connection.commit()
 
     return {
         "data_class": data_class,
-        "evaluated_at": _iso_utc(evaluated_at),
+        "evaluated_at": evaluated_text,
         "eligible_before": eligible_before,
         "deleted_count": deleted_count,
         "protected_count": protected_count,

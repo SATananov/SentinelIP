@@ -111,18 +111,19 @@ def test_sensor_must_belong_to_same_site(tmp_path):
 
 def test_migration_33_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch):
     import database.migrations as migrations
+    from tests.historical_migration_helpers import insert_site
 
     path = tmp_path / "upgrade.db"
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:32])
     initialize_database(path)
-    store = RemoteSensorStore(path)
-    existing_site = store.create_site("Existing")
+    with get_connection(path) as connection:
+        existing_site = insert_site(connection, "Existing")
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='perimeter_events'").fetchone()
         assert connection.execute("SELECT name FROM sites WHERE id=?", (existing_site["id"],)).fetchone()[0] == "Existing"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

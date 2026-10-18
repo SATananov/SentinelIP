@@ -158,17 +158,19 @@ def test_read_api_is_bounded_and_read_only(tmp_path, monkeypatch):
 
 def test_migration_35_preserves_11c_data_and_is_fk_clean(tmp_path, monkeypatch):
     import database.migrations as migrations
+    from tests.historical_migration_helpers import insert_site
     path = tmp_path / "upgrade.db"
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:34])
     initialize_database(path)
-    site = setup_site(path)
+    with get_connection(path) as connection:
+        site = insert_site(connection, "Policy correlation site")
     event = persist_perimeter_event(make_event(site["id"], 1), path)
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
         assert connection.execute("SELECT id FROM perimeter_events WHERE id=?", (event["id"],)).fetchone()
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='perimeter_policy_correlations'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

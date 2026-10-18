@@ -3,8 +3,7 @@ import sqlite3
 
 import database.migrations as migrations
 from database.db import get_connection, initialize_database
-from database.networks import create_network
-from database.scopes import create_scope, create_hostname_scope
+from tests.historical_migration_helpers import insert_scope
 from database.inventory import create_device, create_scope_device, save_observation
 from database.remote_sensors import RemoteSensorStore
 from services.scope_authorization import HOSTNAME_CONFIRMATION_VERSION
@@ -14,20 +13,30 @@ def test_upgrade_29_preserves_existing_scope_and_device_evidence(monkeypatch, tm
     path = tmp_path / 'upgrade.db'
     current = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, 'MIGRATIONS', current[:29])
-    network = create_network('192.168.1.0/24', 'Home', '', True, True, path)
+    initialize_database(path)
+    stamp = '2026-10-12T00:00:00'
+    with get_connection(path) as connection:
+        network_id = connection.execute(
+            "INSERT INTO networks (cidr,name,description,authorized,enabled,created_at,updated_at) VALUES (?,?,?,1,1,?,?)",
+            ('192.168.1.0/24', 'Home', '', stamp, stamp),
+        ).lastrowid
+    network = {'id': network_id, 'cidr': '192.168.1.0/24'}
     device = create_device(stable_key=f"network:{network['id']}:ip:192.168.1.8", network_id=network['id'],
         mac_address=None, hostname='fixture', vendor=None, first_seen='2026-10-12T00:00:00',
         last_seen='2026-10-12T00:00:00', last_ip_address='192.168.1.8', status='ONLINE', identity_confidence='LOW', db_path=path)
     save_observation(device_id=device['id'], network_id=network['id'], ip_address='192.168.1.8',
         mac_address=None, hostname='fixture', vendor=None, status='ONLINE', observed_at=device['last_seen'], source='fixture', db_path=path)
-    public = create_scope(scope_type='PUBLIC_IPV4', canonical_target='8.8.8.8', authorized=True, enabled=True,
-        authorization_confirmed_at='2026-10-12', authorization_confirmation_version='fixture', authorization_source='fixture', db_path=path)
-    cidr = create_scope(scope_type='PUBLIC_CIDR', canonical_target='8.8.8.8/29', authorized=True, enabled=True,
-        authorization_confirmed_at='2026-10-12', authorization_confirmation_version='public_cidr_authorization_v1', authorization_source='fixture', db_path=path)
-    hostname = create_hostname_scope(canonical_hostname='example.test', approved_addresses=['8.8.8.8'],
-        authorization_confirmed_at='2026-10-12', authorization_confirmation_version=HOSTNAME_CONFIRMATION_VERSION,
-        authorization_source='fixture', resolution_version='fixture', db_path=path)
-    for scope in (public, hostname, cidr):
+    with get_connection(path) as connection:
+        private = connection.execute("SELECT id FROM authorized_scopes WHERE scope_type='PRIVATE_NETWORK' AND canonical_target=?", (network['cidr'],)).fetchone()
+        if private is None:
+            private_scope = insert_scope(connection, scope_type='PRIVATE_NETWORK', target=network['cidr'], name='Home')
+            connection.execute("INSERT INTO network_scope_links(network_id,scope_id) VALUES (?,?)", (network_id, private_scope['id']))
+        public = insert_scope(connection, scope_type='PUBLIC_IPV4', target='8.8.8.8')
+        cidr = insert_scope(connection, scope_type='PUBLIC_CIDR', target='8.8.8.8/29')
+        hostname = insert_scope(connection, scope_type='HOSTNAME', target='example.test')
+        connection.execute("UPDATE authorized_scopes SET resolution_verified_at=?,resolution_version='fixture',resolution_status='CURRENT' WHERE id=?", ('2026-10-12', hostname['id']))
+        connection.execute("INSERT INTO scope_hostname_addresses(scope_id,ipv4_address,approved,approved_at,verified_at,resolution_version) VALUES (?, '8.8.8.8',1,?,?, 'fixture')", (hostname['id'], '2026-10-12', '2026-10-12'))
+    for scope in (public, hostname):
         create_scope_device(scope['id'], ip_address='8.8.8.8', first_seen=device['first_seen'], last_seen=device['last_seen'], status='ONLINE', db_path=path)
     with get_connection(path) as c:
         tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'")]

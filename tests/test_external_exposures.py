@@ -123,12 +123,18 @@ def test_external_exposure_read_api_is_bounded_and_read_only(monkeypatch, tmp_pa
 
 def test_migration_37_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch):
     import database.migrations as migrations
+    from database.db import get_connection
+    from database.inventory import create_scope_device
+    from tests.historical_migration_helpers import insert_scope
 
     path = tmp_path / "migration-37.db"
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:36])
     initialize_database(path)
-    scope, device = _scope_and_device(path)
+    with get_connection(path) as connection:
+        scope = insert_scope(connection, scope_type="PUBLIC_IPV4", target="8.8.8.8")
+    device = create_scope_device(scope["id"], first_seen="2026-10-13T10:00:00",
+                                 last_seen="2026-10-13T10:00:00", status="ONLINE", db_path=path)
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:37])
     initialize_database(path)
     initialize_database(path)
@@ -138,4 +144,10 @@ def test_migration_37_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
         assert {"external_exposures", "external_exposure_observations"} <= tables
         assert connection.execute("SELECT id FROM devices WHERE id=?", (device["id"],)).fetchone()
         assert connection.execute("SELECT id FROM authorized_scopes WHERE id=?", (scope["id"],)).fetchone()
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='management_audit_events'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

@@ -150,12 +150,16 @@ def test_removing_explicit_policy_reverts_existing_exposures_to_review(monkeypat
 
 def test_migration_38_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch):
     import database.migrations as migrations
+    from tests.historical_migration_helpers import insert_scope
 
     path = tmp_path / "migration-38.db"
     all_migrations = migrations.MIGRATIONS
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:37])
     initialize_database(path)
-    scope, device = _scope_and_device(path)
+    with get_connection(path) as connection:
+        scope = insert_scope(connection, scope_type="PUBLIC_IPV4", target="8.8.8.8", name="Assessment target")
+    device = create_scope_device(scope["id"], first_seen="2026-10-13T11:00:00",
+                                 last_seen="2026-10-13T11:00:00", status="ONLINE", db_path=path)
     # Seed one valid 12A exposure directly against the pre-38 schema so the
     # migration test proves that existing factual exposure evidence survives.
     with get_connection(path) as connection:
@@ -189,4 +193,10 @@ def test_migration_38_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
         assert assessment == ("REVIEW", "NO_EXPLICIT_EXPOSURE_POLICY")
         assert connection.execute("SELECT id FROM devices WHERE id=?", (device["id"],)).fetchone()
         assert connection.execute("SELECT id FROM authorized_scopes WHERE id=?", (scope["id"],)).fetchone()
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='management_audit_events'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

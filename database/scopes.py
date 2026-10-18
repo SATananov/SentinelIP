@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime
 
 from database.db import DB_PATH, get_connection, initialize_database
+from database.management_audit import record_event
 from services.scope_models import ScopeError, ScopeType
 from services.public_target_policy import normalize_public_ipv4
 from services.hostname_policy import normalize_hostname
@@ -186,6 +187,11 @@ def create_scope(
             created_at=timestamp,
             updated_at=timestamp,
         )
+        if normalized_type != ScopeType.PRIVATE_NETWORK.value and authorized:
+            record_event(connection, event_type="SCOPE_AUTHORIZED", entity_type="SCOPE",
+                         entity_id=scope_id, scope_id=scope_id, scope_type=normalized_type,
+                         actor_type="API_CLIENT",
+                         new_state="AUTHORIZED")
         row = connection.execute(
             """
             SELECT authorized_scopes.*, network_scope_links.network_id
@@ -311,6 +317,10 @@ def create_hostname_scope(
                resolution_version = ?, resolution_status = 'CURRENT' WHERE id = ?""",
             (timestamp, resolution_version, scope_id),
         )
+        record_event(connection, event_type="SCOPE_AUTHORIZED", entity_type="SCOPE",
+                     entity_id=scope_id, scope_id=scope_id, scope_type="HOSTNAME",
+                     actor_type="API_CLIENT",
+                     new_state="AUTHORIZED")
         row = connection.execute(
             """SELECT authorized_scopes.*, NULL AS network_id
                FROM authorized_scopes WHERE id = ?""",
@@ -336,11 +346,15 @@ def reauthorize_hostname_scope(
     initialize_database(db_path)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
         scope = connection.execute(
             "SELECT * FROM authorized_scopes WHERE id = ?", (scope_id,)
         ).fetchone()
         if scope is None or scope["scope_type"] != ScopeType.HOSTNAME.value:
             raise ScopeError("A persisted hostname scope is required.")
+        record_event(connection, event_type="SCOPE_REAUTHORIZED", entity_type="SCOPE",
+                     entity_id=scope_id, scope_id=scope_id, scope_type=scope["scope_type"],
+                     actor_type="API_CLIENT")
         connection.execute(
             """UPDATE authorized_scopes SET authorized = 1,
                authorization_confirmed_at = ?, authorization_confirmation_version = ?,

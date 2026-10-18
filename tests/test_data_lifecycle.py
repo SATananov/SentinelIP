@@ -256,7 +256,7 @@ def test_preview_policy_classes_and_database_are_unchanged(lifecycle_context):
     with get_connection(path) as connection:
         after = {name: connection.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
                  for name in ("events", "remote_sensor_tasks")}
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
     assert before == after
 
 
@@ -280,7 +280,7 @@ def test_schema_remains_43_and_preview_is_read_only(lifecycle_context):
         tables_before = connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
     preview_data_lifecycle(path, NOW)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == before
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] == tables_before
 
@@ -359,7 +359,7 @@ def test_cleanup_rejects_unapproved_class_and_schema_stays_43(lifecycle_context)
     with pytest.raises(ValueError):
         cleanup_data_lifecycle("EVENTS", lifecycle_context["path"], NOW)
     with get_connection(lifecycle_context["path"]) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 43
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
 
 
 def test_dns_cleanup_uses_inclusive_boundary_and_one_clock(lifecycle_context, monkeypatch):

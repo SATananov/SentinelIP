@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from database.db import DB_PATH, get_connection, initialize_database
+from database.management_audit import record_event
 from services.external_exposure_assessment_models import normalize_expected_tcp_ports
 
 
@@ -34,6 +35,11 @@ def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
     initialize_database(db_path)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        prior_row = connection.execute(
+            "SELECT expected_tcp_ports_json FROM external_exposure_policies WHERE scope_id = ?", (scope_id,)
+        ).fetchone()
+        prior_ports = json.loads(prior_row["expected_tcp_ports_json"]) if prior_row else None
         connection.execute(
             """
             INSERT INTO external_exposure_policies (
@@ -46,6 +52,12 @@ def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
             """,
             (scope_id, json.dumps(list(ports), separators=(",", ":")), now, now),
         )
+        if prior_ports is None or sorted(set(prior_ports)) != list(ports):
+            record_event(connection, event_type="EXPOSURE_POLICY_CONFIGURED",
+                         entity_type="EXTERNAL_EXPOSURE_POLICY", entity_id=scope_id,
+                         scope_id=scope_id, actor_type="API_CLIENT",
+                         previous_expected_tcp_ports=prior_ports,
+                         new_expected_tcp_ports=list(ports))
         row = connection.execute(
             "SELECT * FROM external_exposure_policies WHERE scope_id = ?", (scope_id,)
         ).fetchone()
@@ -57,6 +69,18 @@ def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
 def delete_policy(scope_id: int, db_path=DB_PATH):
     initialize_database(db_path)
     with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT expected_tcp_ports_json FROM external_exposure_policies WHERE scope_id = ?", (scope_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        ports = json.loads(row["expected_tcp_ports_json"])
+        record_event(connection, event_type="EXPOSURE_POLICY_REMOVED",
+                     entity_type="EXTERNAL_EXPOSURE_POLICY", entity_id=scope_id,
+                     scope_id=scope_id, actor_type="API_CLIENT",
+                     previous_expected_tcp_ports=ports)
         cursor = connection.execute(
             "DELETE FROM external_exposure_policies WHERE scope_id = ?", (scope_id,)
         )

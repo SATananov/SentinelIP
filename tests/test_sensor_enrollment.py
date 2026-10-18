@@ -287,7 +287,7 @@ def test_initialization_preserves_10a_rows_and_credential(context):
     with get_connection(store.db_path) as c:
         assert {t: c.execute(f'SELECT * FROM "{t}"').fetchall() for t in tables} == before
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
-        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 43
+        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 44
     assert remote.get('/sensor/self', headers=auth({**old_sensor.record, 'credential': old_sensor.secret})).status_code == 200
 
 
@@ -466,17 +466,40 @@ def test_client_contract_builds_bounded_transport_headers():
 
 def test_migration_31_preserves_existing_10b_and_09d_data(monkeypatch, tmp_path):
     import database.migrations as migrations
+    import json
+    from tests.historical_migration_helpers import insert_scope, insert_site
     current = migrations.MIGRATIONS
     path = tmp_path / 'upgrade.db'
     monkeypatch.setattr(migrations, 'MIGRATIONS', current[:30])
     initialize_database(path)
     store = RemoteSensorStore(path)
-    site = store.create_site('Existing site')
-    invitation_record = store.create_enrollment(site['id'])
-    sensor = store.consume_enrollment(invitation_record.secret, name='Existing', platform='linux', version='1')
-    network = create_network('192.168.44.0/24', 'Existing LAN', '', True, True, path)
+    with get_connection(path) as c:
+        site = insert_site(c, 'Existing site')
+        stamp = '2026-10-13T00:00:00+00:00'
+        invitation_id = c.execute(
+            "INSERT INTO sensor_enrollment_tokens(site_id,token_hash,created_at,expires_at) VALUES (?,?,?,?)",
+            (site['id'], 'a' * 64, stamp, '2026-10-14T00:00:00+00:00'),
+        ).lastrowid
+        sensor_id = c.execute(
+            """INSERT INTO remote_sensors(site_id,sensor_uuid,name,platform,version,capabilities,enabled,
+               credential_salt,credential_hash,credential_iterations,registered_at,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)""",
+            (site['id'], '11111111-1111-4111-8111-111111111111', 'Existing', 'linux', '1', json.dumps([]),
+             'b' * 32, 'c' * 64, 120000, stamp, stamp, stamp),
+        ).lastrowid
+        c.execute("UPDATE sensor_enrollment_tokens SET consumed_at=?,sensor_id=? WHERE id=?", (stamp, sensor_id, invitation_id))
+        network_id = c.execute(
+            "INSERT INTO networks(cidr,name,description,authorized,enabled,created_at,updated_at) VALUES(?,?,?,1,1,?,?)",
+            ('192.168.44.0/24', 'Existing LAN', '', stamp, stamp),
+        ).lastrowid
+        scope = insert_scope(c, scope_type='PRIVATE_NETWORK', target='192.168.44.0/24', name='Existing LAN', stamp=stamp)
+        c.execute("INSERT INTO network_scope_links(network_id,scope_id) VALUES (?,?)", (network_id, scope['id']))
+        c.execute("INSERT INTO remote_scope_sites(scope_id,site_id,created_at) VALUES (?,?,?)", (scope['id'], site['id'], stamp))
+        c.execute("INSERT INTO sensor_scope_assignments(sensor_id,scope_id,site_id,canonical_target,created_at) VALUES (?,?,?,?,?)",
+                  (sensor_id, scope['id'], site['id'], '192.168.44.0/24', stamp))
+    network = {'id': network_id, 'cidr': '192.168.44.0/24'}
     scope = get_scope_for_network(network['id'], path)
-    assignment = store.assign_scope(sensor.record['id'], scope['id'])
+    assignment = store.list_assignments(sensor_id)[0]
     observed_at = '2026-10-13T00:00:00+00:00'
     device = create_device(stable_key=f"network:{network['id']}:ip:192.168.44.9",
                            network_id=network['id'], mac_address=None, hostname='preserved-device',
@@ -498,8 +521,8 @@ def test_migration_31_preserves_existing_10b_and_09d_data(monkeypatch, tmp_path)
     initialize_database(path)
     with get_connection(path) as c:
         assert {table: c.execute(f'SELECT * FROM "{table}"').fetchall() for table in before} == before
-        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 43
+        assert c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 44
         assert c.execute('PRAGMA foreign_key_check').fetchall() == []
         assert c.execute('SELECT COUNT(*) FROM sensor_transport_nonces').fetchone()[0] == 0
-    assert store.get_sensor(sensor.record['id'])['sensor_uuid'] == sensor.record['sensor_uuid']
-    assert store.list_assignments(sensor.record['id']) == [assignment]
+        assert store.get_sensor(sensor_id)['sensor_uuid'] == '11111111-1111-4111-8111-111111111111'
+    assert store.list_assignments(sensor_id) == [assignment]
