@@ -1,10 +1,12 @@
 """Explicit analyst incident review APIs over existing evidence records."""
+from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
+from database import incident_review_reports as reports_db
 from services.incident_review_operations import (
     build_incident_review_operations, build_incident_review_activity,
     build_incident_review_trends, build_incident_review_site_workload,
@@ -230,6 +232,32 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         if item is None:
             raise HTTPException(404,'Incident review not found.')
         return item
+
+    @app.get('/incident-reviews/{incident_id}/report.json')
+    def get_incident_review_report(incident_id: int):
+        if incident_id <= 0:
+            raise HTTPException(422, detail='Incident review ID must be positive.')
+        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated_at = generated.isoformat(timespec='seconds').replace('+00:00', 'Z')
+        try:
+            report = reports_db.build_incident_review_report(
+                incident_id, generated_at, db_path_provider(),
+            )
+            content = reports_db.serialize_incident_review_report(report)
+        except reports_db.IncidentReviewReportError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail='Incident review report is unavailable.') from exc
+        filename_time = generated.strftime('%Y%m%dT%H%M%SZ')
+        filename = f'sentinelip-incident-review-{incident_id}-{filename_time}.json'
+        return Response(
+            content=content,
+            media_type='application/json',
+            headers={
+                'Cache-Control': 'no-store',
+                'Content-Disposition': f'attachment; filename="{filename}"',
+            },
+        )
 
     @app.post('/incident-reviews',status_code=201)
     def create_incident_review(payload: ReviewCreate):
