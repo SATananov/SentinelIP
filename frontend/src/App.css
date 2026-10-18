@@ -2223,6 +2223,55 @@ h2 {
 }
 .remote-sensor-select strong { color: #eef2f8; }
 .remote-sensor-select small { max-width: 230px; overflow-wrap: anywhere; }
+
+.management-audit-history {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px solid #2b303a;
+  border-radius: 10px;
+  background: #171c25;
+}
+.management-audit-heading, .management-audit-row-main, .management-audit-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.management-audit-heading h3 { margin: 0; color: #eef2f8; }
+.management-audit-heading p { margin: 5px 0 0; color: #8994a8; font-size: 0.8rem; }
+.management-audit-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+.management-audit-filters label { display: grid; gap: 5px; color: #9aa4b7; font-size: 0.78rem; }
+.management-audit-filters input, .management-audit-filters select {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #343c4b;
+  border-radius: 7px;
+  color: #e4e9f2;
+  background: #151a23;
+}
+.management-audit-filters input:disabled { color: #697487; }
+.management-audit-state { color: #aab4c5; }
+.management-audit-error { color: #ff9b9b; }
+.management-audit-list { display: grid; gap: 8px; }
+.management-audit-row { padding: 11px 12px; border: 1px solid #2b303a; border-radius: 8px; background: #121720; }
+.management-audit-row-main { justify-content: flex-start; flex-wrap: wrap; color: #cbd3e0; font-size: 0.82rem; }
+.management-audit-row-main strong { color: #eef2f8; }
+.management-audit-row-main time { color: #9aa4b7; }
+.management-audit-row details { margin-top: 8px; color: #9aa4b7; font-size: 0.78rem; }
+.management-audit-row summary { width: fit-content; cursor: pointer; }
+.management-audit-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px 14px; margin: 10px 0 0; }
+.management-audit-details dt { color: #8994a8; }
+.management-audit-details dd { margin: 3px 0 0; color: #dce2ec; overflow-wrap: anywhere; }
+.management-audit-pagination { margin-top: 12px; color: #9aa4b7; font-size: 0.8rem; }
+.management-audit-pagination > div { display: flex; gap: 8px; }
+@media (max-width: 620px) {
+  .management-audit-heading, .management-audit-pagination { align-items: flex-start; flex-direction: column; }
+}
 .remote-sensor-selected { background: rgba(81, 111, 156, 0.12); }
 .remote-sensor-status {
   display: inline-block;

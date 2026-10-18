@@ -3,6 +3,7 @@ import { loadRemoteSensorFleet } from '../services/remoteSensorApi.js'
 import RemoteSensorFleetManagement from './RemoteSensorFleetManagement.jsx'
 import RemoteSensorTaskOperations from './RemoteSensorTaskOperations.jsx'
 import RemoteSensorTaskHistory from './RemoteSensorTaskHistory.jsx'
+import ManagementAuditHistory from './ManagementAuditHistory.jsx'
 import {
   createFleetRequestGuard,
   fleetCapabilitiesLabel,
@@ -206,6 +207,7 @@ function RemoteSensorFleet({ investigationRequest = null, onOpenInvestigationCon
       <RemoteSensorTaskHistory selectedSensor={selectedDetail} refreshSignal={historyRefreshGeneration}
         createdTask={createdTask} investigationRequest={investigationRequest}
         onOpenInvestigationContext={onOpenInvestigationContext} />
+      <ManagementAuditHistory />
     </section>
   )
 }
