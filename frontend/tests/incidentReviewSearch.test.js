@@ -73,6 +73,12 @@ test('date controls convert local calendar starts and inclusive end days to expl
   assert.throws(() => dateInputToSearchTimestamp('2026-02-30'), /valid calendar date/)
 })
 
+test('date conversion advances by local calendar day rather than assuming a 24-hour day', async () => {
+  const source = await readFile(new URL('../src/services/incidentReviewSearchApi.js', import.meta.url), 'utf8')
+  assert.match(source, /new Date\(year, month - 1, day\)/)
+  assert.match(source, /date\.setDate\(date\.getDate\(\) \+ 1\)/)
+})
+
 test('search API hides response bodies and network exception details while preserving status and aborts', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -97,6 +103,11 @@ test('new searches abort previous requests and stale success or error generation
   assert.equal(first.isCurrent(), false)
   assert.equal(second.signal.aborted, false)
   assert.equal(second.isCurrent(), true)
+  const visible = { result: null, error: null }
+  if (first.isCurrent()) visible.result = 'search A result'
+  if (first.isCurrent()) visible.error = 'search A error'
+  if (second.isCurrent()) visible.result = 'search B result'
+  assert.deepEqual(visible, { result: 'search B result', error: null })
   requests.abort()
   assert.equal(second.signal.aborted, true)
   assert.equal(second.isCurrent(), false)
@@ -128,4 +139,6 @@ test('discovery component stays bounded to the search projection and keeps queue
   assert.match(source, /created_from/)
   assert.match(source, /created_until/)
   assert.match(source, /setOffset\(0\)/)
+  assert.match(source, /requestController\.current\.abort\(\)/)
+  assert.match(source, /useEffect\(\(\) => \(\) => requestController\.current\.abort\(\)/)
 })

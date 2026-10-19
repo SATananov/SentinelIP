@@ -115,12 +115,39 @@ def test_search_indexes_title_only(search_db):
             "INSERT INTO incident_review_notes (incident_review_id,note_text,actor_source,created_at) "
             "VALUES (?,?,?,?)", (review["id"], "noteneedle", "OPERATOR", "2026-01-01T00:00:00+00:00"),
         )
-    for needle in ("summaryneedle", "finalneedle", "analystneedle", "noteneedle"):
+        connection.execute(
+            "INSERT INTO incident_review_evidence (incident_id,evidence_type,evidence_id,observed_at,added_at,reason) "
+            "VALUES (?,?,?,?,?,?)",
+            (review["id"], "WEB_DETECTION", 987654, "2026-01-01T00:00:00+00:00",
+             "2026-01-01T00:00:00+00:00", "evidenceneedle"),
+        )
+        connection.execute(
+            "INSERT INTO incident_review_events (incident_review_id,event_type,actor_source,created_at,summary,old_value,new_value) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (review["id"], "REVIEW_FIELD_CHANGED", "OPERATOR", "2026-01-01T00:00:00+00:00",
+             "timelineneedle", "oldvalueneedle", "newvalueneedle"),
+        )
+    for needle in ("summaryneedle", "finalneedle", "analystneedle", "noteneedle", "evidenceneedle",
+                   "timelineneedle", "oldvalueneedle", "newvalueneedle"):
         assert search_reviews(title=needle, db_path=search_db)["items"] == []
     assert search_reviews(title="unique", db_path=search_db)["items"][0]["id"] == review["id"]
     assert "summary" not in search_reviews(title="unique", db_path=search_db)["items"][0]
     assert "final_summary" not in search_reviews(title="unique", db_path=search_db)["items"][0]
     assert "analyst_note" not in search_reviews(title="unique", db_path=search_db)["items"][0]
+
+
+def test_unfiltered_search_includes_attributed_and_unattributed_reviews(search_db):
+    attributed = _create(search_db, "Attribution search title", site_id=None)
+    unattributed = _create(search_db, "Attribution search title")
+    # The first review is explicitly given attribution via a valid site record.
+    site = RemoteSensorStore(search_db).create_site("Attributed search site")
+    with get_connection(search_db) as connection:
+        connection.execute("UPDATE incident_reviews SET site_id=? WHERE id=?", (site["id"], attributed["id"]))
+
+    results = search_reviews(title="attribution", db_path=search_db)["items"]
+    assert {row["id"] for row in results} == {attributed["id"], unattributed["id"]}
+    assert [row["id"] for row in search_reviews(title="attribution", site_id=site["id"], db_path=search_db)["items"]] == [attributed["id"]]
+    assert "unattributed_only" not in search_reviews(title="attribution", db_path=search_db)
 
 
 def test_title_insert_update_delete_sync(search_db):
@@ -155,6 +182,37 @@ def test_date_filters_normalize_utc_and_closed_bounds_exclude_open(search_db):
     assert [item["id"] for item in closed_result["items"]] == [closed["id"]]
     assert search_reviews(title="threeweeks", created_from="2026-09-28T12:00:00Z",
                           created_until="2026-09-29T12:00:00Z", db_path=search_db)["items"][0]["id"] == old["id"]
+
+
+def test_one_sided_and_inclusive_exclusive_created_and_closed_bounds(search_db):
+    before = _create(search_db, "Boundary period review")
+    start = _create(search_db, "Boundary period review")
+    end = _create(search_db, "Boundary period review")
+    closed_start = _create(search_db, "Boundary closed review", disposition="BENIGN")
+    closed_end = _create(search_db, "Boundary closed review", disposition="BENIGN")
+    _set_dates(search_db, before["id"], created="2026-01-01T00:00:00+00:00")
+    _set_dates(search_db, start["id"], created="2026-01-02T00:00:00+00:00")
+    _set_dates(search_db, end["id"], created="2026-01-03T00:00:00+00:00")
+    _set_dates(search_db, closed_start["id"], created="2026-01-01T00:00:00+00:00",
+               updated="2026-01-02T00:00:00+00:00", closed="2026-01-02T00:00:00+00:00", state="CLOSED")
+    _set_dates(search_db, closed_end["id"], created="2026-01-01T00:00:00+00:00",
+               updated="2026-01-03T00:00:00+00:00", closed="2026-01-03T00:00:00+00:00", state="CLOSED")
+
+    created_from = search_reviews(title="boundary period", created_from="2026-01-02T00:00:00Z", db_path=search_db)
+    assert {row["id"] for row in created_from["items"]} == {start["id"], end["id"]}
+    created_until = search_reviews(title="boundary period", created_until="2026-01-03T00:00:00Z", db_path=search_db)
+    assert {row["id"] for row in created_until["items"]} == {before["id"], start["id"]}
+    created_both = search_reviews(title="boundary period", created_from="2026-01-02T00:00:00Z",
+                                  created_until="2026-01-03T00:00:00Z", db_path=search_db)
+    assert [row["id"] for row in created_both["items"]] == [start["id"]]
+
+    closed_from = search_reviews(title="boundary closed", closed_from="2026-01-03T00:00:00Z", db_path=search_db)
+    assert [row["id"] for row in closed_from["items"]] == [closed_end["id"]]
+    closed_until = search_reviews(title="boundary closed", closed_until="2026-01-03T00:00:00Z", db_path=search_db)
+    assert [row["id"] for row in closed_until["items"]] == [closed_start["id"]]
+    closed_both = search_reviews(title="boundary closed", closed_from="2026-01-02T00:00:00Z",
+                                 closed_until="2026-01-03T00:00:00Z", db_path=search_db)
+    assert [row["id"] for row in closed_both["items"]] == [closed_start["id"]]
 
 
 @pytest.mark.parametrize("kwargs", [
