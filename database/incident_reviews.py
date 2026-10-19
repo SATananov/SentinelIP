@@ -1,6 +1,7 @@
 """Manual incident review containers over immutable persisted evidence."""
 import sqlite3
 from datetime import datetime, timedelta, timezone
+import unicodedata
 from uuid import uuid4
 
 from database.db import DB_PATH, get_connection, initialize_database
@@ -332,6 +333,119 @@ def list_reviews(*, limit=20, offset=0, state=None, priority=None, site_id=None,
         rows = connection.execute(f'SELECT id FROM incident_reviews{where} ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?',
                                   (*params,limit,offset)).fetchall()
         return {'total': total, 'items': [_review(connection,row['id']) for row in rows]}
+
+
+def _review_title_tokens(value):
+    if not isinstance(value, str) or len(value) > 160:
+        raise IncidentReviewError('Title search must be 160 characters or fewer.')
+    normalized = ' '.join(value.strip().split())
+    tokens = []
+    current = []
+    for character in normalized:
+        category = unicodedata.category(character)
+        if category[0] in {'L', 'N'} or (category[0] == 'M' and current):
+            current.append(character)
+        elif current:
+            tokens.append(''.join(current))
+            current = []
+    if current:
+        tokens.append(''.join(current))
+    if not tokens or sum(len(token) for token in tokens) < 3:
+        raise IncidentReviewError('Title search must contain at least 3 searchable characters.')
+    if any(len(token) < 2 for token in tokens):
+        raise IncidentReviewError('Each title search term must contain at least 2 searchable characters.')
+    return tokens
+
+
+def _review_search_timestamp(value, name):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise IncidentReviewError(f'{name} must be an ISO-8601 timestamp with a timezone.')
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith(('Z', 'z')) else value)
+    except ValueError as exc:
+        raise IncidentReviewError(f'{name} must be an ISO-8601 timestamp with a timezone.') from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise IncidentReviewError(f'{name} must be an ISO-8601 timestamp with a timezone.')
+    return parsed.astimezone(timezone.utc)
+
+
+def _review_search_range(start, end, name):
+    if start is not None and end is not None:
+        if start >= end:
+            raise IncidentReviewError(f'{name} start must be earlier than its exclusive end.')
+        if end - start > timedelta(days=366):
+            raise IncidentReviewError(f'{name} range cannot exceed 366 days.')
+
+
+def search_reviews(*, title, state=None, priority=None, disposition=None, site_id=None,
+                   scope_id=None, device_id=None, created_from=None, created_until=None,
+                   closed_from=None, closed_until=None, limit=20, offset=0, db_path=DB_PATH):
+    """Search bounded title-token prefixes and return fixed review candidates."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise IncidentReviewError('Review search limit must be between 1 and 100.')
+    if type(offset) is not int or not 0 <= offset <= REVIEW_HISTORY_MAX_OFFSET:
+        raise IncidentReviewError('Review search offset must be between 0 and 100000.')
+    if state is not None and state not in STATES:
+        raise IncidentReviewError('Review state is unsupported.')
+    if priority is not None and priority not in PRIORITIES:
+        raise IncidentReviewError('Review priority is unsupported.')
+    if disposition is not None and disposition not in DISPOSITIONS:
+        raise IncidentReviewError('Review disposition is unsupported.')
+    for value in (site_id, scope_id, device_id):
+        if value is not None and (type(value) is not int or value < 1):
+            raise IncidentReviewError('Review attribution identifiers must be positive integers.')
+
+    tokens = _review_title_tokens(title)
+    match_expression = ' AND '.join(f'"{token}"*' for token in tokens)
+    created_start = _review_search_timestamp(created_from, 'created_from')
+    created_end = _review_search_timestamp(created_until, 'created_until')
+    closed_start = _review_search_timestamp(closed_from, 'closed_from')
+    closed_end = _review_search_timestamp(closed_until, 'closed_until')
+    _review_search_range(created_start, created_end, 'Created-at')
+    _review_search_range(closed_start, closed_end, 'Closed-at')
+
+    clauses = ['incident_reviews_fts MATCH ?']
+    parameters = [match_expression]
+    for column, value in (('state', state), ('priority', priority),
+                          ('disposition', disposition), ('site_id', site_id),
+                          ('scope_id', scope_id), ('device_id', device_id)):
+        if value is not None:
+            clauses.append(f'r.{column} = ?')
+            parameters.append(value)
+    for column, value, operator in (
+        ('created_at', created_start, '>='), ('created_at', created_end, '<'),
+        ('closed_at', closed_start, '>='), ('closed_at', closed_end, '<'),
+    ):
+        if value is not None:
+            clauses.append(f'julianday(r.{column}) {operator} julianday(?)')
+            parameters.append(value.isoformat(timespec='microseconds'))
+    if closed_start is not None or closed_end is not None:
+        clauses.append('r.closed_at IS NOT NULL')
+
+    initialize_database(db_path)
+    query = f'''SELECT r.id, r.incident_key, r.title, r.state, r.priority, r.confidence,
+                       r.disposition, r.site_id, r.scope_id, r.device_id,
+                       r.created_at, r.updated_at, r.closed_at
+                FROM incident_reviews_fts
+                JOIN incident_reviews r ON r.id = incident_reviews_fts.rowid
+                WHERE {' AND '.join(clauses)}
+                ORDER BY r.updated_at DESC, r.id DESC
+                LIMIT ? OFFSET ?'''
+    parameters.extend((limit + 1, offset))
+    try:
+        with get_connection(db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(query, parameters).fetchall()
+    except sqlite3.Error as exc:
+        raise IncidentReviewError('Incident review search is unavailable.', 500) from exc
+    return {
+        'items': [dict(row) for row in rows[:limit]],
+        'limit': limit,
+        'offset': offset,
+        'has_more': len(rows) > limit,
+    }
 
 
 def update_review(incident_id, updates, db_path=DB_PATH):

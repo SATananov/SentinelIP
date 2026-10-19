@@ -1740,6 +1740,30 @@ MIGRATIONS = (
                BEGIN SELECT RAISE(ABORT, 'management audit events are append-only'); END""",
         ),
     ),
+    (
+        45,
+        (
+            """CREATE VIRTUAL TABLE incident_reviews_fts USING fts5(
+                title,
+                content='incident_reviews',
+                content_rowid='id',
+                tokenize='unicode61'
+            )""",
+            """CREATE TRIGGER incident_reviews_fts_insert AFTER INSERT ON incident_reviews BEGIN
+                INSERT INTO incident_reviews_fts(rowid, title) VALUES (new.id, new.title);
+            END""",
+            """CREATE TRIGGER incident_reviews_fts_delete AFTER DELETE ON incident_reviews BEGIN
+                INSERT INTO incident_reviews_fts(incident_reviews_fts, rowid, title)
+                VALUES ('delete', old.id, old.title);
+            END""",
+            """CREATE TRIGGER incident_reviews_fts_update AFTER UPDATE OF title ON incident_reviews BEGIN
+                INSERT INTO incident_reviews_fts(incident_reviews_fts, rowid, title)
+                VALUES ('delete', old.id, old.title);
+                INSERT INTO incident_reviews_fts(rowid, title) VALUES (new.id, new.title);
+            END""",
+            "INSERT INTO incident_reviews_fts(incident_reviews_fts) VALUES ('rebuild')",
+        ),
+    ),
 
 )
 

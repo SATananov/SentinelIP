@@ -1,5 +1,6 @@
 """Explicit analyst incident review APIs over existing evidence records."""
 from datetime import datetime, timezone
+import sqlite3
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
@@ -225,6 +226,35 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             scope_id=scope_id,device_id=device_id,disposition=disposition,
             limit=limit,offset=offset,db_path=db_path_provider())
         return {**result,'count':len(result['items']),'limit':limit,'offset':offset}
+
+    @app.get('/incident-reviews/search', dependencies=[Depends(local_management)])
+    def search_incident_reviews(
+        title: str,
+        state: State | None = None,
+        priority: Priority | None = None,
+        disposition: Disposition | None = None,
+        site_id: int | None = Query(default=None, ge=1),
+        scope_id: int | None = Query(default=None, ge=1),
+        device_id: int | None = Query(default=None, ge=1),
+        created_from: str | None = None,
+        created_until: str | None = None,
+        closed_from: str | None = None,
+        closed_until: str | None = None,
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=MAX_INCIDENT_REVIEW_OFFSET),
+    ):
+        try:
+            return reviews_db.search_reviews(
+                title=title, state=state, priority=priority, disposition=disposition,
+                site_id=site_id, scope_id=scope_id, device_id=device_id,
+                created_from=created_from, created_until=created_until,
+                closed_from=closed_from, closed_until=closed_until,
+                limit=limit, offset=offset, db_path=db_path_provider(),
+            )
+        except reviews_db.IncidentReviewError as exc:
+            _raise(exc)
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=500, detail='Incident review search is unavailable.') from exc
 
     @app.get('/incident-reviews/{incident_id}', dependencies=[Depends(local_management)])
     def get_incident_review(incident_id: int):

@@ -476,7 +476,7 @@ def test_migrations_41_to_43_are_additive_idempotent_and_fk_clean(tmp_path,monke
                 'incident_review_notes','incidents','incident_correlations'} <= names
         columns = {row[1] for row in connection.execute('PRAGMA table_info(incident_reviews)')}
         assert 'final_summary' in columns
-        assert max(version for version,_ in MIGRATIONS) == 44
+        assert max(version for version,_ in MIGRATIONS) == 45
 
 
 def test_migration_42_adds_append_only_history_idempotently(tmp_path,monkeypatch):
@@ -497,7 +497,7 @@ def test_migration_42_adds_append_only_history_idempotently(tmp_path,monkeypatch
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 44
+        assert connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 45
         after = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {'incident_review_events','incident_review_notes'} <= after - before
         assert connection.execute('PRAGMA foreign_key_check').fetchall() == []

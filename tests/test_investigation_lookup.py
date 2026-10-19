@@ -313,4 +313,4 @@ def test_ip_query_plans_use_expected_indexes(lookup_context):
 
 def test_schema_remains_43(lookup_context):
     with get_connection(lookup_context['path']) as db:
-        assert db.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 44
+        assert db.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0] == 45

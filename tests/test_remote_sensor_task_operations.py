@@ -153,5 +153,5 @@ def test_task_operations_need_no_schema_migration(task_context):
     initialize_database(task_context['path'])
     with get_connection(task_context['path']) as connection:
         version = connection.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]
-    assert version == 44
-    assert max(version for version, _ in MIGRATIONS) == 44
+    assert version == 45
+    assert max(version for version, _ in MIGRATIONS) == 45

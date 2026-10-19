@@ -21,7 +21,7 @@ def test_migration_44_constraints_triggers_indexes_and_no_entity_foreign_keys(tm
     path = tmp_path / "management-audit.db"
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 44
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
         assert connection.execute("PRAGMA foreign_key_list(management_audit_events)").fetchall() == []
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(management_audit_events)")}
         assert indexes == {
@@ -111,7 +111,7 @@ def test_schema_43_upgrade_preserves_existing_rows_and_is_idempotent(tmp_path):
     with get_connection(path) as connection:
         assert connection.execute("SELECT name FROM sites").fetchone()[0] == "preserved"
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=44").fetchone()[0] == 1
-        assert max(version for version, _ in MIGRATIONS) == 44
+        assert max(version for version, _ in MIGRATIONS) == 45
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

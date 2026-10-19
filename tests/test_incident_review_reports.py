@@ -108,7 +108,7 @@ def test_report_endpoint_contract_headers_filename_snapshot_and_read_only(report
         }
         schema_after = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
     assert after == before
-    assert schema_after == schema_before == 44
+    assert schema_after == schema_before == 45
 
 
 def test_report_fixed_review_notes_and_timeline_projections(report_db):

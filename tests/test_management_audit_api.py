@@ -145,5 +145,5 @@ def test_local_management_guard_and_read_only_state(tmp_path):
     assert client_for(path, address="192.0.2.10").get("/management-audit-events").status_code == 403
     with get_connection(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM management_audit_events").fetchone()[0] == before
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == version == 44
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == version == 45
         assert connection.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'management_audit_events_%'").fetchall() == triggers
