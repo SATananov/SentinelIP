@@ -1054,6 +1054,101 @@ h2 {
   opacity: 0.65;
 }
 
+.incident-review-search {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 13px;
+  border: 1px solid #303946;
+  border-radius: 9px;
+  background: #151920;
+}
+
+.incident-review-search-heading h4 {
+  margin: 0 0 3px;
+  color: #dce1e9;
+  font-size: 12px;
+}
+
+.incident-review-search-heading p {
+  margin: 0;
+}
+
+.incident-review-search-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) repeat(4, minmax(110px, 1fr));
+  align-items: end;
+  gap: 8px;
+}
+
+.incident-review-search-form label {
+  display: grid;
+  gap: 4px;
+  color: #98a3b4;
+  font-size: 10px;
+}
+
+.incident-review-search-form input,
+.incident-review-search-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #374150;
+  border-radius: 7px;
+  padding: 7px;
+  background: #10141a;
+  color: #dce1e9;
+  font: inherit;
+  font-size: 11px;
+}
+
+.incident-review-search-title-field {
+  grid-column: span 2;
+}
+
+.incident-review-search-actions,
+.incident-review-search-pagination {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.incident-review-search-results {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.incident-review-search-result {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid #29313c;
+  border-radius: 8px;
+  background: #171b22;
+  color: #cbd1dc;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.incident-review-search-result strong {
+  color: #e7eaf0;
+}
+
+.incident-review-search-result small,
+.incident-review-search-pagination span {
+  color: #8993a4;
+  font-size: 10px;
+}
+
+.incident-review-search-pagination {
+  justify-content: flex-end;
+}
+
 .incident-review-workflow h4 {
   margin: 18px 0 9px;
   color: #dce1e9;
@@ -1159,6 +1254,14 @@ h2 {
 
   .incident-review-edit-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .incident-review-search-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .incident-review-search-title-field {
+    grid-column: 1 / -1;
   }
 }
 

@@ -15,6 +15,7 @@ import {
 import { createIncidentReviewRequestGuard } from '../services/incidentReviewRequestGuard.js'
 import CreateIncidentReviewForm from './CreateIncidentReviewForm.jsx'
 import IncidentReviewHandoffActions from './IncidentReviewHandoffActions.jsx'
+import IncidentReviewSearch from './IncidentReviewSearch.jsx'
 import InvestigationPivotActions from './InvestigationPivotActions.jsx'
 import { evidenceSourcePivot, reviewAttributionPivots } from '../services/investigationPivots.js'
 import {
@@ -234,6 +235,11 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
         initiatingEvidence={initiatingEvidence}
         />
       </div>}
+      <IncidentReviewSearch onSelectReview={(reviewId) => {
+        localSelectionVersion.current += 1
+        requestGuard.current.select(reviewId)
+        onSelectReview?.(reviewId)
+      }} />
       {selectedReviewId && selectedReviewId !== selected?.id && !error && <p className="security-empty" role="status">Loading selected Incident Review…</p>}
       {reviews.length === 0 ? (
         <p className="security-empty">No analyst incident reviews.</p>
