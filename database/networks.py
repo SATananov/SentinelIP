@@ -31,6 +31,7 @@ def create_network(
     authorized: bool,
     enabled: bool,
     db_path=DB_PATH,
+    actor_type="API_CLIENT",
 ):
     normalized_cidr = normalize_cidr(cidr)
     if not authorized:
@@ -72,7 +73,7 @@ def create_network(
         scope_id = create_private_scope_for_network(connection, dict(row))
         record_event(connection, event_type="NETWORK_CREATED", entity_type="NETWORK",
                      entity_id=row['id'], scope_id=scope_id, scope_type="PRIVATE_NETWORK",
-                     actor_type="API_CLIENT",
+                     actor_type=actor_type,
                      new_state="AUTHORIZED_ENABLED" if enabled else "AUTHORIZED_DISABLED")
 
     return _as_network(row)
@@ -111,6 +112,7 @@ def update_network(
     authorized=_UNSET,
     enabled=_UNSET,
     db_path=DB_PATH,
+    actor_type="API_CLIENT",
 ):
     if authorized is False:
         raise ValueError("Network authorization must remain explicit.")
@@ -166,7 +168,7 @@ def update_network(
                 )
             if enabled is not _UNSET and bool(prior['enabled']) != bool(enabled):
                 record_event(connection, event_type="NETWORK_ENABLED" if enabled else "NETWORK_DISABLED",
-                             entity_type="NETWORK", entity_id=network_id, actor_type="API_CLIENT",
+                             entity_type="NETWORK", entity_id=network_id, actor_type=actor_type,
                              previous_state="ENABLED" if prior['enabled'] else "DISABLED",
                              new_state="ENABLED" if enabled else "DISABLED")
 
@@ -179,7 +181,7 @@ def update_network(
     return _as_network(row)
 
 
-def delete_network(network_id: int, db_path=DB_PATH) -> bool:
+def delete_network(network_id: int, db_path=DB_PATH, actor_type="API_CLIENT") -> bool:
     initialize_database(db_path)
 
     with get_connection(db_path) as connection:
@@ -194,7 +196,7 @@ def delete_network(network_id: int, db_path=DB_PATH) -> bool:
         ).fetchone()
         record_event(connection, event_type="NETWORK_DELETED", entity_type="NETWORK",
                      entity_id=network_id, scope_id=scope_row[0] if scope_row is not None else None,
-                     actor_type="API_CLIENT", previous_state="ENABLED" if network['enabled'] else "DISABLED")
+                     actor_type=actor_type, previous_state="ENABLED" if network['enabled'] else "DISABLED")
         cursor = connection.execute(
             "DELETE FROM networks WHERE id = ?",
             (network_id,),

@@ -2,13 +2,13 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database.db import get_connection, initialize_database
 from database.inventory import create_scope_device
 from database.scopes import create_scope, get_scope
 from services.public_cidr_policy import PUBLIC_CIDR_CONFIRMATION_VERSION
+from local_operator_client import make_local_test_client
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def context(monkeypatch, tmp_path):
     def forbidden(*args, **kwargs):
         raise AssertionError('No real subprocess or scan is permitted in this test')
     monkeypatch.setattr('services.scanner_adapters.nmap_adapter.subprocess.run', forbidden)
-    return TestClient(api.app), path
+    return make_local_test_client(api.app), path
 
 
 def payload(target='8.8.8.7/29', **changes):

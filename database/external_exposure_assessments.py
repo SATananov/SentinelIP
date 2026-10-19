@@ -29,7 +29,7 @@ def get_policy(scope_id: int, db_path=DB_PATH):
     return result
 
 
-def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
+def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH, actor_type="API_CLIENT"):
     ports = normalize_expected_tcp_ports(expected_tcp_ports)
     now = _now()
     initialize_database(db_path)
@@ -55,7 +55,7 @@ def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
         if prior_ports is None or sorted(set(prior_ports)) != list(ports):
             record_event(connection, event_type="EXPOSURE_POLICY_CONFIGURED",
                          entity_type="EXTERNAL_EXPOSURE_POLICY", entity_id=scope_id,
-                         scope_id=scope_id, actor_type="API_CLIENT",
+                         scope_id=scope_id, actor_type=actor_type,
                          previous_expected_tcp_ports=prior_ports,
                          new_expected_tcp_ports=list(ports))
         row = connection.execute(
@@ -66,7 +66,7 @@ def upsert_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
     return result
 
 
-def delete_policy(scope_id: int, db_path=DB_PATH):
+def delete_policy(scope_id: int, db_path=DB_PATH, actor_type="API_CLIENT"):
     initialize_database(db_path)
     with get_connection(db_path) as connection:
         connection.row_factory = sqlite3.Row
@@ -79,7 +79,7 @@ def delete_policy(scope_id: int, db_path=DB_PATH):
         ports = json.loads(row["expected_tcp_ports_json"])
         record_event(connection, event_type="EXPOSURE_POLICY_REMOVED",
                      entity_type="EXTERNAL_EXPOSURE_POLICY", entity_id=scope_id,
-                     scope_id=scope_id, actor_type="API_CLIENT",
+                     scope_id=scope_id, actor_type=actor_type,
                      previous_expected_tcp_ports=ports)
         cursor = connection.execute(
             "DELETE FROM external_exposure_policies WHERE scope_id = ?", (scope_id,)

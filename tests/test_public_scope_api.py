@@ -1,8 +1,6 @@
 import sqlite3
 from datetime import datetime
 
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import get_connection, initialize_database
 from database.scopes import update_scope_enabled
@@ -15,13 +13,14 @@ from services.service_models import (
     ServiceDiscoveryResult,
     ServiceObservation,
 )
+from local_operator_client import make_local_test_client
 
 
 def _client(monkeypatch, tmp_path):
     path = tmp_path / "public-scope-api.db"
     initialize_database(path)
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    return TestClient(api_main.app), path
+    return make_local_test_client(api_main.app), path
 
 
 def _create(client, target="8.8.8.8", confirmed=True):

@@ -1,12 +1,11 @@
 from datetime import datetime
 
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import get_connection, initialize_database
 from services.scope_authorization import HOSTNAME_CONFIRMATION_VERSION
 from services.scan_models import HostDiscoveryResult, ScanResult
 from services.service_models import ServiceDiscoveryResult
+from local_operator_client import make_local_test_client
 
 
 ADDRESS_SET = ("8.8.8.8", "8.8.4.4")
@@ -30,7 +29,7 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(api_main, "HostnameResolver", FakeResolver)
     FakeResolver.addresses = ADDRESS_SET
     FakeResolver.calls = 0
-    return TestClient(api_main.app), path
+    return make_local_test_client(api_main.app), path
 
 
 def _create_payload(addresses=None):

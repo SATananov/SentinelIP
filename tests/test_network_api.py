@@ -1,8 +1,8 @@
-from fastapi.testclient import TestClient
 import pytest
 
 import api.main as api_main
 from database.db import initialize_database
+from local_operator_client import make_local_test_client
 
 
 @pytest.fixture
@@ -10,7 +10,7 @@ def client(monkeypatch, tmp_path):
     db_path = tmp_path / "network-api.db"
     initialize_database(db_path)
     monkeypatch.setattr(api_main, "DB_PATH", db_path)
-    return TestClient(api_main.app)
+    return make_local_test_client(api_main.app)
 
 
 def test_list_networks_empty(client):

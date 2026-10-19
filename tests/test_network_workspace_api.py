@@ -1,17 +1,16 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import initialize_database
 from database.networks import create_network
+from local_operator_client import make_local_test_client
 
 
 def _client_with_db(monkeypatch, tmp_path):
     db_path = tmp_path / "workspace.db"
     initialize_database(db_path)
     monkeypatch.setattr(api_main, "DB_PATH", db_path)
-    return TestClient(api_main.app), db_path
+    return make_local_test_client(api_main.app), db_path
 
 
 def test_list_network_devices_empty(monkeypatch, tmp_path):

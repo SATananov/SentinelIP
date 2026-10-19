@@ -156,7 +156,14 @@ def record_event(connection, *, event_type, entity_type, entity_id, actor_type,
         raise ValueError("Invalid management audit event/entity pairing.")
     if actor_type not in ACTORS:
         raise ValueError("Invalid management audit actor.")
-    if EVENT_ACTORS[event_type] != actor_type:
+    expected_actor = EVENT_ACTORS[event_type]
+    local_transition_events = {
+        "NETWORK_CREATED", "NETWORK_ENABLED", "NETWORK_DISABLED", "NETWORK_DELETED",
+        "SCOPE_AUTHORIZED", "SCOPE_REAUTHORIZED",
+        "EXPOSURE_POLICY_CONFIGURED", "EXPOSURE_POLICY_REMOVED",
+    }
+    if (expected_actor != actor_type
+            and not (event_type in local_transition_events and actor_type == "LOCAL_OPERATOR")):
         raise ValueError("Invalid management audit actor for event.")
     if not isinstance(entity_id, (str, int)) or isinstance(entity_id, bool) or not str(entity_id):
         raise ValueError("Invalid management audit entity ID.")

@@ -45,19 +45,19 @@ def _require_assessable_scope(scope):
     return scope
 
 
-def configure_scope_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH):
+def configure_scope_policy(scope_id: int, expected_tcp_ports, db_path=DB_PATH, actor_type="API_CLIENT"):
     scope = scopes_db.get_scope(scope_id, db_path)
     _require_assessable_scope(scope)
     ports = normalize_expected_tcp_ports(expected_tcp_ports)
-    policy = assessment_db.upsert_policy(scope_id, ports, db_path)
+    policy = assessment_db.upsert_policy(scope_id, ports, db_path, actor_type=actor_type)
     reassess_scope(scope_id, db_path)
     return policy
 
 
-def remove_scope_policy(scope_id: int, db_path=DB_PATH):
+def remove_scope_policy(scope_id: int, db_path=DB_PATH, actor_type="API_CLIENT"):
     scope = scopes_db.get_scope(scope_id, db_path)
     _require_assessable_scope(scope)
-    removed = assessment_db.delete_policy(scope_id, db_path)
+    removed = assessment_db.delete_policy(scope_id, db_path, actor_type=actor_type)
     reassess_scope(scope_id, db_path)
     return removed
 

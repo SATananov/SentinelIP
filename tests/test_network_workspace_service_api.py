@@ -1,10 +1,9 @@
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import initialize_database
 from database.inventory import create_device
 from database.networks import create_network
 from database.services import create_port, create_service
+from local_operator_client import make_local_test_client
 
 
 def _workspace(monkeypatch, tmp_path):
@@ -35,7 +34,7 @@ def _workspace(monkeypatch, tmp_path):
         db_path=db_path,
     )
 
-    return TestClient(api_main.app), db_path, network, device
+    return make_local_test_client(api_main.app), db_path, network, device
 
 
 def test_get_device(monkeypatch, tmp_path):

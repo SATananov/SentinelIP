@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database import external_exposure_assessments as assessment_db
@@ -11,6 +10,7 @@ from services.external_exposure_assessment import configure_scope_policy
 from services.public_target_policy import PUBLIC_IPV4_CONFIRMATION_VERSION
 from services.service_inventory import ServiceInventoryService
 from services.service_models import PortObservation, ServiceDiscoveryResult, ServiceObservation
+from local_operator_client import make_local_test_client
 
 
 def _scope_and_device(path, target="8.8.8.8"):
@@ -101,7 +101,7 @@ def test_policy_api_is_bounded_public_scope_configuration_and_assessment_api_is_
         authorization_source="test", db_path=path,
     )
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
 
     saved = client.put(
         f"/scopes/{scope['id']}/external-exposure-policy",
@@ -139,7 +139,7 @@ def test_removing_explicit_policy_reverts_existing_exposures_to_review(monkeypat
     )
     configure_scope_policy(scope["id"], [443], path)
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
 
     response = client.delete(f"/scopes/{scope['id']}/external-exposure-policy")
     assert response.status_code == 204

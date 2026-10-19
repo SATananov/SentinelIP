@@ -159,6 +159,33 @@ def test_network_scope_and_exposure_policy_events_capture_safe_changes(tmp_path)
         assert connection.execute("SELECT COUNT(*) FROM networks").fetchone()[0] == 0
 
 
+def test_control_plane_audit_accepts_local_operator_and_keeps_api_client_default(tmp_path):
+    path = tmp_path / "management-audit-actors.db"
+    network = create_network("192.168.42.0/24", "local", "", True, True,
+                             db_path=path, actor_type="LOCAL_OPERATOR")
+    update_network(network["id"], enabled=False, db_path=path, actor_type="LOCAL_OPERATOR")
+    delete_network(network["id"], db_path=path, actor_type="LOCAL_OPERATOR")
+    scope = create_scope(scope_type="PUBLIC_IPV4", canonical_target="8.8.4.4",
+                         authorized=True, enabled=True, authorization_confirmed_at="now",
+                         authorization_confirmation_version="test-v1",
+                         authorization_source="test", db_path=path,
+                         actor_type="LOCAL_OPERATOR")
+    upsert_policy(scope["id"], [443], path, actor_type="LOCAL_OPERATOR")
+    delete_policy(scope["id"], path, actor_type="LOCAL_OPERATOR")
+    with get_connection(path) as connection:
+        actors = connection.execute(
+            "SELECT event_type,actor_type FROM management_audit_events ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in actors] == [
+        ("NETWORK_CREATED", "LOCAL_OPERATOR"),
+        ("NETWORK_DISABLED", "LOCAL_OPERATOR"),
+        ("NETWORK_DELETED", "LOCAL_OPERATOR"),
+        ("SCOPE_AUTHORIZED", "LOCAL_OPERATOR"),
+        ("EXPOSURE_POLICY_CONFIGURED", "LOCAL_OPERATOR"),
+        ("EXPOSURE_POLICY_REMOVED", "LOCAL_OPERATOR"),
+    ]
+
+
 def test_registration_emits_two_events_without_secrets(tmp_path):
     path = tmp_path / "management-audit-registration.db"
     store = RemoteSensorStore(path)

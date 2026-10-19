@@ -1,6 +1,6 @@
 import csv
 
-from api.remote_sensors import register_remote_routes
+from api.remote_sensors import local_management, register_remote_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
 from api.remote_tasks import register_remote_task_routes
 from api.perimeter_ingestion import register_perimeter_ingestion_routes
@@ -18,7 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from database import inventory as workspace_inventory_db
 from database import cves as workspace_cves_db
@@ -231,13 +231,14 @@ def ingest_dns_telemetry(
         _telemetry_error(exc)
 
 
-@app.get("/networks", response_model=list[NetworkResponse])
+@app.get("/networks", response_model=list[NetworkResponse], dependencies=[Depends(local_management)])
 def networks():
     initialize_database(DB_PATH)
     return list_networks(db_path=DB_PATH)
 
 
-@app.post("/networks", response_model=NetworkResponse, status_code=201)
+@app.post("/networks", response_model=NetworkResponse, status_code=201,
+          dependencies=[Depends(local_management)])
 def create_authorized_network(payload: NetworkCreate):
     try:
         return create_network(
@@ -247,6 +248,7 @@ def create_authorized_network(payload: NetworkCreate):
             authorized=payload.authorized,
             enabled=payload.enabled,
             db_path=DB_PATH,
+            actor_type="LOCAL_OPERATOR",
         )
     except TargetPolicyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -259,7 +261,8 @@ def create_authorized_network(payload: NetworkCreate):
         ) from exc
 
 
-@app.get("/networks/{network_id}", response_model=NetworkResponse)
+@app.get("/networks/{network_id}", response_model=NetworkResponse,
+         dependencies=[Depends(local_management)])
 def get_authorized_network(network_id: int):
     network = get_network(network_id, db_path=DB_PATH)
 
@@ -269,7 +272,8 @@ def get_authorized_network(network_id: int):
     return network
 
 
-@app.patch("/networks/{network_id}", response_model=NetworkResponse)
+@app.patch("/networks/{network_id}", response_model=NetworkResponse,
+           dependencies=[Depends(local_management)])
 def update_authorized_network(
     network_id: int,
     payload: NetworkUpdate,
@@ -285,21 +289,22 @@ def update_authorized_network(
             detail="Network update values cannot be null.",
         )
 
-    return update_network(network_id, db_path=DB_PATH, **updates)
+    return update_network(network_id, db_path=DB_PATH, actor_type="LOCAL_OPERATOR", **updates)
 
 
-@app.delete("/networks/{network_id}", status_code=204)
+@app.delete("/networks/{network_id}", status_code=204, dependencies=[Depends(local_management)])
 def delete_authorized_network(network_id: int):
-    if not delete_network(network_id, db_path=DB_PATH):
+    if not delete_network(network_id, db_path=DB_PATH, actor_type="LOCAL_OPERATOR"):
         raise HTTPException(status_code=404, detail="Network not found.")
 
 
-@app.get("/scopes", response_model=list[AuthorizedScopeResponse])
+@app.get("/scopes", response_model=list[AuthorizedScopeResponse], dependencies=[Depends(local_management)])
 def authorized_scopes():
     return list_scopes(db_path=DB_PATH)
 
 
-@app.get("/scopes/{scope_id}", response_model=AuthorizedScopeResponse)
+@app.get("/scopes/{scope_id}", response_model=AuthorizedScopeResponse,
+         dependencies=[Depends(local_management)])
 def authorized_scope_detail(scope_id: int):
     if scope_id <= 0:
         raise HTTPException(status_code=422, detail="Scope ID must be positive.")
@@ -313,6 +318,7 @@ def authorized_scope_detail(scope_id: int):
     "/scopes/public-ipv4",
     response_model=AuthorizedScopeResponse,
     status_code=201,
+    dependencies=[Depends(local_management)],
 )
 def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
     if payload.authorization_confirmed is not True:
@@ -341,6 +347,7 @@ def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
             authorization_confirmation_version=payload.authorization_confirmation_version,
             authorization_source="api_explicit_authorization_confirmation",
             db_path=DB_PATH,
+            actor_type="LOCAL_OPERATOR",
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -349,7 +356,7 @@ def create_authorized_public_ipv4_scope(payload: PublicIPv4ScopeCreate):
         ) from exc
 
 
-@app.post("/scopes/public-cidr/preview")
+@app.post("/scopes/public-cidr/preview", dependencies=[Depends(local_management)])
 def preview_public_cidr(payload: PublicCIDRPreview):
     try:
         target = normalize_public_cidr(payload.target)
@@ -359,7 +366,8 @@ def preview_public_cidr(payload: PublicCIDRPreview):
             "maximum_addresses": MAX_PUBLIC_CIDR_ADDRESSES, "enumeration": "ALL_ADDRESSES"}
 
 
-@app.post("/scopes/public-cidr", response_model=AuthorizedScopeResponse, status_code=201)
+@app.post("/scopes/public-cidr", response_model=AuthorizedScopeResponse, status_code=201,
+          dependencies=[Depends(local_management)])
 def create_public_cidr_scope(payload: PublicCIDRScopeCreate):
     if payload.authorization_confirmed is not True or payload.authorization_confirmation_version != PUBLIC_CIDR_CONFIRMATION_VERSION:
         raise HTTPException(status_code=422, detail="Explicit public CIDR authorization with the supported confirmation version is required.")
@@ -374,6 +382,7 @@ def create_public_cidr_scope(payload: PublicCIDRScopeCreate):
             authorization_confirmed_at=datetime.now().isoformat(timespec="seconds"),
             authorization_confirmation_version=PUBLIC_CIDR_CONFIRMATION_VERSION,
             authorization_source="api_explicit_public_cidr_confirmation", db_path=DB_PATH,
+            actor_type="LOCAL_OPERATOR",
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="A scope for this public CIDR already exists.") from exc
@@ -421,7 +430,7 @@ def _verified_hostname_approval(payload: HostnameScopeCreate):
     return hostname, requested_addresses, resolved.resolution_version
 
 
-@app.post("/scopes/hostname/preview")
+@app.post("/scopes/hostname/preview", dependencies=[Depends(local_management)])
 def preview_authorized_hostname(payload: HostnamePreviewRequest):
     try:
         hostname = normalize_hostname(payload.hostname)
@@ -434,6 +443,7 @@ def preview_authorized_hostname(payload: HostnamePreviewRequest):
     "/scopes/hostname",
     response_model=AuthorizedScopeResponse,
     status_code=201,
+    dependencies=[Depends(local_management)],
 )
 def create_authorized_hostname_scope(payload: HostnameScopeCreate):
     hostname, addresses, resolution_version = _verified_hostname_approval(payload)
@@ -448,6 +458,7 @@ def create_authorized_hostname_scope(payload: HostnameScopeCreate):
             authorization_source="api_explicit_hostname_authorization_confirmation",
             resolution_version=resolution_version,
             db_path=DB_PATH,
+            actor_type="LOCAL_OPERATOR",
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
@@ -459,6 +470,7 @@ def create_authorized_hostname_scope(payload: HostnameScopeCreate):
 @app.post(
     "/scopes/{scope_id}/hostname/reauthorize",
     response_model=AuthorizedScopeResponse,
+    dependencies=[Depends(local_management)],
 )
 def reauthorize_hostname(scope_id: int, payload: HostnameScopeCreate):
     scope = get_authorized_scope(scope_id, db_path=DB_PATH)
@@ -487,12 +499,13 @@ def reauthorize_hostname(scope_id: int, payload: HostnameScopeCreate):
             authorization_source="api_explicit_hostname_reauthorization_confirmation",
             resolution_version=resolution_version,
             db_path=DB_PATH,
+            actor_type="LOCAL_OPERATOR",
         )
     except ScopeAuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-@app.get("/scopes/{scope_id}/devices")
+@app.get("/scopes/{scope_id}/devices", dependencies=[Depends(local_management)])
 def list_scope_inventory_devices(scope_id: int):
     scope = get_authorized_scope(scope_id, db_path=DB_PATH)
     if scope is None:
@@ -500,7 +513,7 @@ def list_scope_inventory_devices(scope_id: int):
     return list_scope_devices(scope_id, db_path=DB_PATH)
 
 
-@app.post("/scopes/{scope_id}/discover")
+@app.post("/scopes/{scope_id}/discover", dependencies=[Depends(local_management)])
 def discover_public_scope(scope_id: int):
     scope = get_authorized_scope(scope_id, db_path=DB_PATH)
     if scope is None:
@@ -546,7 +559,8 @@ def discover_public_scope(scope_id: int):
     return result
 
 
-@app.post("/scopes/{scope_id}/devices/{device_id}/discover-services")
+@app.post("/scopes/{scope_id}/devices/{device_id}/discover-services",
+          dependencies=[Depends(local_management)])
 def discover_public_scope_device_services(scope_id: int, device_id: int):
     scope = get_authorized_scope(scope_id, db_path=DB_PATH)
     if scope is None:
@@ -1297,7 +1311,7 @@ def list_network_devices(network_id: int):
     )
 
 
-@app.post("/networks/{network_id}/discover")
+@app.post("/networks/{network_id}/discover", dependencies=[Depends(local_management)])
 def discover_network_devices(network_id: int):
     network = _workspace_network_or_404(network_id)
 
@@ -1347,7 +1361,7 @@ def get_workspace_device(device_id: int):
     return _workspace_device_or_404(device_id)
 
 
-@app.post("/devices/{device_id}/discover-services")
+@app.post("/devices/{device_id}/discover-services", dependencies=[Depends(local_management)])
 def discover_device_services(device_id: int):
     device = _workspace_device_or_404(device_id)
     network = _workspace_network_or_404(device["network_id"])

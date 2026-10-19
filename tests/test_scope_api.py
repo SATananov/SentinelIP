@@ -1,12 +1,11 @@
 import sqlite3
 
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import get_connection, initialize_database
 from database.inventory import create_device
 from database.networks import create_network
 from database.scopes import get_scope_for_network, update_scope_enabled
+from local_operator_client import make_local_test_client
 
 
 def _scope_client(monkeypatch, tmp_path):
@@ -27,7 +26,7 @@ def _scope_client(monkeypatch, tmp_path):
         identity_confidence="LOW",
         db_path=path,
     )
-    return TestClient(api_main.app), path, network, device
+    return make_local_test_client(api_main.app), path, network, device
 
 
 def test_scope_read_api_and_network_scope_association_are_read_only(

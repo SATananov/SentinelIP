@@ -163,6 +163,7 @@ def create_scope(
     authorization_confirmation_version: str | None = None,
     authorization_source: str | None = None,
     db_path=DB_PATH,
+    actor_type="API_CLIENT",
 ):
     normalized_type = _normalize_scope_type(scope_type)
     target = _normalize_target(normalized_type, canonical_target)
@@ -190,7 +191,7 @@ def create_scope(
         if normalized_type != ScopeType.PRIVATE_NETWORK.value and authorized:
             record_event(connection, event_type="SCOPE_AUTHORIZED", entity_type="SCOPE",
                          entity_id=scope_id, scope_id=scope_id, scope_type=normalized_type,
-                         actor_type="API_CLIENT",
+                         actor_type=actor_type,
                          new_state="AUTHORIZED")
         row = connection.execute(
             """
@@ -290,6 +291,7 @@ def create_hostname_scope(
     authorization_source: str,
     resolution_version: str,
     db_path=DB_PATH,
+    actor_type="API_CLIENT",
 ):
     hostname = normalize_hostname(canonical_hostname)
     addresses = _normalize_hostname_addresses(approved_addresses)
@@ -319,7 +321,7 @@ def create_hostname_scope(
         )
         record_event(connection, event_type="SCOPE_AUTHORIZED", entity_type="SCOPE",
                      entity_id=scope_id, scope_id=scope_id, scope_type="HOSTNAME",
-                     actor_type="API_CLIENT",
+                     actor_type=actor_type,
                      new_state="AUTHORIZED")
         row = connection.execute(
             """SELECT authorized_scopes.*, NULL AS network_id
@@ -340,6 +342,7 @@ def reauthorize_hostname_scope(
     authorization_source: str,
     resolution_version: str,
     db_path=DB_PATH,
+    actor_type="API_CLIENT",
 ):
     addresses = _normalize_hostname_addresses(approved_addresses)
     timestamp = _timestamp()
@@ -354,7 +357,7 @@ def reauthorize_hostname_scope(
             raise ScopeError("A persisted hostname scope is required.")
         record_event(connection, event_type="SCOPE_REAUTHORIZED", entity_type="SCOPE",
                      entity_id=scope_id, scope_id=scope_id, scope_type=scope["scope_type"],
-                     actor_type="API_CLIENT")
+                     actor_type=actor_type)
         connection.execute(
             """UPDATE authorized_scopes SET authorized = 1,
                authorization_confirmed_at = ?, authorization_confirmation_version = ?,
