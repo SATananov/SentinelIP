@@ -14,6 +14,7 @@ import {
 } from '../services/securityApi.js'
 import { createIncidentReviewRequestGuard } from '../services/incidentReviewRequestGuard.js'
 import CreateIncidentReviewForm from './CreateIncidentReviewForm.jsx'
+import IncidentReviewHandoffActions from './IncidentReviewHandoffActions.jsx'
 import InvestigationPivotActions from './InvestigationPivotActions.jsx'
 import { evidenceSourcePivot, reviewAttributionPivots } from '../services/investigationPivots.js'
 import {
@@ -279,7 +280,9 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
               <p className="panel-kicker">Analyst incident review</p>
               <h3>{selected.title}</h3>
             </div>
-            <button className="security-detail-close" type="button" onClick={() => {
+            <div className="incident-review-detail-actions">
+              <IncidentReviewHandoffActions key={selected.id} reviewId={selected.id} />
+              <button className="security-detail-close" type="button" onClick={() => {
               requestGuard.current.invalidate()
               onSelectReview?.(null)
               setSelected(null)
@@ -290,9 +293,8 @@ function IncidentReviewSection({ refreshSignal, selectedReviewId = null, onSelec
               setBusy(null)
               setReviewDraft(null)
               setDetailLoading(false)
-            }}>
-              Close
-            </button>
+              }}>Close</button>
+            </div>
           </div>
           <p className="incident-review-disclaimer">
             Evidence links and suggestions do not mean causal relationship, attack, compromise, intrusion, exploitation, or vulnerability.

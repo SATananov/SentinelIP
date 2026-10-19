@@ -1068,6 +1068,22 @@ h2 {
   background: #12161c;
 }
 
+.incident-review-detail-actions,
+.incident-review-handoff-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.incident-review-report-message {
+  flex-basis: 100%;
+  color: #c5a978;
+  font-size: 11px;
+  text-align: right;
+}
+
 .incident-review-disclaimer {
   margin: 0 0 12px;
   color: #98a3b4;
