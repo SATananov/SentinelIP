@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
 from database import incident_review_reports as reports_db
+from services import incident_review_report_html as report_html
 from services.incident_review_operations import (
     build_incident_review_operations, build_incident_review_activity,
     build_incident_review_trends, build_incident_review_site_workload,
@@ -256,6 +257,39 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             headers={
                 'Cache-Control': 'no-store',
                 'Content-Disposition': f'attachment; filename="{filename}"',
+            },
+        )
+
+    @app.get('/incident-reviews/{incident_id}/report.html')
+    def get_incident_review_report_html(incident_id: int):
+        if incident_id <= 0:
+            raise HTTPException(status_code=422, detail='Incident review ID must be positive.')
+        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated_at = generated.isoformat(timespec='seconds').replace('+00:00', 'Z')
+        try:
+            report = reports_db.build_incident_review_report(
+                incident_id, generated_at, db_path_provider(),
+            )
+            content = report_html.render_incident_review_report_html(report)
+        except (reports_db.IncidentReviewReportError, report_html.IncidentReviewReportHtmlError) as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail='Incident review report is unavailable.') from exc
+        filename_time = generated.strftime('%Y%m%dT%H%M%SZ')
+        filename = f'sentinelip-incident-review-{incident_id}-{filename_time}.html'
+        return Response(
+            content=content,
+            media_type='text/html',
+            headers={
+                'Cache-Control': 'no-store',
+                'Content-Disposition': f'inline; filename="{filename}"',
+                'Content-Security-Policy': (
+                    "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; "
+                    "font-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; "
+                    "form-action 'none'; frame-ancestors 'none'"
+                ),
+                'X-Content-Type-Options': 'nosniff',
+                'Referrer-Policy': 'no-referrer',
             },
         )
 
