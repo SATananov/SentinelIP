@@ -1,4 +1,4 @@
-import { API_BASE } from './securityApi.js'
+import { API_BASE } from './apiBase.js'
 
 export class IncidentReviewReportError extends Error {
   constructor(status = null) {

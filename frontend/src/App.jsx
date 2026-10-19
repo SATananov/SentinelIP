@@ -24,6 +24,7 @@ import ExternalExposureDashboard from './components/ExternalExposureDashboard.js
 import InvestigationLookup from './components/InvestigationLookup.jsx'
 import DataLifecycle from './components/DataLifecycle.jsx'
 import { createInvestigationNavigationRequest, investigationPanelForKind } from './services/investigationNavigation.js'
+import { API_BASE } from './services/apiBase.js'
 import {
   clearReviewIntakeRequest,
   createReviewIntakeRequest,
@@ -31,8 +32,6 @@ import {
 } from './services/reviewEvidenceContext.js'
 
 import './App.css'
-
-const API_BASE = 'http://127.0.0.1:8000'
 
 function App() {
   const reviewIntakeToken = useRef(0)

@@ -3,7 +3,7 @@ import {
   MANAGEMENT_AUDIT_EVENT_TYPES,
 } from './managementAuditState.js'
 
-const API_BASE = 'http://127.0.0.1:8000'
+import { API_BASE } from './apiBase.js'
 
 function positiveSiteId(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value

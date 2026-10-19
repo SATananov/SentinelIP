@@ -203,6 +203,12 @@ python -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The dashboard expects the API at `http://127.0.0.1:8000`.
+This is the default when `VITE_SENTINELIP_API_BASE` is unset. For sensor-enabled
+direct-TLS Core deployment, set the frontend variable explicitly to the loopback
+API URL (for example, `https://127.0.0.1:8443`). Remote sensors use the Core DNS
+name; the local frontend uses loopback. See
+[`docs/operator-boundary-21d.md`](docs/operator-boundary-21d.md) for the
+deployment, certificate, and operator-boundary contract.
 
 In another terminal, start the React frontend:
 
