@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
 
 import api.main as api_main
 from database.db import get_connection, initialize_database
@@ -11,6 +10,7 @@ from database.perimeter_host_correlations import query_perimeter_host_correlatio
 from database.remote_sensors import RemoteSensorStore
 from services.perimeter_host_engine import PerimeterHostCorrelationEngine
 from services.perimeter_models import PerimeterEvent
+from local_operator_client import make_local_test_client
 
 AT = datetime(2026, 10, 13, 6, 0, tzinfo=timezone.utc)
 
@@ -111,7 +111,7 @@ def test_read_api_is_bounded_and_read_only(tmp_path, monkeypatch):
     stored = persist_perimeter_event(event(site["id"]), path)
     correlation = PerimeterHostCorrelationEngine(path).evaluate_event(stored["id"])
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    client = TestClient(api_main.app)
+    client = make_local_test_client(api_main.app)
     listing = client.get(f"/perimeter-host-correlations?site_id={site['id']}&device_id={device['id']}&destination_port=22")
     assert listing.status_code == 200
     body = listing.json()

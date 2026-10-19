@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database.db import initialize_database
@@ -9,6 +8,7 @@ from database.scopes import create_scope
 from services.external_exposure_dashboard import build_external_exposure_dashboard
 from services.public_target_policy import PUBLIC_IPV4_CONFIRMATION_VERSION
 from services.service_inventory import ServiceInventoryService
+from local_operator_client import make_local_test_client
 from services.service_models import PortObservation, ServiceDiscoveryResult, ServiceObservation
 
 
@@ -130,7 +130,7 @@ def test_dashboard_api_is_read_only_filterable_and_bounded(monkeypatch, tmp_path
         scope, device, _result(datetime(2026, 10, 13, 14, 10, 0)),
     )
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
 
     response = client.get(
         f"/external-exposure-dashboard?scope_id={scope['id']}&time_range=all&recent_limit=5"

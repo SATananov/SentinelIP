@@ -1,7 +1,8 @@
 from typing import Literal
 
-from fastapi import HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 
+from api.remote_sensors import local_management
 from services.external_exposure_dashboard import build_external_exposure_dashboard
 
 
@@ -9,7 +10,7 @@ DashboardTimeRange = Literal["24h", "72h", "7d", "30d", "all"]
 
 
 def register_external_exposure_dashboard_routes(app, db_path_provider):
-    @app.get("/external-exposure-dashboard")
+    @app.get("/external-exposure-dashboard", dependencies=[Depends(local_management)])
     def external_exposure_dashboard(
         scope_id: int | None = Query(default=None, ge=1),
         time_range: DashboardTimeRange = "7d",

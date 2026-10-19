@@ -1,9 +1,8 @@
-from fastapi.testclient import TestClient
-
 from api.main import app
+from local_operator_client import make_local_test_client
 
 
-client = TestClient(app)
+client = make_local_test_client(app)
 
 
 def test_health():

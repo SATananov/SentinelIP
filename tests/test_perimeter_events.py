@@ -3,13 +3,13 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api.main as api_main
 from database.db import get_connection, initialize_database
 from database.perimeter import get_perimeter_event, persist_perimeter_event, query_perimeter_events
 from database.remote_sensors import RemoteSensorStore
 from services.perimeter_models import PerimeterEvent, PerimeterModelError
+from local_operator_client import make_local_test_client
 
 
 AT = datetime(2026, 10, 13, 4, 0, tzinfo=timezone.utc)
@@ -134,7 +134,7 @@ def test_api_is_read_only_and_supports_review_filters(tmp_path, monkeypatch):
     current_site = site(path)
     stored = persist_perimeter_event(event(current_site["id"]), path)
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    client = TestClient(api_main.app)
+    client = make_local_test_client(api_main.app)
 
     listing = client.get(f"/perimeter-events?site_id={current_site['id']}&direction=INBOUND&action=BLOCK")
     assert listing.status_code == 200

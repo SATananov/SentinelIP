@@ -2,11 +2,12 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from database import incident_reviews as reviews_db
 from database import incident_review_reports as reports_db
+from api.remote_sensors import local_management
 from services import incident_review_report_html as report_html
 from services.incident_review_operations import (
     build_incident_review_operations, build_incident_review_activity,
@@ -100,7 +101,7 @@ def _raise(exc):
 
 
 def register_incident_review_routes(app: FastAPI, db_path_provider):
-    @app.get('/incident-review-operations')
+    @app.get('/incident-review-operations', dependencies=[Depends(local_management)])
     def incident_review_operations(
         state: State | None = None,
         priority: Priority | None = None,
@@ -135,7 +136,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-review-operations/activity')
+    @app.get('/incident-review-operations/activity', dependencies=[Depends(local_management)])
     def incident_review_activity(
         event_type: ActivityEventType | None = None,
         incident_review_id: int | None = Query(default=None, ge=1),
@@ -157,14 +158,14 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-review-operations/trends')
+    @app.get('/incident-review-operations/trends', dependencies=[Depends(local_management)])
     def incident_review_trends(window: TrendsWindow = '30d'):
         try:
             return build_incident_review_trends(window=window, db_path=db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-review-operations/sites')
+    @app.get('/incident-review-operations/sites', dependencies=[Depends(local_management)])
     def incident_review_site_workload(
         sort: str = 'unresolved_desc',
         limit: int = Query(default=20, ge=1, le=100),
@@ -177,7 +178,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-review-operations/scopes')
+    @app.get('/incident-review-operations/scopes', dependencies=[Depends(local_management)])
     def incident_review_scope_workload(
         site_id: int | None = Query(default=None, ge=1),
         unattributed_only: bool = False,
@@ -193,7 +194,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-review-operations/devices')
+    @app.get('/incident-review-operations/devices', dependencies=[Depends(local_management)])
     def incident_review_device_workload(
         site_id: int | None = Query(default=None, ge=1),
         unattributed_only: bool = False,
@@ -209,7 +210,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-reviews')
+    @app.get('/incident-reviews', dependencies=[Depends(local_management)])
     def list_incident_reviews(
         state: State | None = None,
         priority: Priority | None = None,
@@ -225,7 +226,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             limit=limit,offset=offset,db_path=db_path_provider())
         return {**result,'count':len(result['items']),'limit':limit,'offset':offset}
 
-    @app.get('/incident-reviews/{incident_id}')
+    @app.get('/incident-reviews/{incident_id}', dependencies=[Depends(local_management)])
     def get_incident_review(incident_id: int):
         if incident_id <= 0:
             raise HTTPException(422,'Incident review ID must be positive.')
@@ -234,7 +235,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             raise HTTPException(404,'Incident review not found.')
         return item
 
-    @app.get('/incident-reviews/{incident_id}/report.json')
+    @app.get('/incident-reviews/{incident_id}/report.json', dependencies=[Depends(local_management)])
     def get_incident_review_report(incident_id: int):
         if incident_id <= 0:
             raise HTTPException(422, detail='Incident review ID must be positive.')
@@ -260,7 +261,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             },
         )
 
-    @app.get('/incident-reviews/{incident_id}/report.html')
+    @app.get('/incident-reviews/{incident_id}/report.html', dependencies=[Depends(local_management)])
     def get_incident_review_report_html(incident_id: int):
         if incident_id <= 0:
             raise HTTPException(status_code=422, detail='Incident review ID must be positive.')
@@ -293,14 +294,15 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
             },
         )
 
-    @app.post('/incident-reviews',status_code=201)
+    @app.post('/incident-reviews',status_code=201, dependencies=[Depends(local_management)])
     def create_incident_review(payload: ReviewCreate):
         try:
             return reviews_db.create_review(**payload.model_dump(),db_path=db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.post('/incident-reviews/from-evidence',status_code=201)
+    @app.post('/incident-reviews/from-evidence',status_code=201,
+              dependencies=[Depends(local_management)])
     def create_incident_review_from_evidence(payload: ReviewFromEvidenceCreate):
         try:
             return reviews_db.create_review_from_evidence(
@@ -309,7 +311,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.patch('/incident-reviews/{incident_id}')
+    @app.patch('/incident-reviews/{incident_id}', dependencies=[Depends(local_management)])
     def update_incident_review(incident_id: int,payload: ReviewUpdate):
         if incident_id <= 0:
             raise HTTPException(422,'Incident review ID must be positive.')
@@ -318,7 +320,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-reviews/{incident_id}/timeline')
+    @app.get('/incident-reviews/{incident_id}/timeline', dependencies=[Depends(local_management)])
     def get_incident_review_timeline(incident_id: int,
         limit: int = Query(default=100,ge=1,le=100),offset: int = Query(default=0,ge=0,le=100000)):
         try:
@@ -327,7 +329,7 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-reviews/{incident_id}/notes')
+    @app.get('/incident-reviews/{incident_id}/notes', dependencies=[Depends(local_management)])
     def get_incident_review_notes(incident_id: int,
         limit: int = Query(default=100,ge=1,le=100),offset: int = Query(default=0,ge=0,le=100000)):
         try:
@@ -336,14 +338,15 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.post('/incident-reviews/{incident_id}/notes',status_code=201)
+    @app.post('/incident-reviews/{incident_id}/notes',status_code=201,
+              dependencies=[Depends(local_management)])
     def add_incident_review_note(incident_id: int,payload: NoteCreate):
         try:
             return reviews_db.add_note(incident_id,payload.note_text,db_path_provider())
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-reviews/{incident_id}/evidence')
+    @app.get('/incident-reviews/{incident_id}/evidence', dependencies=[Depends(local_management)])
     def get_incident_review_evidence(incident_id: int,
         limit: int = Query(default=100,ge=1,le=500),
         offset: int = Query(default=0,ge=0,le=MAX_INCIDENT_REVIEW_OFFSET)):
@@ -353,7 +356,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.get('/incident-reviews/{incident_id}/related-evidence')
+    @app.get('/incident-reviews/{incident_id}/related-evidence',
+             dependencies=[Depends(local_management)])
     def get_related_incident_review_evidence(incident_id: int,
         limit: int = Query(default=100,ge=1,le=100), evidence_type: EvidenceType | None = None):
         try:
@@ -362,7 +366,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.post('/incident-reviews/{incident_id}/evidence',status_code=201)
+    @app.post('/incident-reviews/{incident_id}/evidence',status_code=201,
+              dependencies=[Depends(local_management)])
     def attach_incident_review_evidence(incident_id: int,payload: EvidenceCreate):
         try:
             return reviews_db.add_evidence(incident_id,evidence_type=payload.evidence_type,
@@ -370,7 +375,8 @@ def register_incident_review_routes(app: FastAPI, db_path_provider):
         except reviews_db.IncidentReviewError as exc:
             _raise(exc)
 
-    @app.delete('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}')
+    @app.delete('/incident-reviews/{incident_id}/evidence/{evidence_type}/{evidence_id}',
+                dependencies=[Depends(local_management)])
     def detach_incident_review_evidence(incident_id: int,evidence_type: EvidenceType,evidence_id: int):
         try:
             return reviews_db.remove_evidence(incident_id,evidence_type,evidence_id,db_path_provider())

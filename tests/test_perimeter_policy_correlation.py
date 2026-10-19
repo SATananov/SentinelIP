@@ -2,7 +2,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api.main as api_main
 from database.db import get_connection, initialize_database
@@ -13,6 +12,7 @@ from database.perimeter_policy_correlations import (
 )
 from database.remote_sensors import RemoteSensorStore
 from services.perimeter_models import PerimeterEvent
+from local_operator_client import make_local_test_client
 from services.perimeter_policy_engine import PerimeterPolicyCorrelationEngine
 
 AT = datetime(2026, 10, 13, 6, 0, tzinfo=timezone.utc)
@@ -142,7 +142,7 @@ def test_read_api_is_bounded_and_read_only(tmp_path, monkeypatch):
     persist_and_correlate(path, make_event(site["id"], 1, action="BLOCK"))
     _, correlation = persist_and_correlate(path, make_event(site["id"], 2, action="ALLOW"))
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    client = TestClient(api_main.app)
+    client = make_local_test_client(api_main.app)
     response = client.get(
         f"/perimeter-policy-correlations?site_id={site['id']}&correlation_type=BLOCK_THEN_ALLOW"
         "&source_type=FIREWALL&source_key=edge-fw&destination_port=22"

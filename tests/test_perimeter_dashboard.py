@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi.testclient import TestClient
 
 import api.main as api_main
 from database.inventory import create_device
@@ -11,6 +10,7 @@ from services.perimeter_dashboard import build_perimeter_dashboard
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_host_engine import PerimeterHostCorrelationEngine
 from services.perimeter_models import PerimeterEvent
+from local_operator_client import make_local_test_client
 from services.perimeter_policy_engine import PerimeterPolicyCorrelationEngine
 
 AT = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=2)
@@ -98,7 +98,7 @@ def test_dashboard_api_is_read_only_and_validates_site(tmp_path, monkeypatch):
     site, _ = setup_inventory(path)
     persist_perimeter_event(make_event(site["id"], 1), path)
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    client = TestClient(api_main.app)
+    client = make_local_test_client(api_main.app)
     response = client.get(f"/perimeter-dashboard?site_id={site['id']}&time_range=24h")
     assert response.status_code == 200
     assert response.json()["summary"]["inbound_total"] == 1

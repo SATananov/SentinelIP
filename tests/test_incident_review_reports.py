@@ -187,7 +187,9 @@ def test_report_missing_review_invalid_id_and_access_boundary(report_db):
     assert invalid.value.status_code == 422
     route = next(route for route in _app(report_db).routes
                  if getattr(route, "path", None) == "/incident-reviews/{incident_id}/report.json")
-    assert not route.dependencies
+    from api.remote_sensors import local_management
+    assert any(dependency.call is local_management
+               for dependency in route.dependant.dependencies)
 
 
 @pytest.mark.parametrize("evidence_type", [

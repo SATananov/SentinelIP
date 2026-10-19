@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database import external_exposure_classifications as classification_db
@@ -10,6 +9,7 @@ from database.scopes import create_scope
 from services.external_exposure_classification_rules import classify_exposure_rule
 from services.public_target_policy import PUBLIC_IPV4_CONFIRMATION_VERSION
 from services.service_inventory import ServiceInventoryService
+from local_operator_client import make_local_test_client
 from services.service_models import PortObservation, ServiceDiscoveryResult, ServiceObservation
 
 
@@ -72,7 +72,7 @@ def test_classification_api_is_read_only_and_filterable(monkeypatch, tmp_path):
     scope, device = _scope_device(path)
     ServiceInventoryService(path).process_public_result(scope, device, _result(443, "https"))
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
     response = client.get("/external-exposure-classifications?service_role=WEB&exposure_profile=COMMON_PUBLIC_SERVICE")
     assert response.status_code == 200
     body = response.json(); assert body["total"] == 1 and body["count"] == 1

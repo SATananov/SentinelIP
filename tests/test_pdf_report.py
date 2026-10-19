@@ -1,10 +1,9 @@
-from fastapi.testclient import TestClient
-
 from api.main import app
+from local_operator_client import make_local_test_client
 from services.pdf_report import build_security_report
 
 
-client = TestClient(app)
+client = make_local_test_client(app)
 
 
 def test_build_security_report_returns_pdf():

@@ -2,7 +2,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api.main as api_main
 from database.db import get_connection, initialize_database
@@ -11,6 +10,7 @@ from database.perimeter_detections import get_perimeter_detection, query_perimet
 from database.remote_sensors import RemoteSensorStore
 from services.perimeter_detection_engine import PerimeterDetectionEngine
 from services.perimeter_models import PerimeterEvent
+from local_operator_client import make_local_test_client
 
 AT = datetime(2026, 10, 13, 5, 0, tzinfo=timezone.utc)
 
@@ -123,7 +123,7 @@ def test_read_api_is_bounded_and_read_only(tmp_path, monkeypatch):
     site = setup_site(path)
     _, detection = persist_and_eval(path, make_event(site["id"]))
     monkeypatch.setattr(api_main, "DB_PATH", path)
-    client = TestClient(api_main.app)
+    client = make_local_test_client(api_main.app)
     response = client.get(f"/perimeter-detections?site_id={site['id']}&action=BLOCK&destination_port=22")
     assert response.status_code == 200
     body = response.json()

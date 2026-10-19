@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database.db import get_connection, initialize_database
@@ -9,6 +8,7 @@ from database.scopes import create_scope
 from services.public_target_policy import PUBLIC_IPV4_CONFIRMATION_VERSION
 from services.service_inventory import ServiceInventoryService
 from services.service_models import PortObservation, ServiceDiscoveryResult, ServiceObservation
+from local_operator_client import make_local_test_client
 
 
 def _scope_and_device(path):
@@ -105,7 +105,7 @@ def test_external_exposure_read_api_is_bounded_and_read_only(monkeypatch, tmp_pa
     at = datetime(2026, 10, 13, 10, 15, 0)
     ServiceInventoryService(path).process_public_result(scope, device, _result(at))
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
 
     listing = client.get(f"/external-exposures?scope_id={scope['id']}&port_number=22")
     assert listing.status_code == 200

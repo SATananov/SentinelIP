@@ -1,10 +1,9 @@
 import sqlite3
 from unittest.mock import Mock
 
-from fastapi.testclient import TestClient
-
 import api.main as api_main
 from database.db import initialize_database
+from local_operator_client import make_local_test_client
 from database.networks import create_network, list_networks
 from services.local_network_discovery import (
     LocalNetworkCandidate,
@@ -64,7 +63,7 @@ def test_network_candidates_are_read_only_and_do_not_invoke_scanners(
     before_counts = table_row_counts(db_path)
     before_networks = list_networks(db_path=db_path)
 
-    response = TestClient(api_main.app).get("/network-candidates")
+    response = make_local_test_client(api_main.app).get("/network-candidates")
 
     assert response.status_code == 200
     payload = response.json()
@@ -88,7 +87,7 @@ def test_network_candidates_maps_local_state_failure_to_service_unavailable(
         Mock(side_effect=LocalNetworkDiscoveryError("private detail")),
     )
 
-    response = TestClient(api_main.app).get("/network-candidates")
+    response = make_local_test_client(api_main.app).get("/network-candidates")
 
     assert response.status_code == 503
     assert response.json() == {

@@ -1,7 +1,8 @@
 from typing import Literal
 
-from fastapi import HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 
+from api.remote_sensors import local_management
 from database import external_exposure_classifications as classification_db
 from services.public_target_policy import PublicTargetPolicyError, normalize_public_ipv4
 
@@ -10,7 +11,7 @@ ExposureProfile = Literal["COMMON_PUBLIC_SERVICE", "SENSITIVE_ADMIN_SERVICE", "I
 
 
 def register_external_exposure_classification_routes(app, db_path_provider):
-    @app.get("/external-exposure-classifications")
+    @app.get("/external-exposure-classifications", dependencies=[Depends(local_management)])
     def external_exposure_classifications(
         scope_id: int | None = Query(default=None, ge=1),
         service_role: ServiceRole | None = None,
@@ -32,7 +33,8 @@ def register_external_exposure_classification_routes(app, db_path_provider):
         )
         return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
-    @app.get("/external-exposure-classifications/{classification_id}")
+    @app.get("/external-exposure-classifications/{classification_id}",
+             dependencies=[Depends(local_management)])
     def external_exposure_classification(classification_id: int):
         item = classification_db.get_classification(classification_id, db_path_provider())
         if item is None:

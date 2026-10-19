@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 
-from fastapi.testclient import TestClient
 
 import api.main as api
 from database import external_exposure_changes as change_db
@@ -9,6 +8,7 @@ from database.inventory import create_scope_device
 from database.scopes import create_scope
 from services.public_target_policy import PUBLIC_IPV4_CONFIRMATION_VERSION
 from services.service_inventory import ServiceInventoryService
+from local_operator_client import make_local_test_client
 from services.service_models import PortObservation, ServiceDiscoveryResult, ServiceObservation
 
 
@@ -112,7 +112,7 @@ def test_change_api_is_read_only_bounded_and_filterable(monkeypatch, tmp_path):
     at = datetime(2026, 10, 13, 13, 10, 0)
     ServiceInventoryService(path).process_public_result(scope, device, _result(at))
     monkeypatch.setattr(api, "DB_PATH", path)
-    client = TestClient(api.app)
+    client = make_local_test_client(api.app)
 
     response = client.get(
         f"/external-exposure-changes?scope_id={scope['id']}&change_type=NEW_EXPOSURE&presence_state=PRESENT"

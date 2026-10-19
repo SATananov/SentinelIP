@@ -48,7 +48,7 @@ def register_external_exposure_assessment_routes(app, db_path_provider):
             raise HTTPException(status_code=404, detail="External exposure policy not found.")
         return None
 
-    @app.get("/external-exposure-assessments")
+    @app.get("/external-exposure-assessments", dependencies=[Depends(local_management)])
     def external_exposure_assessments(
         scope_id: int | None = Query(default=None, ge=1),
         classification: Literal["EXPECTED", "UNEXPECTED", "REVIEW"] | None = None,
@@ -73,7 +73,8 @@ def register_external_exposure_assessment_routes(app, db_path_provider):
         )
         return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
-    @app.get("/external-exposure-assessments/{assessment_id}")
+    @app.get("/external-exposure-assessments/{assessment_id}",
+             dependencies=[Depends(local_management)])
     def external_exposure_assessment(assessment_id: int):
         assessment = assessment_db.get_assessment(assessment_id, db_path_provider())
         if assessment is None:

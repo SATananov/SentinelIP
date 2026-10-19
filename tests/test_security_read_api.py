@@ -1,5 +1,4 @@
 import pytest
-from fastapi.testclient import TestClient
 
 from api import main as api_main
 from database.db import get_connection, initialize_database
@@ -7,9 +6,10 @@ from services.correlation_engine import CorrelationEngine
 from services.incident_engine import IncidentEngine
 from test_correlation_engine import ssh_pair, web_chain
 from test_correlation_rules import AT
+from local_operator_client import make_local_test_client
 
 
-client = TestClient(api_main.app)
+client = make_local_test_client(api_main.app)
 
 
 @pytest.fixture

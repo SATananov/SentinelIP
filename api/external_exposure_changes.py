@@ -1,7 +1,8 @@
 from typing import Literal
 
-from fastapi import HTTPException, Query
+from fastapi import Depends, HTTPException, Query
 
+from api.remote_sensors import local_management
 from database import external_exposure_changes as change_db
 from services.public_target_policy import PublicTargetPolicyError, normalize_public_ipv4
 
@@ -14,7 +15,7 @@ PresenceState = Literal["PRESENT", "ABSENT"]
 
 
 def register_external_exposure_change_routes(app, db_path_provider):
-    @app.get("/external-exposure-changes")
+    @app.get("/external-exposure-changes", dependencies=[Depends(local_management)])
     def external_exposure_changes(
         scope_id: int | None = Query(default=None, ge=1),
         change_type: ChangeType | None = None,
@@ -36,7 +37,7 @@ def register_external_exposure_change_routes(app, db_path_provider):
         )
         return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
-    @app.get("/external-exposure-changes/{change_id}")
+    @app.get("/external-exposure-changes/{change_id}", dependencies=[Depends(local_management)])
     def external_exposure_change(change_id: int):
         item = change_db.get_change(change_id, db_path_provider())
         if item is None:

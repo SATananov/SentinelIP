@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from api.incident_reviews import register_incident_review_routes
+from api.remote_sensors import local_management
 from database import incident_review_reports as reports
 from database.db import get_connection, initialize_database
 from database.incident_reviews import create_review
@@ -85,7 +86,8 @@ def test_html_endpoint_headers_filename_csp_and_same_access_boundary(report_db):
         assert directive in csp
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
-    assert not route.dependencies
+    assert any(dependency.call is local_management
+               for dependency in route.dependant.dependencies)
     text = response.body.decode("utf-8")
     assert text.startswith("<!doctype html>") and text.endswith("</html>")
     assert "This report represents the current Incident Review state" in text

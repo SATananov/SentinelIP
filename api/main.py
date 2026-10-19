@@ -630,7 +630,7 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
     }
 
 
-@app.get("/external-exposures")
+@app.get("/external-exposures", dependencies=[Depends(local_management)])
 def external_exposures(
     scope_id: int | None = Query(default=None, ge=1),
     device_id: int | None = Query(default=None, ge=1),
@@ -651,7 +651,7 @@ def external_exposures(
     return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
 
-@app.get("/external-exposures/{exposure_id}")
+@app.get("/external-exposures/{exposure_id}", dependencies=[Depends(local_management)])
 def external_exposure(exposure_id: int):
     exposure = get_external_exposure(exposure_id, db_path=DB_PATH)
     if exposure is None:
@@ -659,7 +659,8 @@ def external_exposure(exposure_id: int):
     return exposure
 
 
-@app.get("/external-exposures/{exposure_id}/observations")
+@app.get("/external-exposures/{exposure_id}/observations",
+         dependencies=[Depends(local_management)])
 def external_exposure_observations(
     exposure_id: int,
     limit: int = Query(default=100, ge=1, le=500),
@@ -673,7 +674,7 @@ def external_exposure_observations(
     return {**result, "count": len(result["items"]), "limit": limit, "offset": offset}
 
 
-@app.get("/network-candidates")
+@app.get("/network-candidates", dependencies=[Depends(local_management)])
 def network_candidates():
     try:
         candidates = discover_local_networks()
@@ -686,12 +687,12 @@ def network_candidates():
     return [candidate.as_dict() for candidate in candidates]
 
 
-@app.get("/overview")
+@app.get("/overview", dependencies=[Depends(local_management)])
 def overview():
     return get_overview()
 
 
-@app.get("/events")
+@app.get("/events", dependencies=[Depends(local_management)])
 def events(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -721,14 +722,14 @@ def events(
     }
 
 
-@app.get("/source-ips")
+@app.get("/source-ips", dependencies=[Depends(local_management)])
 def source_ips():
     return {
         "items": get_source_ips(),
     }
 
 
-@app.get("/alerts")
+@app.get("/alerts", dependencies=[Depends(local_management)])
 def alerts(
     limit: int = Query(
         default=20,
@@ -746,21 +747,21 @@ def alerts(
     }
 
 
-@app.get("/stats/severity")
+@app.get("/stats/severity", dependencies=[Depends(local_management)])
 def severity_stats():
     return {
         "items": get_severity_counts(),
     }
 
 
-@app.get("/stats/event-types")
+@app.get("/stats/event-types", dependencies=[Depends(local_management)])
 def event_type_stats():
     return {
         "items": get_event_type_counts(),
     }
 
 
-@app.get("/stats/top-ips")
+@app.get("/stats/top-ips", dependencies=[Depends(local_management)])
 def top_ip_stats(
     limit: int = Query(
         default=10,
@@ -775,7 +776,7 @@ def top_ip_stats(
     }
 
 
-@app.get("/stats/timeline")
+@app.get("/stats/timeline", dependencies=[Depends(local_management)])
 def timeline_stats(
     limit: int = Query(
         default=30,
@@ -790,7 +791,7 @@ def timeline_stats(
     }
 
 
-@app.get("/export/events.json")
+@app.get("/export/events.json", dependencies=[Depends(local_management)])
 def export_events_json(
     severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
     source_ip: str | None = None,
@@ -818,7 +819,7 @@ def export_events_json(
     }
 
 
-@app.get("/export/events.csv")
+@app.get("/export/events.csv", dependencies=[Depends(local_management)])
 def export_events_csv(
     severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
     source_ip: str | None = None,
@@ -875,7 +876,7 @@ def export_events_csv(
     )
 
 
-@app.get("/export/report.pdf")
+@app.get("/export/report.pdf", dependencies=[Depends(local_management)])
 def export_security_report(
     severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
     source_ip: str | None = None,
@@ -915,7 +916,7 @@ def export_security_report(
 # Perimeter evidence read API
 # ---------------------------------------------------------------------------
 
-@app.get("/perimeter-events")
+@app.get("/perimeter-events", dependencies=[Depends(local_management)])
 def perimeter_events(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -950,7 +951,7 @@ def perimeter_events(
     }
 
 
-@app.get("/perimeter-events/{event_id}")
+@app.get("/perimeter-events/{event_id}", dependencies=[Depends(local_management)])
 def perimeter_event_detail(event_id: int):
     if event_id <= 0:
         raise HTTPException(status_code=422, detail="Perimeter event ID must be positive.")
@@ -960,7 +961,7 @@ def perimeter_event_detail(event_id: int):
     return item
 
 
-@app.get("/perimeter-detections")
+@app.get("/perimeter-detections", dependencies=[Depends(local_management)])
 def perimeter_detections(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -987,7 +988,7 @@ def perimeter_detections(
     }
 
 
-@app.get("/perimeter-detections/{detection_id}")
+@app.get("/perimeter-detections/{detection_id}", dependencies=[Depends(local_management)])
 def perimeter_detection_detail(detection_id: int):
     if detection_id <= 0:
         raise HTTPException(status_code=422, detail="Perimeter detection ID must be positive.")
@@ -997,7 +998,7 @@ def perimeter_detection_detail(detection_id: int):
     return item
 
 
-@app.get("/perimeter-policy-correlations")
+@app.get("/perimeter-policy-correlations", dependencies=[Depends(local_management)])
 def perimeter_policy_correlations(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1027,7 +1028,8 @@ def perimeter_policy_correlations(
     }
 
 
-@app.get("/perimeter-policy-correlations/{correlation_id}")
+@app.get("/perimeter-policy-correlations/{correlation_id}",
+         dependencies=[Depends(local_management)])
 def perimeter_policy_correlation_detail(correlation_id: int):
     if correlation_id <= 0:
         raise HTTPException(status_code=422, detail="Perimeter policy correlation ID must be positive.")
@@ -1037,7 +1039,7 @@ def perimeter_policy_correlation_detail(correlation_id: int):
     return item
 
 
-@app.get("/perimeter-host-correlations")
+@app.get("/perimeter-host-correlations", dependencies=[Depends(local_management)])
 def perimeter_host_correlations(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1066,7 +1068,8 @@ def perimeter_host_correlations(
     }
 
 
-@app.get("/perimeter-host-correlations/{correlation_id}")
+@app.get("/perimeter-host-correlations/{correlation_id}",
+         dependencies=[Depends(local_management)])
 def perimeter_host_correlation_detail(correlation_id: int):
     if correlation_id <= 0:
         raise HTTPException(status_code=422, detail="Perimeter host correlation ID must be positive.")
@@ -1077,7 +1080,7 @@ def perimeter_host_correlation_detail(correlation_id: int):
 
 
 
-@app.get("/perimeter-dashboard")
+@app.get("/perimeter-dashboard", dependencies=[Depends(local_management)])
 def perimeter_dashboard(
     site_id: int | None = Query(default=None, ge=1),
     source_type: Literal["FIREWALL", "ROUTER", "GATEWAY", "SENSOR", "OTHER"] | None = None,
@@ -1095,7 +1098,7 @@ def perimeter_dashboard(
 # Deterministic security read API
 # ---------------------------------------------------------------------------
 
-@app.get("/threats")
+@app.get("/threats", dependencies=[Depends(local_management)])
 def threats(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1142,7 +1145,7 @@ def threats(
     }
 
 
-@app.get("/threats/{threat_id}")
+@app.get("/threats/{threat_id}", dependencies=[Depends(local_management)])
 def threat_detail(threat_id: int):
     if threat_id <= 0:
         raise HTTPException(status_code=422, detail="Threat ID must be positive.")
@@ -1155,7 +1158,7 @@ def threat_detail(threat_id: int):
     return item
 
 
-@app.get("/correlations")
+@app.get("/correlations", dependencies=[Depends(local_management)])
 def correlations(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1201,7 +1204,7 @@ def correlations(
     }
 
 
-@app.get("/correlations/{correlation_id}")
+@app.get("/correlations/{correlation_id}", dependencies=[Depends(local_management)])
 def correlation_detail(correlation_id: int):
     if correlation_id <= 0:
         raise HTTPException(status_code=422, detail="Correlation ID must be positive.")
@@ -1214,7 +1217,7 @@ def correlation_detail(correlation_id: int):
     return item
 
 
-@app.get("/web-detections")
+@app.get("/web-detections", dependencies=[Depends(local_management)])
 def web_detections(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=100000),
@@ -1229,7 +1232,7 @@ def web_detections(
     }
 
 
-@app.get("/incidents")
+@app.get("/incidents", dependencies=[Depends(local_management)])
 def incidents(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1264,7 +1267,7 @@ def incidents(
     }
 
 
-@app.get("/incidents/{incident_id}")
+@app.get("/incidents/{incident_id}", dependencies=[Depends(local_management)])
 def incident_detail(incident_id: int):
     if incident_id <= 0:
         raise HTTPException(status_code=422, detail="Incident ID must be positive.")
@@ -1302,7 +1305,7 @@ def _workspace_discover(network: dict):
     )
 
 
-@app.get("/networks/{network_id}/devices")
+@app.get("/networks/{network_id}/devices", dependencies=[Depends(local_management)])
 def list_network_devices(network_id: int):
     _workspace_network_or_404(network_id)
     return workspace_inventory_db.list_devices(
@@ -1356,7 +1359,7 @@ def _workspace_discover_services(network: dict, device: dict):
     )
 
 
-@app.get("/devices/{device_id}")
+@app.get("/devices/{device_id}", dependencies=[Depends(local_management)])
 def get_workspace_device(device_id: int):
     return _workspace_device_or_404(device_id)
 
@@ -1391,19 +1394,19 @@ def discover_device_services(device_id: int):
     }
 
 
-@app.get("/devices/{device_id}/ports")
+@app.get("/devices/{device_id}/ports", dependencies=[Depends(local_management)])
 def list_workspace_device_ports(device_id: int):
     _workspace_device_or_404(device_id)
     return workspace_services_db.list_ports(device_id, db_path=DB_PATH)
 
 
-@app.get("/devices/{device_id}/services")
+@app.get("/devices/{device_id}/services", dependencies=[Depends(local_management)])
 def list_workspace_device_services(device_id: int):
     _workspace_device_or_404(device_id)
     return workspace_services_db.list_services(device_id, db_path=DB_PATH)
 
 
-@app.get("/devices/{device_id}/findings")
+@app.get("/devices/{device_id}/findings", dependencies=[Depends(local_management)])
 def list_workspace_device_findings(device_id: int):
     _workspace_device_or_404(device_id)
     return workspace_findings_db.list_device_findings(
@@ -1412,7 +1415,7 @@ def list_workspace_device_findings(device_id: int):
     )
 
 
-@app.get("/devices/{device_id}/cve-matches")
+@app.get("/devices/{device_id}/cve-matches", dependencies=[Depends(local_management)])
 def list_workspace_device_cve_matches(device_id: int):
     _workspace_device_or_404(device_id)
     return workspace_cves_db.list_device_cve_matches(
