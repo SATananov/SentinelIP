@@ -473,4 +473,3 @@ def test_body_middleware_replays_chunks_and_more_body_unchanged():
         {"type": "http.request", "body": b"last", "more_body": True},
         {"type": "http.request", "body": b"", "more_body": False},
     ]
-
