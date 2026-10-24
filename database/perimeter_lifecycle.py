@@ -17,9 +17,6 @@ _PERIMETER_EVIDENCE_TYPES = {
     "PERIMETER_POLICY_CORRELATION": "POLICY",
     "PERIMETER_HOST_CORRELATION": "HOST",
 }
-_ALL_EVIDENCE_TYPES = _PERIMETER_EVIDENCE_TYPES.keys() | {
-    "EXTERNAL_EXPOSURE_CHANGE", "THREAT_DETECTION", "THREAT_CORRELATION", "WEB_DETECTION",
-}
 _TIMELINE_EVENT_TYPES = {
     "REVIEW_CREATED", "STATE_CHANGED", "REVIEW_CLOSED", "REVIEW_REOPENED",
     "PRIORITY_CHANGED", "CONFIDENCE_CHANGED", "DISPOSITION_CHANGED",
@@ -447,13 +444,15 @@ def _all_incident_refs(connection):
         refs = []
         for evidence_type, evidence_id, evidence_id_type in rows:
             evidence_type = _strict_text(evidence_type)
-            if evidence_type not in _ALL_EVIDENCE_TYPES:
+            if evidence_type is None or not evidence_type.strip():
                 malformed_references += 1
             elif evidence_type in _PERIMETER_EVIDENCE_TYPES:
                 if evidence_id_type != "integer" or type(evidence_id) is not int or evidence_id <= 0:
                     malformed_references += 1
                 else:
                     refs.append((_PERIMETER_EVIDENCE_TYPES[evidence_type], evidence_id))
+            # Other and future evidence types do not refer to this perimeter
+            # graph. Do not block perimeter cleanup based on their IDs.
         if refs:
             connection.executemany("INSERT OR IGNORE INTO _pc_refs(kind,derived_id) VALUES(?,?)", refs)
 
@@ -473,18 +472,23 @@ def _all_incident_refs(connection):
         for event_type, evidence_type, evidence_id, evidence_id_type in rows:
             event_type = _strict_text(event_type)
             evidence_type = _strict_text(evidence_type)
-            if event_type not in _TIMELINE_EVENT_TYPES:
-                malformed_references += 1
-                continue
-            if event_type not in {"EVIDENCE_ATTACHED", "EVIDENCE_DETACHED"}:
-                continue
-            if evidence_type not in _ALL_EVIDENCE_TYPES:
-                malformed_references += 1
-            elif evidence_type in _PERIMETER_EVIDENCE_TYPES:
-                if evidence_id_type != "integer" or type(evidence_id) is not int or evidence_id <= 0:
+            evidence_event = event_type in {"EVIDENCE_ATTACHED", "EVIDENCE_DETACHED"}
+            if evidence_type in _PERIMETER_EVIDENCE_TYPES:
+                if not evidence_event or event_type not in _TIMELINE_EVENT_TYPES:
+                    malformed_references += 1
+                elif evidence_id_type != "integer" or type(evidence_id) is not int or evidence_id <= 0:
                     malformed_references += 1
                 else:
                     refs.append((_PERIMETER_EVIDENCE_TYPES[evidence_type], evidence_id))
+            elif (evidence_type is None or not evidence_type.strip()) and (
+                evidence_event or evidence_id is not None or event_type not in _TIMELINE_EVENT_TYPES
+            ):
+                # An evidence timeline record without a usable type could be a
+                # perimeter reference, so fail safe. Unknown textual types are
+                # ignored because no exact perimeter type can be established.
+                malformed_references += 1
+            else:
+                continue
         if refs:
             connection.executemany("INSERT OR IGNORE INTO _pc_refs(kind,derived_id) VALUES(?,?)", refs)
 

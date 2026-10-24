@@ -14,6 +14,8 @@ from database.db import get_connection, initialize_database
 from database.perimeter_lifecycle import (
     PERIMETER_MAX_COMPONENTS_PER_APPLY,
     PERIMETER_RETENTION_DAYS,
+    apply_perimeter_evidence_cleanup,
+    classify_perimeter_evidence,
 )
 from database.perimeter import persist_perimeter_event
 from services.perimeter_models import PerimeterEvent
@@ -300,6 +302,200 @@ def test_missing_incident_source_globally_blocks_without_partial_deletion(perime
     assert event_id > 0
 
 
+@pytest.mark.parametrize("reference_table", ["current", "timeline"])
+@pytest.mark.parametrize("evidence_type", [
+    "PERIMETER_DETECTION", "PERIMETER_POLICY_CORRELATION", "PERIMETER_HOST_CORRELATION",
+])
+@pytest.mark.parametrize("bad_id", ["", "not-an-id", 0, -1, "9223372036854775808"])
+def test_malformed_perimeter_incident_id_globally_blocks_cleanup(
+    perimeter_db, reference_table, evidence_type, bad_id,
+):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        if reference_table == "current":
+            connection.execute(
+                """INSERT INTO incident_review_evidence
+                   (incident_id,evidence_type,evidence_id,observed_at,added_at)
+                   VALUES(?,?,?,?,?)""",
+                (incident_id, evidence_type, bad_id, NOW.isoformat(), NOW.isoformat()),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO incident_review_events
+                   (incident_review_id,event_type,actor_source,created_at,evidence_type,evidence_id,summary)
+                   VALUES(?,'EVIDENCE_ATTACHED','OPERATOR',?,?,?,'Malformed reference')""",
+                (incident_id, NOW.isoformat(), evidence_type, bad_id),
+            )
+    summary = item(path)
+    assert summary["cleanup_blocked"] is True
+    assert summary["ambiguous_references"] == 1
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+
+
+@pytest.mark.parametrize("reference_table", ["current", "timeline"])
+@pytest.mark.parametrize("evidence_type", ["UNRELATED_EVIDENCE", "PERIMETER_UNKNOWN"])
+def test_unknown_non_perimeter_incident_type_does_not_block_cleanup(
+    perimeter_db, reference_table, evidence_type,
+):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        if reference_table == "current":
+            connection.execute(
+                """INSERT INTO incident_review_evidence
+                   (incident_id,evidence_type,evidence_id,observed_at,added_at)
+                   VALUES(?,?,?,?,?)""",
+                (incident_id, evidence_type, 777, NOW.isoformat(), NOW.isoformat()),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO incident_review_events
+                   (incident_review_id,event_type,actor_source,created_at,evidence_type,evidence_id,summary)
+                   VALUES(?,'EVIDENCE_ATTACHED','OPERATOR',?,?,777,'Other evidence')""",
+                (incident_id, NOW.isoformat(), evidence_type),
+            )
+    summary = item(path)
+    assert summary["cleanup_blocked"] is False
+    assert summary["ambiguous_references"] == 0
+    result = cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)
+    assert result["events_deleted"] == 1
+
+
+@pytest.mark.parametrize("reference_table", ["current", "timeline"])
+@pytest.mark.parametrize("evidence_type", ["", "   "])
+def test_empty_incident_evidence_type_is_ambiguous_and_blocks(perimeter_db, reference_table, evidence_type):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        if reference_table == "current":
+            connection.execute(
+                """INSERT INTO incident_review_evidence
+                   (incident_id,evidence_type,evidence_id,observed_at,added_at)
+                   VALUES(?,?,?,?,?)""",
+                (incident_id, evidence_type, 777, NOW.isoformat(), NOW.isoformat()),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO incident_review_events
+                   (incident_review_id,event_type,actor_source,created_at,evidence_type,evidence_id,summary)
+                   VALUES(?,'EVIDENCE_ATTACHED','OPERATOR',?,?,777,'Malformed evidence type')""",
+                (incident_id, NOW.isoformat(), evidence_type),
+            )
+    summary = item(path)
+    assert summary["cleanup_blocked"] is True
+    assert summary["ambiguous_references"] == 1
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+
+
+@pytest.mark.parametrize("reference_table", ["current", "timeline"])
+def test_non_text_incident_evidence_type_is_ambiguous_and_blocks(perimeter_db, reference_table):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        if reference_table == "current":
+            connection.execute(
+                """INSERT INTO incident_review_evidence
+                   (incident_id,evidence_type,evidence_id,observed_at,added_at)
+                   VALUES(?,CAST(X'FF' AS TEXT),777,?,?)""",
+                (incident_id, NOW.isoformat(), NOW.isoformat()),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO incident_review_events
+                   (incident_review_id,event_type,actor_source,created_at,evidence_type,evidence_id,summary)
+                   VALUES(?,'EVIDENCE_ATTACHED','OPERATOR',?,CAST(X'FF' AS TEXT),777,'Malformed reference')""",
+                (incident_id, NOW.isoformat()),
+            )
+    summary = item(path)
+    assert summary["cleanup_blocked"] is True
+    assert summary["ambiguous_references"] == 1
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+
+
+def test_malformed_historical_reference_fields_on_other_event_block_cleanup(perimeter_db):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            """INSERT INTO incident_review_events
+               (incident_review_id,event_type,actor_source,created_at,evidence_type,evidence_id,summary)
+               VALUES(?,'REVIEW_CREATED','OPERATOR',?,'',777,'Malformed evidence reference')""",
+            (incident_id, NOW.isoformat()),
+        )
+    assert item(path)["cleanup_blocked"] is True
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+
+
+@pytest.mark.parametrize("reference_table", ["current", "attached", "detached"])
+@pytest.mark.parametrize("evidence_type", [
+    "PERIMETER_DETECTION", "PERIMETER_POLICY_CORRELATION", "PERIMETER_HOST_CORRELATION",
+])
+def test_each_exact_perimeter_type_valid_reference_protects_component(
+    perimeter_db, reference_table, evidence_type,
+):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        ids = [add_event(connection, site_id, OLD) for _ in range(5)]
+        detection_id = add_detection(connection, site_id, ids)
+        policy_id = add_policy(connection, site_id, ids[3:5], [ids[3]], [ids[4]])
+        incident_id = add_incident(connection)
+    host_id = add_host_correlation(path, site_id, ids[0])
+    derived_id = {
+        "PERIMETER_DETECTION": detection_id,
+        "PERIMETER_POLICY_CORRELATION": policy_id,
+        "PERIMETER_HOST_CORRELATION": host_id,
+    }[evidence_type]
+    with get_connection(path) as connection:
+        if reference_table == "current":
+            add_current_reference(connection, incident_id, evidence_type, derived_id)
+        else:
+            event_type = "EVIDENCE_ATTACHED" if reference_table == "attached" else "EVIDENCE_DETACHED"
+            add_timeline_reference(connection, incident_id, event_type, evidence_type, derived_id)
+    summary = item(path)
+    assert summary["cleanup_blocked"] is False
+    assert summary["protected_components"] == 1
+    assert summary["eligible_components"] == 0
+    result = cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)
+    assert result["components_deleted"] == result["events_deleted"] == 0
+    assert table_counts(path) == (5, 1, 1, 1)
+
+
+@pytest.mark.parametrize("reference_table", ["current", "attached", "detached"])
+@pytest.mark.parametrize("evidence_type", [
+    "PERIMETER_DETECTION", "PERIMETER_POLICY_CORRELATION", "PERIMETER_HOST_CORRELATION",
+])
+def test_each_exact_perimeter_type_missing_source_blocks_cleanup(
+    perimeter_db, reference_table, evidence_type,
+):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        incident_id = add_incident(connection)
+        if reference_table == "current":
+            add_current_reference(connection, incident_id, evidence_type, 99999)
+        else:
+            event_type = "EVIDENCE_ATTACHED" if reference_table == "attached" else "EVIDENCE_DETACHED"
+            add_timeline_reference(connection, incident_id, event_type, evidence_type, 99999)
+    summary = item(path)
+    assert summary["cleanup_blocked"] is True
+    assert summary["ambiguous_references"] == 1
+    result = cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)
+    assert result["cleanup_blocked"] is True
+    assert result["components_deleted"] == result["events_deleted"] == 0
+    assert table_counts(path) == (1, 0, 0, 0)
+
+
 def test_malformed_membership_json_global_blocks_cleanup(perimeter_db):
     path, site_id = perimeter_db
     with get_connection(path) as connection:
@@ -314,6 +510,36 @@ def test_malformed_membership_json_global_blocks_cleanup(perimeter_db):
     assert table_counts(path) == (5, 1, 0, 0)
 
 
+@pytest.mark.parametrize("field,raw", [
+    ("event_ids_json", "{"),
+    ("event_ids_json", "{}"),
+    ("event_ids_json", "1"),
+    ("event_ids_json", "null"),
+    ("event_ids_json", '[1,"2",3,4,5]'),
+    ("event_ids_json", "[1,2,3,4,0]"),
+    ("event_ids_json", "[1,2,3,4,5,5]"),
+    ("allowed_event_ids_json", "{"),
+    ("allowed_event_ids_json", "{}"),
+    ("allowed_event_ids_json", "1"),
+    ("allowed_event_ids_json", "null"),
+    ("allowed_event_ids_json", '[1,"2"]'),
+    ("blocked_event_ids_json", "{"),
+    ("blocked_event_ids_json", "{}"),
+    ("blocked_event_ids_json", "1"),
+    ("blocked_event_ids_json", "null"),
+    ("blocked_event_ids_json", "[0]"),
+])
+def test_each_policy_membership_field_fails_safe_when_malformed(perimeter_db, field, raw):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        ids = [add_event(connection, site_id, OLD) for _ in range(5)]
+        policy = add_policy(connection, site_id, ids, [ids[0]], ids[1:], primary=ids[0])
+        connection.execute(f"UPDATE perimeter_policy_correlations SET {field}=? WHERE id=?", (raw, policy))
+    assert item(path)["cleanup_blocked"] is True
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+    assert table_counts(path) == (5, 0, 1, 0)
+
+
 def test_missing_event_membership_globally_blocks_cleanup(perimeter_db):
     path, site_id = perimeter_db
     with get_connection(path) as connection:
@@ -326,6 +552,16 @@ def test_missing_event_membership_globally_blocks_cleanup(perimeter_db):
     assert item(path)["cleanup_blocked"] is True
     assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
     assert table_counts(path) == (5, 1, 0, 0)
+
+
+def test_host_correlation_with_missing_event_globally_blocks_cleanup(perimeter_db):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+    add_host_correlation(path, site_id, 999999)
+    assert item(path)["cleanup_blocked"] is True
+    assert cleanup_data_lifecycle("PERIMETER_EVIDENCE", path, NOW)["events_deleted"] == 0
+    assert table_counts(path) == (1, 0, 0, 1)
 
 
 def test_apply_rechecks_incident_reference_added_after_preview(perimeter_db):
@@ -419,6 +655,33 @@ def test_ten_thousand_singletons_classify_with_batch_reader_shape(perimeter_db):
     assert ".fetchmany(" in source
     assert ".fetchall(" not in source
     assert "parent =" not in source and "rank =" not in source
+
+
+def test_repeated_classification_apply_and_connection_temp_isolation(perimeter_db):
+    path, site_id = perimeter_db
+    with get_connection(path) as connection:
+        add_event(connection, site_id, OLD)
+        first = classify_perimeter_evidence(connection, NOW)
+        second = classify_perimeter_evidence(connection, NOW)
+        assert first["eligible_components"] == second["eligible_components"] == 1
+        with get_connection(path) as unrelated:
+            names = {row[0] for row in unrelated.execute(
+                "SELECT name FROM sqlite_temp_master WHERE type='table'"
+            )}
+            assert not any(name.startswith("_pc_") for name in names)
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        result = apply_perimeter_evidence_cleanup(connection, NOW)
+        connection.commit()
+        assert result["events_deleted"] == 1
+        after = classify_perimeter_evidence(connection, NOW)
+        assert after["events_classified"] == 0
+        assert after["total_components"] == 0
+    with get_connection(path) as unrelated:
+        names = {row[0] for row in unrelated.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='table'"
+        )}
+        assert not any(name.startswith("_pc_") for name in names)
 
 
 def test_redelivered_identity_after_cleanup_is_new_receipt(perimeter_db):
