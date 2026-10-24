@@ -13,7 +13,23 @@ from api.investigation import register_investigation_routes
 from api.data_lifecycle import register_data_lifecycle_routes
 from api.management_audit import register_management_audit_routes
 from database.remote_sensors import RemoteSensorStore
+from database.event_exports import get_bounded_export_events
 from services.export_safety import neutralize_csv_cell
+from services.export_contract import (
+    CSV_EXPORT_MAX_BYTES,
+    CSV_EXPORT_MAX_ROWS,
+    EXPORT_MAX_AGGREGATE_TEXT_BYTES,
+    JSON_EXPORT_MAX_BYTES,
+    JSON_EXPORT_MAX_ROWS,
+    PDF_EXPORT_MAX_BYTES,
+    PDF_EXPORT_MAX_ROWS,
+    ExportDataError,
+    ExportInputError,
+    ExportTooLargeError,
+    resolve_export_time_filter,
+    validate_export_severity,
+    validate_export_source_ip,
+)
 import io
 import sqlite3
 from datetime import datetime, timedelta
@@ -41,7 +57,7 @@ from services.scanner_adapters.nmap_adapter import (
     ScannerTimeoutError,
     ScannerUnavailableError,
 )
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 
 from database.db import (
     get_alerts,
@@ -792,128 +808,182 @@ def timeline_stats(
     }
 
 
-@app.get("/export/events.json", dependencies=[Depends(local_management)])
-def export_events_json(
-    severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
-    source_ip: str | None = None,
-    time_range: Literal["15m", "1h", "24h", "all"] = "all",
-):
-    since = resolve_since(time_range)
+EXPORT_INVALID_FILTER_DETAIL = "Invalid export filters."
+EXPORT_TOO_LARGE_DETAIL = "Export exceeds the allowed size. Narrow the date range or filters."
+EXPORT_FAILED_DETAIL = "Export could not be generated."
 
-    event_list = get_filtered_events(
-        severity=severity,
-        source_ip=source_ip,
-        since=since,
+
+def _bounded_export_rows(*, severity, source_ip, time_range, from_value,
+                         until_value, row_limit):
+    try:
+        validate_export_severity(severity)
+        validate_export_source_ip(source_ip)
+        time_filter = resolve_export_time_filter(
+            time_range=time_range,
+            from_value=from_value,
+            until_value=until_value,
+        )
+        event_list = get_bounded_export_events(
+            row_limit=row_limit,
+            severity=severity,
+            source_ip=source_ip,
+            since=resolve_since(time_filter.time_range) if not time_filter.is_custom else time_filter.since,
+            until=time_filter.until,
+            aggregate_text_limit=EXPORT_MAX_AGGREGATE_TEXT_BYTES,
+            db_path=DB_PATH,
+        )
+        return event_list, time_filter
+    except ExportInputError as exc:
+        raise _http_export_error(422) from exc
+    except ExportTooLargeError as exc:
+        raise _http_export_error(413) from exc
+    except ExportDataError as exc:
+        raise _http_export_error(500) from exc
+    except Exception as exc:
+        raise _http_export_error(500) from exc
+
+
+def _http_export_error(status_code):
+    if status_code == 413:
+        detail = EXPORT_TOO_LARGE_DETAIL
+    elif status_code == 422:
+        detail = EXPORT_INVALID_FILTER_DETAIL
+    else:
+        status_code = 500
+        detail = EXPORT_FAILED_DETAIL
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers={"Cache-Control": "no-store"},
     )
 
-    return {
-        "generated_at": datetime.now().isoformat(
-            timespec="seconds"
-        ),
+
+@app.get("/export/events.json", dependencies=[Depends(local_management)])
+def export_events_json(
+    severity: str | None = None,
+    source_ip: str | None = None,
+    time_range: str | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    until: str | None = None,
+):
+    event_list, time_filter = _bounded_export_rows(
+        severity=severity,
+        source_ip=source_ip,
+        time_range=time_range,
+        from_value=from_,
+        until_value=until,
+        row_limit=JSON_EXPORT_MAX_ROWS,
+    )
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "count": len(event_list),
         "filters": {
             "severity": severity,
             "source_ip": source_ip,
-            "time_range": time_range,
+            "time_range": time_filter.time_range,
         },
         "events": event_list,
     }
+    if time_filter.is_custom:
+        payload["filters"]["from"] = time_filter.from_value
+        payload["filters"]["until"] = time_filter.until_value
+
+    try:
+        response = JSONResponse(content=payload)
+        if len(response.body) > JSON_EXPORT_MAX_BYTES:
+            raise _http_export_error(413)
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_export_error(500) from exc
 
 
 @app.get("/export/events.csv", dependencies=[Depends(local_management)])
 def export_events_csv(
-    severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
+    severity: str | None = None,
     source_ip: str | None = None,
-    time_range: Literal["15m", "1h", "24h", "all"] = "all",
+    time_range: str | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    until: str | None = None,
 ):
-    since = resolve_since(time_range)
-
-    event_list = get_filtered_events(
+    event_list, _time_filter = _bounded_export_rows(
         severity=severity,
         source_ip=source_ip,
-        since=since,
+        time_range=time_range,
+        from_value=from_,
+        until_value=until,
+        row_limit=CSV_EXPORT_MAX_ROWS,
     )
-
-    output = io.StringIO()
-
     fieldnames = [
-        "id",
-        "timestamp",
-        "source_ip",
-        "username",
-        "event_type",
-        "severity",
-        "message",
-        "event_count",
+        "id", "timestamp", "source_ip", "username", "event_type",
+        "severity", "message", "event_count",
     ]
 
-    writer = csv.DictWriter(
-        output,
-        fieldnames=fieldnames,
-    )
+    try:
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for event in event_list:
+            writer.writerow({
+                field: neutralize_csv_cell(event.get(field))
+                for field in fieldnames
+            })
+        csv_bytes = output.getvalue().encode("utf-8", errors="strict")
+        if len(csv_bytes) > CSV_EXPORT_MAX_BYTES:
+            raise _http_export_error(413)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_export_error(500) from exc
 
-    writer.writeheader()
-
-    for event in event_list:
-        writer.writerow({
-            field: neutralize_csv_cell(event.get(field))
-            for field in fieldnames
-        })
-
-    output.seek(0)
-
-    filename = (
-        "sentinelip-events-"
-        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
-    )
-
-    headers = {
-        "Content-Disposition": (
-            f'attachment; filename="{filename}"'
-        )
-    }
-
-    return StreamingResponse(
-        iter([output.getvalue()]),
+    filename = f"sentinelip-events-{datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return Response(
+        content=csv_bytes,
         media_type="text/csv",
-        headers=headers,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
 @app.get("/export/report.pdf", dependencies=[Depends(local_management)])
 def export_security_report(
-    severity: Literal["INFO", "WARNING", "ALERT"] | None = None,
+    severity: str | None = None,
     source_ip: str | None = None,
-    time_range: Literal["15m", "1h", "24h", "all"] = "all",
+    time_range: str | None = None,
+    from_: str | None = Query(default=None, alias="from"),
+    until: str | None = None,
 ):
-    since = resolve_since(time_range)
-
-    event_list = get_filtered_events(
-        severity=severity,
-        source_ip=source_ip,
-        since=since,
-    )
-
-    pdf_bytes = build_security_report(
-        events=event_list,
+    event_list, time_filter = _bounded_export_rows(
         severity=severity,
         source_ip=source_ip,
         time_range=time_range,
+        from_value=from_,
+        until_value=until,
+        row_limit=PDF_EXPORT_MAX_ROWS,
     )
+    report_time_range = time_filter.time_range
+    if time_filter.is_custom:
+        report_time_range = f"{time_filter.from_value} to {time_filter.until_value}"
 
-    filename = (
-        "sentinelip-security-report-"
-        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
-    )
+    try:
+        pdf_bytes = build_security_report(
+            events=event_list,
+            severity=severity,
+            source_ip=source_ip,
+            time_range=report_time_range,
+        )
+        if len(pdf_bytes) > PDF_EXPORT_MAX_BYTES:
+            raise _http_export_error(413)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_export_error(500) from exc
 
+    filename = f"sentinelip-security-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="{filename}"'
-            )
-        },
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 # ---------------------------------------------------------------------------

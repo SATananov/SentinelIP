@@ -6,12 +6,6 @@ import services.pdf_report as pdf_report
 from services.export_safety import neutralize_csv_cell
 
 
-class CapturedStreamingResponse:
-    def __init__(self, content, **kwargs):
-        self.body = "".join(content).encode("utf-8")
-        self.kwargs = kwargs
-
-
 def test_csv_formula_neutralization_preserves_original_string():
     cases = {
         "=1+1": "'=1+1",
@@ -41,10 +35,9 @@ def test_csv_export_neutralizes_string_fields_and_preserves_csv_cells(monkeypatc
         "message": '  =1+1, with "quoted" text',
         "event_count": 9,
     }
-    monkeypatch.setattr(api_main, "get_filtered_events", lambda **_kwargs: [event])
-    monkeypatch.setattr(api_main, "StreamingResponse", CapturedStreamingResponse)
+    monkeypatch.setattr(api_main, "get_bounded_export_events", lambda **_kwargs: [event])
 
-    response = api_main.export_events_csv(time_range="all")
+    response = api_main.export_events_csv(time_range="all", from_=None, until=None)
     response_text = response.body.decode("utf-8")
     rows = list(csv.DictReader(io.StringIO(response_text)))
 
@@ -72,10 +65,9 @@ def test_csv_export_keeps_null_username_empty(monkeypatch):
         "message": "SSH pre-auth activity",
         "event_count": 1,
     }
-    monkeypatch.setattr(api_main, "get_filtered_events", lambda **_kwargs: [event])
-    monkeypatch.setattr(api_main, "StreamingResponse", CapturedStreamingResponse)
+    monkeypatch.setattr(api_main, "get_bounded_export_events", lambda **_kwargs: [event])
 
-    response = api_main.export_events_csv(time_range="all")
+    response = api_main.export_events_csv(time_range="all", from_=None, until=None)
     row = next(csv.DictReader(io.StringIO(response.body.decode("utf-8"))))
 
     assert row["username"] == ""

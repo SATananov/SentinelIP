@@ -26,6 +26,11 @@ import DataLifecycle from './components/DataLifecycle.jsx'
 import { createInvestigationNavigationRequest, investigationPanelForKind } from './services/investigationNavigation.js'
 import { API_BASE } from './services/apiBase.js'
 import {
+  buildExportQuery,
+  exportErrorMessage,
+  isCustomExportRangeValid,
+} from './services/exportRequest.js'
+import {
   clearReviewIntakeRequest,
   createReviewIntakeRequest,
   isValidReviewEvidenceContext,
@@ -75,6 +80,11 @@ function App() {
   const [severityFilter, setSeverityFilter] = useState('ALL')
   const [ipFilter, setIpFilter] = useState('ALL')
   const [timeRange, setTimeRange] = useState('all')
+  const [exportRangeMode, setExportRangeMode] = useState('preset')
+  const [exportFromLocal, setExportFromLocal] = useState('')
+  const [exportUntilLocal, setExportUntilLocal] = useState('')
+  const [exportError, setExportError] = useState(null)
+  const [exporting, setExporting] = useState(false)
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(5)
@@ -137,20 +147,18 @@ function App() {
   ])
 
   const exportParams = useMemo(() => {
-    const params = new URLSearchParams({
-      time_range: timeRange,
+    return buildExportQuery({
+      rangeMode: exportRangeMode,
+      timeRange,
+      fromLocal: exportFromLocal,
+      untilLocal: exportUntilLocal,
+      severity: severityFilter,
+      sourceIp: ipFilter,
     })
-
-    if (severityFilter !== 'ALL') {
-      params.set('severity', severityFilter)
-    }
-
-    if (ipFilter !== 'ALL') {
-      params.set('source_ip', ipFilter)
-    }
-
-    return params.toString()
   }, [
+    exportRangeMode,
+    exportFromLocal,
+    exportUntilLocal,
     severityFilter,
     ipFilter,
     timeRange,
@@ -292,25 +300,59 @@ function App() {
     )
   }
 
-  function exportCsv() {
-    window.location.href = (
-      `${API_BASE}/export/events.csv?${exportParams}`
-    )
+  async function downloadExport(format) {
+    if (!exportParams || exporting) return
+    setExportError(null)
+    setExporting(true)
+    const jsonWindow = format === 'json' ? window.open('about:blank', '_blank') : null
+    if (jsonWindow) jsonWindow.opener = null
+
+    const endpoint = {
+      csv: '/export/events.csv',
+      json: '/export/events.json',
+      pdf: '/export/report.pdf',
+    }[format]
+
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}?${exportParams.toString()}`, {
+        cache: 'no-store',
+      })
+      if (!response.ok) {
+        if (jsonWindow) jsonWindow.close()
+        setExportError(exportErrorMessage(response.status))
+        return
+      }
+
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      if (format === 'json') {
+        if (jsonWindow) jsonWindow.location.href = objectUrl
+        else window.open(objectUrl, '_blank', 'noopener,noreferrer')
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5 * 60 * 1000)
+        return
+      }
+
+      const disposition = response.headers.get('content-disposition') || ''
+      const filename = /filename="([^"]+)"/i.exec(disposition)?.[1]
+        || `sentinelip-events.${format}`
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    } catch {
+      if (jsonWindow) jsonWindow.close()
+      setExportError(exportErrorMessage(0))
+    } finally {
+      setExporting(false)
+    }
   }
 
-  function exportJson() {
-    window.open(
-      `${API_BASE}/export/events.json?${exportParams}`,
-      '_blank',
-      'noopener,noreferrer',
-    )
-  }
-
-  function exportPdf() {
-    window.location.href = (
-      `${API_BASE}/export/report.pdf?${exportParams}`
-    )
-  }
+  const customExportRangeValid = exportRangeMode !== 'custom'
+    || isCustomExportRangeValid(exportFromLocal, exportUntilLocal)
+  const exportDisabled = !exportParams || !customExportRangeValid || exporting
 
   return (
     <div className="dashboard">
@@ -780,35 +822,84 @@ function App() {
         </div>
 
         <div className="export-toolbar">
-          <div>
+          <div className="export-settings">
             <p className="export-label">
-              Export current filtered dataset
+              Export matching events (complete export; oversized results are rejected)
             </p>
+            <label className="export-range-mode">
+              <span>Export time range</span>
+              <select
+                value={exportRangeMode}
+                onChange={(event) => {
+                  setExportRangeMode(event.target.value)
+                  setExportError(null)
+                }}
+              >
+                <option value="preset">Use selected preset ({timeRange})</option>
+                <option value="custom">Custom date range</option>
+              </select>
+            </label>
+            {exportRangeMode === 'custom' && (
+              <div className="export-custom-range">
+                <label>
+                  <span>Start (local time, inclusive)</span>
+                  <input
+                    type="datetime-local"
+                    value={exportFromLocal}
+                    onChange={(event) => {
+                      setExportFromLocal(event.target.value)
+                      setExportError(null)
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>End (local time, exclusive)</span>
+                  <input
+                    type="datetime-local"
+                    value={exportUntilLocal}
+                    onChange={(event) => {
+                      setExportUntilLocal(event.target.value)
+                      setExportError(null)
+                    }}
+                  />
+                </label>
+                <p className="export-range-help">Choose a valid range of 31 days or less.</p>
+              </div>
+            )}
           </div>
 
           <div className="export-actions">
             <button
               type="button"
-              onClick={exportCsv}
+              disabled={exportDisabled}
+              onClick={() => downloadExport('csv')}
             >
               Export CSV
             </button>
 
             <button
               type="button"
-              onClick={exportJson}
+              disabled={exportDisabled}
+              onClick={() => downloadExport('json')}
             >
               Export JSON
             </button>
 
             <button
               type="button"
-              onClick={exportPdf}
+              disabled={exportDisabled}
+              onClick={() => downloadExport('pdf')}
             >
               Export PDF
             </button>
           </div>
         </div>
+
+        {exportError && (
+          <p className="export-error" role="alert">
+            {exportError}
+          </p>
+        )}
 
         {events.length === 0 ? (
           <p className="empty-state">

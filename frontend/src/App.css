@@ -627,6 +627,50 @@ h2 {
   font-weight: 700;
 }
 
+.export-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.export-range-mode,
+.export-custom-range label {
+  display: grid;
+  gap: 5px;
+  color: #9ba4b4;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.export-range-mode select,
+.export-custom-range input {
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid #343b48;
+  border-radius: 7px;
+  background: #101319;
+  color: #e1e5ed;
+  font: inherit;
+}
+
+.export-custom-range {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.export-range-help {
+  margin: 0 0 8px;
+  color: #858e9e;
+  font-size: 11px;
+}
+
+.export-error {
+  margin: -8px 0 18px;
+  color: #ff9ca7;
+  font-size: 13px;
+}
+
 .export-actions {
   display: flex;
   gap: 8px;
@@ -647,6 +691,11 @@ h2 {
 .export-actions button:hover {
   border-color: #4e586a;
   background: #292e39;
+}
+
+.export-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 @media (max-width: 620px) {
