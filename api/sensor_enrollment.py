@@ -19,6 +19,13 @@ from services.remote_sensor_models import (
 )
 
 MAX_SENSOR_BODY_BYTES = 16 * 1024
+MAX_WEB_TELEMETRY_BODY_BYTES = 65_536
+MAX_DNS_TELEMETRY_BODY_BYTES = 16_384
+TELEMETRY_BODY_LIMITS = {
+    '/telemetry/web': MAX_WEB_TELEMETRY_BODY_BYTES,
+    '/telemetry/dns': MAX_DNS_TELEMETRY_BODY_BYTES,
+}
+TELEMETRY_BODY_TOO_LARGE_DETAIL = 'Telemetry request exceeds the allowed size.'
 _TIMESTAMP_PATTERN = re.compile(r'^[0-9]{10}$')
 
 
@@ -60,22 +67,31 @@ class SensorBodyLimitMiddleware:
 
     async def __call__(self, scope, receive, send):
         path = scope.get('path', '')
-        if scope['type'] != 'http' or not (
-            path.startswith('/sensor/') or path == '/sensor-enrollment/register'
-        ):
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+        telemetry_limit = TELEMETRY_BODY_LIMITS.get(path)
+        if telemetry_limit is not None:
+            max_bytes = telemetry_limit
+            too_large_detail = TELEMETRY_BODY_TOO_LARGE_DETAIL
+        elif path.startswith('/sensor/') or path == '/sensor-enrollment/register':
+            max_bytes = self.max_bytes
+            # Preserve the existing /sensor/* response contract exactly.
+            too_large_detail = 'Sensor request body exceeds 16384 bytes.'
+        else:
             await self.app(scope, receive, send)
             return
         headers = dict(scope.get('headers', ()))
         raw_length = headers.get(b'content-length')
         if raw_length is not None:
             try:
-                if int(raw_length) > self.max_bytes or int(raw_length) < 0:
-                    await self._too_large(send)
+                if int(raw_length) > max_bytes or int(raw_length) < 0:
+                    await self._too_large(send, too_large_detail)
                     return
             except ValueError:
-                await self._too_large(send)
+                await self._too_large(send, too_large_detail)
                 return
-        chunks = []
+        request_messages = []
         size = 0
         while True:
             message = await receive()
@@ -83,25 +99,25 @@ class SensorBodyLimitMiddleware:
                 return
             chunk = message.get('body', b'')
             size += len(chunk)
-            if size > self.max_bytes:
-                await self._too_large(send)
+            if size > max_bytes:
+                await self._too_large(send, too_large_detail)
                 return
-            chunks.append(chunk)
+            request_messages.append(dict(message))
             if not message.get('more_body', False):
                 break
-        body = b''.join(chunks)
-        sent = False
+        replay_index = 0
         async def replay_receive():
-            nonlocal sent
-            if sent:
+            nonlocal replay_index
+            if replay_index >= len(request_messages):
                 return {'type': 'http.request', 'body': b'', 'more_body': False}
-            sent = True
-            return {'type': 'http.request', 'body': body, 'more_body': False}
+            message = request_messages[replay_index]
+            replay_index += 1
+            return message
         await self.app(scope, replay_receive, send)
 
     @staticmethod
-    async def _too_large(send):
-        body = json.dumps({'detail': 'Sensor request body exceeds 16384 bytes.'}).encode()
+    async def _too_large(send, detail):
+        body = json.dumps({'detail': detail}).encode()
         await send({'type': 'http.response.start', 'status': 413, 'headers': [
             (b'content-type', b'application/json'), (b'content-length', str(len(body)).encode()),
             (b'cache-control', b'no-store'),

@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from services.telemetry_models import _validate_metadata, validate_utf8_text
 
 
 class NetworkCreate(BaseModel):
@@ -84,11 +85,30 @@ class HostnameScopeCreate(BaseModel):
     authorization_confirmation_version: str = Field(min_length=1, max_length=80)
 
 
-class WebTelemetryCreate(BaseModel):
+class TelemetryPayloadBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     external_event_id: str
     observed_at: datetime
+    metadata: dict | None = None
+
+    @field_validator("external_event_id", mode="before")
+    @classmethod
+    def bound_event_id(cls, value):
+        return validate_utf8_text(value, "External event ID", 128)
+
+    @field_validator("observed_at", mode="before")
+    @classmethod
+    def bound_observed_at(cls, value):
+        return validate_utf8_text(value, "Observation timestamp", 64)
+
+    @field_validator("metadata")
+    @classmethod
+    def bound_metadata(cls, value):
+        return _validate_metadata(value)
+
+
+class WebTelemetryCreate(TelemetryPayloadBase):
     event_type: str
     url: str
     referrer_domain: str | None = None
@@ -99,21 +119,71 @@ class WebTelemetryCreate(BaseModel):
     has_login_form: bool = False
     has_password_form: bool = False
     download_detected: bool = False
-    metadata: dict | None = None
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def bound_event_type(cls, value):
+        return validate_utf8_text(value, "Event type", 32)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def bound_url(cls, value):
+        return validate_utf8_text(value, "URL", 32_768)
+
+    @field_validator(
+        "referrer_domain", "redirect_from_domain", "redirect_to_domain", mode="before",
+    )
+    @classmethod
+    def bound_domains(cls, value):
+        return validate_utf8_text(value, "Domain", 1_024, allow_none=True)
+
+    @field_validator("browser_session_id", mode="before")
+    @classmethod
+    def bound_session_id(cls, value):
+        return validate_utf8_text(value, "Browser session ID", 128, allow_none=True)
+
+    @field_validator("tab_id", mode="before")
+    @classmethod
+    def bound_tab_id(cls, value):
+        return validate_utf8_text(value, "Tab ID", 64, allow_none=True)
 
 
-class DnsTelemetryCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    external_event_id: str
-    observed_at: datetime
+class DnsTelemetryCreate(TelemetryPayloadBase):
     queried_domain: str
     query_type: str
     response_status: str
-    resolved_addresses: list[str] = []
+    resolved_addresses: list[str] = Field(default_factory=list, max_length=256)
     resolver: str | None = None
-    ttl: int | None = None
-    metadata: dict | None = None
+    ttl: int | None = Field(default=None, ge=0, le=2_147_483_647)
+
+    @field_validator("queried_domain", mode="before")
+    @classmethod
+    def bound_domain(cls, value):
+        return validate_utf8_text(value, "Queried domain", 1_024)
+
+    @field_validator("query_type", mode="before")
+    @classmethod
+    def bound_query_type(cls, value):
+        return validate_utf8_text(value, "DNS query type", 32)
+
+    @field_validator("response_status", mode="before")
+    @classmethod
+    def bound_response_status(cls, value):
+        return validate_utf8_text(value, "DNS response status", 16)
+
+    @field_validator("resolved_addresses")
+    @classmethod
+    def bound_addresses(cls, value):
+        if len(value) > 256:
+            raise ValueError("DNS answer list has too many addresses.")
+        for address in value:
+            validate_utf8_text(address, "DNS address", 45)
+        return value
+
+    @field_validator("resolver", mode="before")
+    @classmethod
+    def bound_resolver(cls, value):
+        return validate_utf8_text(value, "DNS resolver", 45, allow_none=True)
 
 
 class PublicCIDRPreview(BaseModel):

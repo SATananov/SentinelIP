@@ -23,6 +23,14 @@ test('builds safe navigation telemetry', () => {
   assert.equal(JSON.stringify(event).includes('SECRET'), false)
 })
 
+test('preserves a STANDARD URL path up to the telemetry byte contract', () => {
+  const prefix = 'https://example.test/'
+  const url = `${prefix}${'x'.repeat(32768 - prefix.length)}`
+  const event = buildNavigationObservation({ url, privacyMode: 'STANDARD', eventId: 'long-standard' })
+  assert.equal(Buffer.byteLength(event.url, 'utf8'), 32768)
+  assert.equal(event.url, url)
+})
+
 test('builds redirect and structural form signals only', () => {
   const redirect = buildRedirectObservation({
     fromUrl: 'https://start.example.test',

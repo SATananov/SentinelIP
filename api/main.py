@@ -35,8 +35,11 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from database import inventory as workspace_inventory_db
 from database import cves as workspace_cves_db
 from database import findings as workspace_findings_db
@@ -167,6 +170,20 @@ app = FastAPI(
     version="2.5.0",
 )
 
+
+@app.exception_handler(RequestValidationError)
+async def telemetry_safe_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path in {"/telemetry/web", "/telemetry/dns"}:
+        return JSONResponse(status_code=422, content={"detail": "Invalid telemetry request."})
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def telemetry_safe_parse_error(request: Request, exc: StarletteHTTPException):
+    if request.url.path in {"/telemetry/web", "/telemetry/dns"} and exc.status_code == 400:
+        return JSONResponse(status_code=422, content={"detail": "Invalid telemetry request."})
+    return await http_exception_handler(request, exc)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -207,7 +224,15 @@ def health():
 
 
 def _telemetry_error(exc: TelemetryIngestionError):
-    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if exc.status_code in {401, 403}:
+        detail = str(exc)
+    else:
+        detail = "Invalid telemetry request."
+    raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+
+
+def _telemetry_internal_error(exc: Exception):
+    raise HTTPException(status_code=500, detail="Telemetry ingestion failed.") from exc
 
 
 @app.post("/telemetry/web", status_code=202)
@@ -227,6 +252,8 @@ def ingest_web_telemetry(
         )
     except TelemetryIngestionError as exc:
         _telemetry_error(exc)
+    except Exception as exc:
+        _telemetry_internal_error(exc)
 
 
 @app.post("/telemetry/dns", status_code=202)
@@ -246,6 +273,8 @@ def ingest_dns_telemetry(
         )
     except TelemetryIngestionError as exc:
         _telemetry_error(exc)
+    except Exception as exc:
+        _telemetry_internal_error(exc)
 
 
 @app.get("/networks", response_model=list[NetworkResponse], dependencies=[Depends(local_management)])

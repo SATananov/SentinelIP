@@ -1,6 +1,7 @@
 import json
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 
 from database.db import DB_PATH, get_connection, initialize_database
@@ -16,7 +17,18 @@ from services.telemetry_models import (
 
 
 def _metadata(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":")) if value is not None else None
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) if value is not None else None
+
+
+@contextmanager
+def _transaction_connection(db_path):
+    """Commit or roll back a transaction and always close its SQLite connection."""
+    connection = get_connection(db_path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _sensor(row):
@@ -181,6 +193,60 @@ def create_web_observation(observation: WebObservation, db_path=DB_PATH):
     return dict(row)
 
 
+def persist_web_observation_idempotently(observation: WebObservation, db_path=DB_PATH):
+    """Insert once by sensor/event identity and touch liveness in one transaction."""
+    initialize_database(db_path)
+    scheme, hostname, path = normalize_url(observation.url, observation.privacy_mode)
+    received = observation.received_at.isoformat(timespec="seconds")
+    identity = (int(observation.sensor_id), observation.external_event_id)
+    with _transaction_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """INSERT INTO web_observations (
+                sensor_id, external_event_id, device_id, observed_at, received_at,
+                event_type, scheme, hostname, path, referrer_domain,
+                redirect_from_domain, redirect_to_domain, has_login_form,
+                has_password_form, download_detected, source, retention_until,
+                metadata_json, browser_session_id, tab_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sensor_id, external_event_id) DO NOTHING""",
+            (
+                *identity,
+                observation.device_id,
+                observation.observed_at.isoformat(timespec="seconds"),
+                received,
+                observation.event_type.value,
+                scheme,
+                hostname,
+                path,
+                observation.referrer_domain,
+                observation.redirect_from_domain,
+                observation.redirect_to_domain,
+                int(observation.has_login_form),
+                int(observation.has_password_form),
+                int(observation.download_detected),
+                "browser",
+                observation.retention_until.isoformat(timespec="seconds"),
+                _metadata(observation.metadata),
+                observation.browser_session_id,
+                observation.tab_id,
+            ),
+        )
+        inserted = cursor.rowcount == 1
+        row = connection.execute(
+            "SELECT * FROM web_observations WHERE sensor_id=? AND external_event_id=?",
+            identity,
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("Idempotent web insert did not resolve to a row.")
+        connection.execute(
+            "UPDATE telemetry_sensors SET last_seen_at=?, updated_at=? WHERE id=?",
+            (received, received, identity[0]),
+        )
+        return dict(row), inserted
+
+
 def get_web_observation_by_event(sensor_id: int, external_event_id: str, db_path=DB_PATH):
     initialize_database(db_path)
     with get_connection(db_path) as connection:
@@ -242,6 +308,51 @@ def create_dns_observation(observation: DnsObservation, db_path=DB_PATH):
         )
         row = connection.execute("SELECT * FROM dns_observations WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
+
+
+def persist_dns_observation_idempotently(observation: DnsObservation, db_path=DB_PATH):
+    """Insert once by sensor/event identity and touch liveness in one transaction."""
+    initialize_database(db_path)
+    received = observation.received_at.isoformat(timespec="seconds")
+    identity = (int(observation.sensor_id), observation.external_event_id)
+    with _transaction_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """INSERT INTO dns_observations (
+                sensor_id, external_event_id, device_id, observed_at, received_at,
+                queried_domain, query_type, response_status, resolved_addresses_json,
+                resolver, ttl, source, retention_until, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sensor_id, external_event_id) DO NOTHING""",
+            (
+                *identity,
+                observation.device_id,
+                observation.observed_at.isoformat(timespec="seconds"),
+                received,
+                observation.queried_domain,
+                observation.query_type.value,
+                observation.response_status.value,
+                json.dumps(observation.resolved_addresses, separators=(",", ":")),
+                observation.resolver,
+                observation.ttl,
+                "dns",
+                observation.retention_until.isoformat(timespec="seconds"),
+                _metadata(observation.metadata),
+            ),
+        )
+        inserted = cursor.rowcount == 1
+        row = connection.execute(
+            "SELECT * FROM dns_observations WHERE sensor_id=? AND external_event_id=?",
+            identity,
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("Idempotent DNS insert did not resolve to a row.")
+        connection.execute(
+            "UPDATE telemetry_sensors SET last_seen_at=?, updated_at=? WHERE id=?",
+            (received, received, identity[0]),
+        )
+        return dict(row), inserted
 
 
 def get_dns_observation_by_event(sensor_id: int, external_event_id: str, db_path=DB_PATH):

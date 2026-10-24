@@ -80,23 +80,13 @@ def ingest_web(
             received_at=received_at,
             retention_until=retention_until,
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, TelemetryIngestionError):
             raise
         raise TelemetryIngestionError("Web telemetry payload is invalid.") from exc
 
-    existing = telemetry_db.get_web_observation_by_event(
-        sensor_id,
-        observation.external_event_id,
-        db_path,
-    )
-    if existing is not None:
-        telemetry_db.touch_sensor_last_seen(sensor_id, received_at, db_path)
-        return {"id": existing["id"], "idempotent": True, "received_at": existing["received_at"]}
-
-    stored = telemetry_db.create_web_observation(observation, db_path)
-    telemetry_db.touch_sensor_last_seen(sensor_id, received_at, db_path)
-    return {"id": stored["id"], "idempotent": False, "received_at": stored["received_at"]}
+    stored, inserted = telemetry_db.persist_web_observation_idempotently(observation, db_path)
+    return {"id": stored["id"], "idempotent": not inserted, "received_at": stored["received_at"]}
 
 
 def ingest_dns(
@@ -129,18 +119,8 @@ def ingest_dns(
             received_at=received_at,
             retention_until=retention_until,
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise TelemetryIngestionError("DNS telemetry payload is invalid.") from exc
 
-    existing = telemetry_db.get_dns_observation_by_event(
-        sensor_id,
-        observation.external_event_id,
-        db_path,
-    )
-    if existing is not None:
-        telemetry_db.touch_sensor_last_seen(sensor_id, received_at, db_path)
-        return {"id": existing["id"], "idempotent": True, "received_at": existing["received_at"]}
-
-    stored = telemetry_db.create_dns_observation(observation, db_path)
-    telemetry_db.touch_sensor_last_seen(sensor_id, received_at, db_path)
-    return {"id": stored["id"], "idempotent": False, "received_at": stored["received_at"]}
+    stored, inserted = telemetry_db.persist_dns_observation_idempotently(observation, db_path)
+    return {"id": stored["id"], "idempotent": not inserted, "received_at": stored["received_at"]}
