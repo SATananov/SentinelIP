@@ -148,6 +148,6 @@ def test_migration_37_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='management_audit_events'").fetchone()
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

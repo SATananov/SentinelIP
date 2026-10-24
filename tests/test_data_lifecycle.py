@@ -308,7 +308,7 @@ def test_preview_policy_classes_and_database_are_unchanged(lifecycle_context):
     with get_connection(path) as connection:
         after = {name: connection.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
                  for name in ("events", "remote_sensor_tasks")}
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
     assert before == after
 
 
@@ -325,14 +325,14 @@ def test_preview_uses_request_clock_and_does_not_query_payload_fields(lifecycle_
     assert "queried_domain" not in json.dumps(result)
 
 
-def test_schema_remains_45_and_preview_is_read_only(lifecycle_context):
+def test_schema_remains_46_and_preview_is_read_only(lifecycle_context):
     path = lifecycle_context["path"]
     with get_connection(path) as connection:
         before = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
         tables_before = connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
     preview_data_lifecycle(path, NOW)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == before
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] == tables_before
 
@@ -407,11 +407,11 @@ def test_cleanup_trigger_failure_rolls_back_whole_batch(lifecycle_context):
         assert connection.execute("SELECT COUNT(*) FROM dns_observations WHERE id IN (?,?,?)", ids).fetchone()[0] == 3
 
 
-def test_cleanup_rejects_unapproved_class_and_schema_stays_45(lifecycle_context):
+def test_cleanup_rejects_unapproved_class_and_schema_stays_46(lifecycle_context):
     with pytest.raises(ValueError):
         cleanup_data_lifecycle("EVENTS", lifecycle_context["path"], NOW)
     with get_connection(lifecycle_context["path"]) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
 
 
 def test_legacy_event_preview_uses_local_wall_clock_and_classifies_rows(lifecycle_context):
@@ -662,14 +662,14 @@ def test_legacy_event_cleanup_lock_failure_is_closed_and_safe(lifecycle_context,
         blocker.close()
 
 
-def test_legacy_event_cleanup_audit_is_not_mislabeled_and_schema_stays_45(lifecycle_context):
+def test_legacy_event_cleanup_audit_is_not_mislabeled_and_schema_stays_46(lifecycle_context):
     path = lifecycle_context["path"]
     local_now = NOW.astimezone().replace(tzinfo=None)
     cutoff = local_now - timedelta(days=90)
     insert_legacy_event(path, (cutoff - timedelta(seconds=1)).isoformat())
     cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
         assert connection.execute(
             "SELECT COUNT(*) FROM management_audit_events WHERE event_type='DATA_LIFECYCLE_CLEANUP_EXECUTED'"
         ).fetchone()[0] == 0

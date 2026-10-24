@@ -123,7 +123,7 @@ def test_migration_33_is_additive_idempotent_and_fk_clean(tmp_path, monkeypatch)
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='perimeter_events'").fetchone()
         assert connection.execute("SELECT name FROM sites WHERE id=?", (existing_site["id"],)).fetchone()[0] == "Existing"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

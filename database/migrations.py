@@ -1764,6 +1764,13 @@ MIGRATIONS = (
             "INSERT INTO incident_reviews_fts(incident_reviews_fts) VALUES ('rebuild')",
         ),
     ),
+    (
+        46,
+        (
+            "CREATE INDEX idx_perimeter_detections_primary_event ON perimeter_detections(primary_event_id)",
+            "CREATE INDEX idx_perimeter_policy_correlations_primary_event ON perimeter_policy_correlations(primary_event_id)",
+        ),
+    ),
 
 )
 

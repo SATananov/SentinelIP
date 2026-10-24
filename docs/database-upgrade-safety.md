@@ -69,6 +69,6 @@ SELECT MAX(version) FROM schema_migrations;
 PRAGMA foreign_key_check;
 ```
 
-The current schema version is 45. `PRAGMA foreign_key_check` should return no
+The current schema version is 46. `PRAGMA foreign_key_check` should return no
 rows. Keep the backup until the upgraded application and inventory have been
 reviewed.

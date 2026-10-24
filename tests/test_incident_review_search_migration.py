@@ -4,7 +4,7 @@ from database.incident_reviews import search_reviews
 from database.migrations import MIGRATIONS
 
 
-def test_fresh_initialization_reaches_45_once_and_is_idempotent(tmp_path):
+def test_fresh_initialization_reaches_46_once_and_is_idempotent(tmp_path):
     path = tmp_path / "incident-review-search-fresh.db"
     initialize_database(path)
     initialize_database(path)
@@ -13,7 +13,7 @@ def test_fresh_initialization_reaches_45_once_and_is_idempotent(tmp_path):
             "SELECT version FROM schema_migrations ORDER BY version")]
         objects = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger')")}
-    assert versions == list(range(1, 46))
+    assert versions == list(range(1, 47))
     assert "incident_reviews" in objects
     assert "incident_reviews_fts" in objects
     assert {
@@ -44,7 +44,7 @@ def test_migration_45_rebuilds_historical_reviews_and_installs_sync_triggers(tmp
 
     assert [row["id"] for row in search_reviews(title="fire auth", db_path=path)["items"]] == [historical_id]
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=45").fetchone()[0] == 1
         objects = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger')")}
