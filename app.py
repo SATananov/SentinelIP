@@ -36,7 +36,6 @@ def main():
             result = detector.analyze(
                 event_type=event.event_type,
                 source_ip=event.source_ip,
-                timestamp=now,
             )
 
             timestamp_text = now.isoformat(timespec="seconds")

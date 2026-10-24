@@ -13,7 +13,7 @@ def evaluate_ssh(primary: SSHThreatEvidence, history: tuple[SSHThreatEvidence, .
         raise ThreatError("Authentication evidence is required.")
     if primary.event_type not in {"LOGIN_FAILED", "SSH_PREAUTH"}:
         return None
-    detector = SSHDetector()  # Existing default threshold, window and username policy.
+    window = SSHDetector().window
     rows = {primary.evidence_id: primary}
     for item in history:
         if (item.source_ip != primary.source_ip or item.event_type != primary.event_type
@@ -21,13 +21,20 @@ def evaluate_ssh(primary: SSHThreatEvidence, history: tuple[SSHThreatEvidence, .
             continue
         if (item.timestamp, item.evidence_id) > (primary.timestamp, primary.evidence_id):
             continue
-        if primary.timestamp - detector.window <= item.timestamp <= primary.timestamp:
+        if primary.timestamp - window <= item.timestamp <= primary.timestamp:
             if item.evidence_id in rows and rows[item.evidence_id] != item:
                 raise ThreatError("Conflicting authentication evidence.")
             rows[item.evidence_id] = item
     ordered = tuple(sorted(rows.values(), key=lambda e: (e.timestamp, e.evidence_id)))
+    first_timestamp = ordered[0].timestamp
+    replay_times = iter(
+        (item.timestamp - first_timestamp).total_seconds() for item in ordered
+    )
+    detector = SSHDetector(clock=lambda: next(replay_times))
     for item in ordered:
-        result = detector.analyze(item.event_type, item.source_ip, item.timestamp, item.username)
+        result = detector.analyze(
+            item.event_type, item.source_ip, username=item.username
+        )
     if result.severity == "INFO":
         return None
     brute = primary.event_type == "LOGIN_FAILED" and result.severity == "ALERT"

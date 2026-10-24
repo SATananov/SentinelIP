@@ -58,13 +58,40 @@ def test_success_does_not_create_or_erase_pattern():
 
 
 def test_detector_replay_agrees_with_existing_detector():
-    detector = SSHDetector()
     rows = tuple(ssh(i+1, i*10) for i in range(8))
+    times = iter((row.timestamp - rows[0].timestamp).total_seconds() for row in rows)
+    detector = SSHDetector(clock=lambda: next(times))
     for index, row in enumerate(rows):
-        old = detector.analyze(row.event_type, row.source_ip, row.timestamp, row.username)
+        old = detector.analyze(row.event_type, row.source_ip, username=row.username)
         result = evaluate_ssh(row, rows[:index], AT)
         assert (result is not None) == (old.severity != "INFO")
         assert (result is not None and result.threat_type == "SSH_BRUTE_FORCE_THREAT") == (old.severity == "ALERT")
+
+
+@pytest.mark.parametrize(
+    ("offsets", "expected_type", "expected_evidence_count"),
+    [
+        ((0, 60, 60), "SUSPICIOUS_AUTH_ACTIVITY", 3),
+        ((0, 60.000001, 60.000001), None, 0),
+        ((0, 0, 0), "SUSPICIOUS_AUTH_ACTIVITY", 3),
+        ((0, 59.999999, 59.999999), "SUSPICIOUS_AUTH_ACTIVITY", 3),
+        ((0, 0, 0, 0, 60), "SSH_BRUTE_FORCE_THREAT", 5),
+    ],
+)
+def test_historical_replay_preserves_exact_wall_time_window(
+    offsets, expected_type, expected_evidence_count
+):
+    rows = tuple(ssh(index + 1, seconds) for index, seconds in enumerate(offsets))
+
+    # Deliberately pass out of order; replay must sort timestamp then evidence ID.
+    result = evaluate_ssh(rows[-1], tuple(reversed(rows[:-1])), AT)
+
+    assert (result.threat_type if result else None) == expected_type
+    if result is not None:
+        assert len(result.evidence) == expected_evidence_count
+        assert [item.evidence_id for item in result.evidence] == sorted(
+            item.evidence_id for item in result.evidence
+        )
 
 
 def web_pair():
