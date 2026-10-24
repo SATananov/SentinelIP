@@ -307,6 +307,7 @@ def test_stream_keeps_text_generator_contract_with_binary_subprocess_stdout(
     assert popen_command == [
         "ssh", "-i", "/home/tanashi/.ssh/sentinelip_ed25519",
         "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+        "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         "tanashi@192.168.122.25", "journalctl", "-u", "ssh", "-f",
         "-n", "0", "--no-pager",
     ]
