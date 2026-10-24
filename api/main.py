@@ -13,6 +13,7 @@ from api.investigation import register_investigation_routes
 from api.data_lifecycle import register_data_lifecycle_routes
 from api.management_audit import register_management_audit_routes
 from database.remote_sensors import RemoteSensorStore
+from services.export_safety import neutralize_csv_cell
 import io
 import sqlite3
 from datetime import datetime, timedelta
@@ -854,7 +855,10 @@ def export_events_csv(
     writer.writeheader()
 
     for event in event_list:
-        writer.writerow(event)
+        writer.writerow({
+            field: neutralize_csv_cell(event.get(field))
+            for field in fieldnames
+        })
 
     output.seek(0)
 

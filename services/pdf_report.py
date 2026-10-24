@@ -1,6 +1,7 @@
 from collections import Counter
 from datetime import datetime
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -21,6 +22,11 @@ def _safe(value):
     if value is None:
         return "-"
     return str(value)
+
+
+def _paragraph_text(value):
+    """Render a dynamic value as literal Paragraph text, never as markup."""
+    return escape(_safe(value))
 
 
 def _report_timestamp():
@@ -145,7 +151,7 @@ def build_security_report(
         Paragraph(
             (
                 "SSH security monitoring and event analysis"
-                f"<br/>Generated: {generated_at}"
+                f"<br/>Generated: {_paragraph_text(generated_at)}"
             ),
             subtitle_style,
         )
@@ -563,25 +569,25 @@ def build_security_report(
                 [
                     _safe(event["id"]),
                     Paragraph(
-                        _safe(event["timestamp"]),
+                        _paragraph_text(event["timestamp"]),
                         small_style,
                     ),
                     Paragraph(
-                        _safe(event["source_ip"]),
+                        _paragraph_text(event["source_ip"]),
                         small_style,
                     ),
                     Paragraph(
-                        _safe(event["username"]),
+                        _paragraph_text(event["username"]),
                         small_style,
                     ),
                     Paragraph(
-                        _safe(event["event_type"]),
+                        _paragraph_text(event["event_type"]),
                         small_style,
                     ),
                     _safe(event["severity"]),
                     _safe(event["event_count"]),
                     Paragraph(
-                        _safe(event["message"]),
+                        _paragraph_text(event["message"]),
                         small_style,
                     ),
                 ]
