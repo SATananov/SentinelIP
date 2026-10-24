@@ -12,7 +12,7 @@ export async function loadDataLifecyclePreview(signal) {
   return response.json()
 }
 
-const CLEANUP_CLASSES = new Set(['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS', 'LEGACY_EVENTS'])
+const CLEANUP_CLASSES = new Set(['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS', 'LEGACY_EVENTS', 'PERIMETER_EVIDENCE'])
 
 export async function cleanupDataLifecycle(dataClass, signal) {
   if (!CLEANUP_CLASSES.has(dataClass)) {
@@ -22,7 +22,9 @@ export async function cleanupDataLifecycle(dataClass, signal) {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data_class: dataClass }),
+    body: JSON.stringify(dataClass === 'PERIMETER_EVIDENCE'
+      ? { data_class: dataClass, confirmed: true }
+      : { data_class: dataClass }),
     signal,
   })
   if (!response.ok) {

@@ -62,6 +62,10 @@ test('cleanup service accepts only the supported fixed classes and sends a fixed
     assert.deepEqual(Object.keys(JSON.parse(request.options.body)), ['data_class'])
     await cleanupDataLifecycle('WEB_OBSERVATIONS')
     await cleanupDataLifecycle('LEGACY_EVENTS')
+    await cleanupDataLifecycle('PERIMETER_EVIDENCE')
+    assert.deepEqual(JSON.parse(request.options.body), {
+      data_class: 'PERIMETER_EVIDENCE', confirmed: true,
+    })
     await assert.rejects(cleanupDataLifecycle('EVENTS'), /Unsupported/)
   } finally {
     globalThis.fetch = originalFetch

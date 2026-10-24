@@ -186,14 +186,32 @@ def test_preview_route_is_direct_local_no_store_and_fixed(lifecycle_context):
         "malformed_skipped_rows", "future_skipped_rows", "oldest_retained_at",
         "retention_days", "evaluated_at_local", "cutoff_at_local", "max_delete_rows",
     }
-    assert all(set(item) == item_keys | (legacy_keys if item["data_class"] == "LEGACY_EVENTS" else set())
-               for item in payload["items"])
+    perimeter_keys = {
+        "evaluation_time", "retention_days", "cutoff", "max_components_per_apply",
+        "events_classified", "total_components", "eligible_components",
+        "malformed_skipped_rows", "future_skipped_rows",
+        "age_eligible_components_before_global_block", "protected_components",
+        "newer_components", "ambiguous_components", "ambiguous_references",
+        "graph_anomalies", "unresolved_references", "malformed_or_future_events",
+        "eligible_events", "eligible_detections", "eligible_policy_correlations",
+        "eligible_host_correlations", "protected_events", "protected_detections",
+        "protected_policy_correlations", "protected_host_correlations",
+        "oldest_eligible_received_at", "newest_eligible_received_at",
+        "largest_eligible_component_events", "largest_eligible_component_derived_rows",
+        "largest_eligible_component_total_rows", "largest_protected_component_total_rows",
+        "cleanup_blocked", "cleanup_block_reason",
+    }
+    assert all(
+        set(item) == item_keys
+        | (legacy_keys if item["data_class"] == "LEGACY_EVENTS" else set())
+        | (perimeter_keys if item["data_class"] == "PERIMETER_EVIDENCE" else set())
+        for item in payload["items"]
+    )
     assert [item["data_class"] for item in payload["items"]] == [
         "LEGACY_EVENTS", "NETWORKS", "DEVICES", "DEVICE_OBSERVATIONS", "INVENTORY_HISTORY",
         "CVE_CATALOG", "TELEMETRY_SENSORS", "DNS_OBSERVATIONS", "WEB_OBSERVATIONS",
         "WEB_DETECTIONS", "THREAT_DETECTIONS", "THREAT_CORRELATIONS", "LEGACY_INCIDENTS",
-        "PERIMETER_EVENTS", "PERIMETER_DETECTIONS", "PERIMETER_POLICY_CORRELATIONS",
-        "PERIMETER_HOST_CORRELATIONS", "EXTERNAL_EXPOSURES", "EXTERNAL_EXPOSURE_OBSERVATIONS",
+        "PERIMETER_EVIDENCE", "EXTERNAL_EXPOSURES", "EXTERNAL_EXPOSURE_OBSERVATIONS",
         "EXTERNAL_EXPOSURE_CHANGES", "EXTERNAL_EXPOSURE_ASSESSMENTS", "REMOTE_SENSOR_TASKS",
         "REMOTE_SENSORS", "ENROLLMENT_RECORDS", "SITES", "SCOPES", "SENSOR_ASSIGNMENTS",
         "INCIDENT_REVIEWS", "REVIEW_EVIDENCE_LINKS", "REVIEW_NOTES", "REVIEW_TIMELINE",

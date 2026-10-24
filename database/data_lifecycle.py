@@ -9,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 
 from database.db import DB_PATH, get_connection
 from database.management_audit import record_event
+from database.perimeter_lifecycle import (
+    apply_perimeter_evidence_cleanup,
+    classify_perimeter_evidence,
+)
 from services.finding_models import FindingConfidence, FindingSeverity
 from services.web_detection_models import (
     WebDetection, WebDetectionState, WebDetectionType, WebEvidence,
@@ -50,10 +54,11 @@ _CLASS_QUERIES = (
      "SELECT (SELECT COUNT(*) FROM correlations) + (SELECT COUNT(*) FROM correlation_entities)"),
     ("LEGACY_INCIDENTS", UNDEFINED,
      "SELECT (SELECT COUNT(*) FROM incidents) + (SELECT COUNT(*) FROM incident_correlations)"),
-    ("PERIMETER_EVENTS", UNDEFINED, "SELECT COUNT(*) FROM perimeter_events"),
-    ("PERIMETER_DETECTIONS", UNDEFINED, "SELECT COUNT(*) FROM perimeter_detections"),
-    ("PERIMETER_POLICY_CORRELATIONS", UNDEFINED, "SELECT COUNT(*) FROM perimeter_policy_correlations"),
-    ("PERIMETER_HOST_CORRELATIONS", UNDEFINED, "SELECT COUNT(*) FROM perimeter_host_correlations"),
+    ("PERIMETER_EVIDENCE", ACTIVE,
+     "SELECT (SELECT COUNT(*) FROM perimeter_events) + "
+     "(SELECT COUNT(*) FROM perimeter_detections) + "
+     "(SELECT COUNT(*) FROM perimeter_policy_correlations) + "
+     "(SELECT COUNT(*) FROM perimeter_host_correlations)"),
     ("EXTERNAL_EXPOSURES", UNDEFINED, "SELECT COUNT(*) FROM external_exposures"),
     ("EXTERNAL_EXPOSURE_OBSERVATIONS", UNDEFINED, "SELECT COUNT(*) FROM external_exposure_observations"),
     ("EXTERNAL_EXPOSURE_CHANGES", UNDEFINED, "SELECT COUNT(*) FROM external_exposure_changes"),
@@ -446,7 +451,7 @@ def preview_data_lifecycle(db_path=DB_PATH, evaluated_at=None):
     if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
         raise ValueError("evaluated_at must be timezone-aware")
     evaluated_at = evaluated_at.astimezone(timezone.utc)
-    with get_connection(db_path) as connection:
+    with closing(get_connection(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN")
         items = _classify_counts(connection)
@@ -457,18 +462,35 @@ def preview_data_lifecycle(db_path=DB_PATH, evaluated_at=None):
         for name, table in (("DNS_OBSERVATIONS", "dns_observations"),
                             ("WEB_OBSERVATIONS", "web_observations")):
             by_name[name].update(_active_observation_item(connection, name, table, evaluated_at))
+        by_name["PERIMETER_EVIDENCE"].update(
+            classify_perimeter_evidence(connection, evaluated_at)
+        )
         return {"evaluated_at": _iso_utc(evaluated_at), "items": items}
 
 
 def cleanup_data_lifecycle(data_class, db_path=DB_PATH, evaluated_at=None):
     """Delete one explicitly requested bounded lifecycle cleanup batch."""
-    if data_class not in {*_CLEANUP_TABLES, "LEGACY_EVENTS"}:
+    if data_class not in {*_CLEANUP_TABLES, "LEGACY_EVENTS", "PERIMETER_EVIDENCE"}:
         raise ValueError("Unsupported data class")
     if data_class == "LEGACY_EVENTS":
         evaluated_at = evaluated_at or _utc_now()
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ValueError("evaluated_at must be timezone-aware")
         return _cleanup_legacy_events(db_path, _local_wall_time(evaluated_at))
+    if data_class == "PERIMETER_EVIDENCE":
+        if evaluated_at is not None and (evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None):
+            raise ValueError("evaluated_at must be timezone-aware")
+        with closing(get_connection(db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                evaluation_time = (evaluated_at or _utc_now()).astimezone(timezone.utc)
+                result = apply_perimeter_evidence_cleanup(connection, evaluation_time)
+                connection.commit()
+                return result
+            except BaseException:
+                connection.rollback()
+                raise
     table = _CLEANUP_TABLES[data_class]
 
     with get_connection(db_path) as connection:
