@@ -12,7 +12,7 @@ export async function loadDataLifecyclePreview(signal) {
   return response.json()
 }
 
-const CLEANUP_CLASSES = new Set(['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS'])
+const CLEANUP_CLASSES = new Set(['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS', 'LEGACY_EVENTS'])
 
 export async function cleanupDataLifecycle(dataClass, signal) {
   if (!CLEANUP_CLASSES.has(dataClass)) {

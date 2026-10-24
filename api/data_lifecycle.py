@@ -27,7 +27,7 @@ def register_data_lifecycle_routes(app: FastAPI, db_path_provider):
     def data_lifecycle_cleanup(request: Request, response: Response, body: CleanupRequest):
         if request.query_params:
             raise HTTPException(422, "Lifecycle cleanup does not accept query parameters.")
-        if body.data_class not in {"DNS_OBSERVATIONS", "WEB_OBSERVATIONS"}:
+        if body.data_class not in {"DNS_OBSERVATIONS", "WEB_OBSERVATIONS", "LEGACY_EVENTS"}:
             raise HTTPException(422, "Unsupported lifecycle cleanup data class.")
         try:
             result = cleanup_data_lifecycle(body.data_class, db_path_provider())

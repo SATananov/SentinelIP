@@ -1,8 +1,11 @@
 """Read-only inventory and retention preview for the local operator."""
 
+import heapq
+import ipaddress
 import json
 import sqlite3
-from datetime import datetime, timezone
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 
 from database.db import DB_PATH, get_connection
 from database.management_audit import record_event
@@ -17,6 +20,7 @@ UNDEFINED = "POLICY_UNDEFINED"
 PRESERVE = "PRESERVE"
 TRANSIENT = "TRANSIENT_INTERNAL"
 MAX_CLEANUP_BATCH = 100
+LEGACY_EVENT_RETENTION_DAYS = 90
 _CLEANUP_TABLES = {
     "DNS_OBSERVATIONS": "dns_observations",
     "WEB_OBSERVATIONS": "web_observations",
@@ -25,7 +29,7 @@ _CLEANUP_TABLES = {
 # Product/domain order is intentionally stable for the operator preview.
 # Grouped inventory/history classes count the listed implementation tables.
 _CLASS_QUERIES = (
-    ("LEGACY_EVENTS", UNDEFINED, "SELECT COUNT(*) FROM events"),
+    ("LEGACY_EVENTS", ACTIVE, None),
     ("NETWORKS", PRESERVE, "SELECT COUNT(*) FROM networks"),
     ("DEVICES", PRESERVE, "SELECT COUNT(*) FROM devices"),
     ("DEVICE_OBSERVATIONS", UNDEFINED,
@@ -93,6 +97,212 @@ def _utc_now():
 
 def _iso_utc(value):
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _iso_local_naive(value):
+    return value.isoformat()
+
+
+def _local_wall_time(value):
+    """Convert the lifecycle clock to the naive local form used by SSH events."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=None)
+    return value.astimezone().replace(tzinfo=None)
+
+
+_LEGACY_EVENT_CLASSIFICATION_SQL = """
+    SELECT e.id,
+           CASE WHEN typeof(e.timestamp)='text' AND length(CAST(e.timestamp AS BLOB))<=64
+                THEN e.timestamp ELSE NULL END AS timestamp_value,
+           typeof(e.timestamp) AS timestamp_type,
+           CASE WHEN typeof(e.source_ip)='text' AND length(CAST(e.source_ip AS BLOB))<=45
+                THEN e.source_ip ELSE NULL END AS source_ip_value,
+           CASE WHEN typeof(e.username) IN ('null','text') THEN 1 ELSE 0 END AS username_valid,
+           CASE WHEN typeof(e.event_type)='text' AND e.event_type IN
+                ('LOGIN_FAILED','SSH_PREAUTH','LOGIN_SUCCESS','CONNECTION_CLOSED')
+                THEN 1 ELSE 0 END AS event_type_valid,
+           CASE WHEN typeof(e.severity)='text' AND e.severity IN ('INFO','WARNING','ALERT')
+                THEN 1 ELSE 0 END AS severity_valid,
+           CASE WHEN typeof(e.message)='text' THEN 1 ELSE 0 END AS message_valid,
+           CASE WHEN typeof(e.event_count)='integer' AND e.event_count>0
+                THEN 1 ELSE 0 END AS event_count_valid,
+           EXISTS (SELECT 1 FROM threat_evidence te WHERE te.ssh_event_id=e.id)
+                AS is_protected
+    FROM events e
+"""
+
+
+def _parse_legacy_event_time(row):
+    if row["timestamp_type"] != "text" or row["timestamp_value"] is None:
+        return None
+    raw = row["timestamp_value"]
+    if not isinstance(raw, str) or len(raw) < 16 or raw[10] not in {"T", " "}:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # The producer stores naive local wall-clock time. Offset-aware/corrupt
+    # historical values are preserved rather than assigned guessed semantics.
+    if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+        return None
+    return parsed
+
+
+def _legacy_event_row_valid(row, parsed_time):
+    try:
+        ipaddress.ip_address(row["source_ip_value"])
+        source_ip_valid = True
+    except (TypeError, ValueError):
+        source_ip_valid = False
+    return (
+        row["id"] > 0
+        and parsed_time is not None
+        and source_ip_valid
+        and row["username_valid"]
+        and row["event_type_valid"]
+        and row["severity_valid"]
+        and row["message_valid"]
+        and row["event_count_valid"]
+    )
+
+
+def _classify_legacy_events(connection, evaluated_at, *, select_limit=0):
+    """Stream only classification metadata and retain at most select_limit IDs."""
+    cutoff = evaluated_at - timedelta(days=LEGACY_EVENT_RETENTION_DAYS)
+    stats = {
+        "total_rows": 0,
+        "expired_rows": 0,
+        "eligible_rows": 0,
+        "protected_rows": 0,
+        "malformed_skipped_rows": 0,
+        "future_skipped_rows": 0,
+        "oldest_retained_at": None,
+        "oldest_eligible_at": None,
+    }
+
+    def eligible_candidates():
+        cursor = connection.execute(_LEGACY_EVENT_CLASSIFICATION_SQL)
+        for row in cursor:
+            stats["total_rows"] += 1
+            parsed_time = _parse_legacy_event_time(row)
+            if row["is_protected"]:
+                stats["protected_rows"] += 1
+            if not _legacy_event_row_valid(row, parsed_time):
+                stats["malformed_skipped_rows"] += 1
+                continue
+            oldest = stats["oldest_retained_at"]
+            if oldest is None or parsed_time < oldest:
+                stats["oldest_retained_at"] = parsed_time
+            if parsed_time > evaluated_at:
+                stats["future_skipped_rows"] += 1
+                continue
+            if parsed_time <= cutoff:
+                stats["expired_rows"] += 1
+                if row["is_protected"]:
+                    continue
+                stats["eligible_rows"] += 1
+                oldest_eligible = stats["oldest_eligible_at"]
+                if oldest_eligible is None or parsed_time < oldest_eligible:
+                    stats["oldest_eligible_at"] = parsed_time
+                yield parsed_time, row["id"]
+
+    if select_limit > 0:
+        selected = heapq.nsmallest(
+            select_limit, eligible_candidates(), key=lambda item: (item[0], item[1])
+        )
+    else:
+        for _ in eligible_candidates():
+            pass
+        selected = []
+    return stats, selected, cutoff
+
+
+def _legacy_event_item(connection, evaluated_at):
+    stats, _, cutoff = _classify_legacy_events(connection, evaluated_at)
+    return {
+        "data_class": "LEGACY_EVENTS",
+        "policy_state": ACTIVE,
+        **_EMPTY_ITEM,
+        "total_rows": stats["total_rows"],
+        "expired_rows": stats["expired_rows"],
+        "eligible_rows": stats["eligible_rows"],
+        "protected_by_dependency": stats["protected_rows"],
+        "malformed_skipped_rows": stats["malformed_skipped_rows"],
+        "future_skipped_rows": stats["future_skipped_rows"],
+        "oldest_eligible_at": (
+            _iso_local_naive(stats["oldest_eligible_at"])
+            if stats["oldest_eligible_at"] is not None else None
+        ),
+        "oldest_retained_at": (
+            _iso_local_naive(stats["oldest_retained_at"])
+            if stats["oldest_retained_at"] is not None else None
+        ),
+        "retention_days": LEGACY_EVENT_RETENTION_DAYS,
+        "evaluated_at_local": _iso_local_naive(evaluated_at),
+        "cutoff_at_local": _iso_local_naive(cutoff),
+        "max_delete_rows": MAX_CLEANUP_BATCH,
+    }
+
+
+def _cleanup_legacy_events(db_path, evaluated_at):
+    with closing(get_connection(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            stats, selected, cutoff = _classify_legacy_events(
+                connection, evaluated_at, select_limit=MAX_CLEANUP_BATCH
+            )
+            selected_ids = [row_id for _, row_id in selected]
+            if selected_ids:
+                marks = ",".join("?" for _ in selected_ids)
+                newly_protected = {
+                    row[0] for row in connection.execute(
+                        f"SELECT ssh_event_id FROM threat_evidence "
+                        f"WHERE ssh_event_id IN ({marks})", selected_ids
+                    )
+                }
+                if newly_protected:
+                    stats["protected_rows"] += len(newly_protected)
+                    stats["eligible_rows"] -= len(newly_protected)
+                    selected_ids = [row_id for row_id in selected_ids
+                                    if row_id not in newly_protected]
+
+            deleted_count = 0
+            if selected_ids:
+                marks = ",".join("?" for _ in selected_ids)
+                cursor = connection.execute(
+                    f"""DELETE FROM events
+                        WHERE id IN ({marks})
+                          AND NOT EXISTS (
+                              SELECT 1 FROM threat_evidence te
+                              WHERE te.ssh_event_id=events.id
+                          )""",
+                    selected_ids,
+                )
+                deleted_count = cursor.rowcount
+                if deleted_count != len(selected_ids):
+                    raise sqlite3.IntegrityError("Selected event set changed during cleanup.")
+
+            # Management-audit schema currently permits DNS/web classes only.
+            # Do not mislabel this cleanup or require a schema migration here.
+            result = {
+                "data_class": "LEGACY_EVENTS",
+                "evaluated_at_local": _iso_local_naive(evaluated_at),
+                "cutoff_at_local": _iso_local_naive(cutoff),
+                "eligible_before": stats["eligible_rows"],
+                "deleted_count": deleted_count,
+                "remaining_eligible": stats["eligible_rows"] - deleted_count,
+                "protected_count": stats["protected_rows"],
+                "malformed_skipped_rows": stats["malformed_skipped_rows"],
+                "future_skipped_rows": stats["future_skipped_rows"],
+                "batch_limit": MAX_CLEANUP_BATCH,
+            }
+            connection.commit()
+            return result
+        except BaseException:
+            connection.rollback()
+            raise
 
 
 def _parse_retention(value):
@@ -223,7 +433,8 @@ def _classify_counts(connection):
     items = []
     for data_class, policy_state, sql in _CLASS_QUERIES:
         item = {"data_class": data_class, "policy_state": policy_state, **_EMPTY_ITEM}
-        item["total_rows"] = connection.execute(sql).fetchone()[0]
+        if sql is not None:
+            item["total_rows"] = connection.execute(sql).fetchone()[0]
         if policy_state == UNDEFINED:
             item["policy_undefined"] = item["total_rows"]
         items.append(item)
@@ -240,6 +451,9 @@ def preview_data_lifecycle(db_path=DB_PATH, evaluated_at=None):
         connection.execute("BEGIN")
         items = _classify_counts(connection)
         by_name = {item["data_class"]: item for item in items}
+        by_name["LEGACY_EVENTS"].update(
+            _legacy_event_item(connection, _local_wall_time(evaluated_at))
+        )
         for name, table in (("DNS_OBSERVATIONS", "dns_observations"),
                             ("WEB_OBSERVATIONS", "web_observations")):
             by_name[name].update(_active_observation_item(connection, name, table, evaluated_at))
@@ -247,9 +461,14 @@ def preview_data_lifecycle(db_path=DB_PATH, evaluated_at=None):
 
 
 def cleanup_data_lifecycle(data_class, db_path=DB_PATH, evaluated_at=None):
-    """Delete one bounded batch of expired DNS or snapshot-safe web observations."""
-    if data_class not in _CLEANUP_TABLES:
+    """Delete one explicitly requested bounded lifecycle cleanup batch."""
+    if data_class not in {*_CLEANUP_TABLES, "LEGACY_EVENTS"}:
         raise ValueError("Unsupported data class")
+    if data_class == "LEGACY_EVENTS":
+        evaluated_at = evaluated_at or _utc_now()
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ValueError("evaluated_at must be timezone-aware")
+        return _cleanup_legacy_events(db_path, _local_wall_time(evaluated_at))
     table = _CLEANUP_TABLES[data_class]
 
     with get_connection(db_path) as connection:

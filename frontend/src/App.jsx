@@ -782,7 +782,7 @@ function App() {
               </option>
 
               <option value="all">
-                All time
+                All retained history
               </option>
             </select>
           </label>

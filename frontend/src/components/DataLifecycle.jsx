@@ -40,7 +40,10 @@ function DataLifecycle() {
     const item = preview?.items?.find((entry) => entry.data_class === dataClass)
     if (!item || item.eligible_rows <= 0 || loading || cleanupLock.current) return
     const dns = dataClass === 'DNS_OBSERVATIONS'
-    const prompt = dns
+    const legacyEvents = dataClass === 'LEGACY_EVENTS'
+    const prompt = legacyEvents
+      ? 'Delete up to 100 unreferenced legacy SSH events at or before the displayed 90-day cutoff? This permanently deletes raw event message and severity. Threat-referenced, malformed, and future rows are preserved. Maintain a tested database backup before cleanup; restore replaces the database with its backup state. The database file may not shrink after deletion.'
+      : dns
       ? 'Delete up to 100 expired DNS observations currently eligible under the retention policy? This permanently removes only observation rows. The server revalidates eligibility.'
       : 'Delete up to 100 expired web observations whose dependent detection snapshots are safe to preserve? Detections and Incident Review evidence remain preserved. The server revalidates eligibility.'
     if (!window.confirm(prompt)) return
@@ -74,7 +77,7 @@ function DataLifecycle() {
         <div>
           <p className="panel-kicker">Local operator</p>
           <h2 id="data-lifecycle-title">Data Lifecycle</h2>
-          <p className="data-lifecycle-description">Manual cleanup is limited to eligible DNS and web observations.</p>
+          <p className="data-lifecycle-description">Cleanup is manual. Each confirmed apply deletes at most 100 eligible rows.</p>
         </div>
         <button type="button" className="refresh-button" onClick={refresh} disabled={loading}>
           {loading ? 'Loading…' : preview ? 'Refresh preview' : 'Load preview'}
@@ -101,8 +104,9 @@ function DataLifecycle() {
                   <th scope="col">Eligible</th>
                   <th scope="col">Protected</th>
                   <th scope="col">Policy undefined</th>
-                  <th scope="col">Invalid retention</th>
-                  <th scope="col">Oldest eligible deadline</th>
+                  <th scope="col">Malformed / invalid</th>
+                  <th scope="col">Future skipped</th>
+                  <th scope="col">Oldest eligible time</th>
                   <th scope="col">Action</th>
                 </tr>
               </thead>
@@ -110,15 +114,16 @@ function DataLifecycle() {
                 {preview.items.map((item) => (
                   <tr key={item.data_class}>
                     <th scope="row">{dataLifecycleClassLabel(item.data_class)}</th>
-                    <td>{dataLifecyclePolicyLabel(item.policy_state)}</td>
+                    <td>{item.retention_days ? `${item.retention_days} days` : dataLifecyclePolicyLabel(item.policy_state)}</td>
                     <td>{item.total_rows}</td>
                     <td>{item.expired_rows}</td>
                     <td>{item.eligible_rows}</td>
                     <td>{item.protected_by_review + item.protected_by_dependency}</td>
                     <td>{item.policy_undefined}</td>
-                    <td>{item.invalid_retention_rows}</td>
+                    <td>{item.malformed_skipped_rows ?? item.invalid_retention_rows}</td>
+                    <td>{item.future_skipped_rows ?? 0}</td>
                     <td>{safeLifecycleTimestamp(item.oldest_eligible_at)}</td>
-                    <td>{['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS'].includes(item.data_class) && (
+                    <td>{['DNS_OBSERVATIONS', 'WEB_OBSERVATIONS', 'LEGACY_EVENTS'].includes(item.data_class) && (
                       <button type="button" className="refresh-button" onClick={() => cleanup(item.data_class)}
                         disabled={loading || cleanupInFlight || item.eligible_rows <= 0}>
                         {cleanupInFlight ? 'Deleting…' : 'Delete up to 100'}
@@ -130,12 +135,20 @@ function DataLifecycle() {
             </table>
           </div>
           <p className="data-lifecycle-note">
-            Eligible rows currently qualify under an approved policy. Cleanup is bounded to 100 rows per confirmed request.
+            Eligible rows currently qualify under the displayed policy. A preview does not authorize deletion; each apply rechecks eligibility and deletes no more than 100 rows.
           </p>
+          <p className="data-lifecycle-note">
+            Legacy events are retained for 90 days. Only valid, unreferenced events at or before the cutoff are eligible; threat-referenced, malformed, and future events are preserved. Deletion removes raw event message and severity. Maintain a tested database backup before cleanup. Deleted rows free pages for SQLite reuse, but the database file may not shrink immediately.
+          </p>
+          {preview.items.find((item) => item.data_class === 'LEGACY_EVENTS') && (
+            <p className="data-lifecycle-evaluated">
+              Legacy event clock: server-local wall time. Evaluated: <time dateTime={preview.items.find((item) => item.data_class === 'LEGACY_EVENTS').evaluated_at_local}>{safeLifecycleTimestamp(preview.items.find((item) => item.data_class === 'LEGACY_EVENTS').evaluated_at_local)}</time>. Cutoff: <time dateTime={preview.items.find((item) => item.data_class === 'LEGACY_EVENTS').cutoff_at_local}>{safeLifecycleTimestamp(preview.items.find((item) => item.data_class === 'LEGACY_EVENTS').cutoff_at_local)}</time>. Oldest valid retained event: {safeLifecycleTimestamp(preview.items.find((item) => item.data_class === 'LEGACY_EVENTS').oldest_retained_at)}.
+            </p>
+          )}
         </>
       )}
       {cleanupResult && <div className="data-lifecycle-note" role="status">
-        Cleanup deleted {cleanupResult.deleted_count}; {cleanupResult.protected_count} protected; {cleanupResult.remaining_eligible} eligible rows remain. Evaluated {safeLifecycleTimestamp(cleanupResult.evaluated_at)} (batch limit {cleanupResult.batch_limit}).
+        Cleanup deleted {cleanupResult.deleted_count}; {cleanupResult.protected_count} protected; {cleanupResult.malformed_skipped_rows ?? 0} malformed; {cleanupResult.future_skipped_rows ?? 0} future rows skipped; {cleanupResult.remaining_eligible} eligible rows remain. Evaluated {safeLifecycleTimestamp(cleanupResult.evaluated_at_local ?? cleanupResult.evaluated_at)} (batch limit {cleanupResult.batch_limit}).
       </div>}
     </section>
   )

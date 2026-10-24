@@ -47,7 +47,7 @@ test('preview service reports status safely without leaking response body', asyn
   }
 })
 
-test('cleanup service accepts only the two fixed classes and sends a fixed body', async () => {
+test('cleanup service accepts only the supported fixed classes and sends a fixed body', async () => {
   const originalFetch = globalThis.fetch
   let request
   globalThis.fetch = async (url, options) => {
@@ -61,6 +61,7 @@ test('cleanup service accepts only the two fixed classes and sends a fixed body'
     assert.deepEqual(JSON.parse(request.options.body), { data_class: 'DNS_OBSERVATIONS' })
     assert.deepEqual(Object.keys(JSON.parse(request.options.body)), ['data_class'])
     await cleanupDataLifecycle('WEB_OBSERVATIONS')
+    await cleanupDataLifecycle('LEGACY_EVENTS')
     await assert.rejects(cleanupDataLifecycle('EVENTS'), /Unsupported/)
   } finally {
     globalThis.fetch = originalFetch
@@ -118,4 +119,13 @@ test('UI cleanup is bounded, confirmed, preview-gated, manual, and never polls',
   assert.match(service, /POST/)
   assert.doesNotMatch(service, /generic|payload\s*\}/i)
   assert.match(component, /protected_by_review \+ item\.protected_by_dependency/)
+  assert.match(component, /item\.retention_days/)
+  assert.match(component, /threat-referenced, malformed, and future events are preserved/i)
+  assert.match(component, /Maintain a tested database backup/i)
+  assert.match(component, /database file may not shrink/i)
+})
+
+test('event-history preset labels all retained events without changing API value', async () => {
+  const app = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /<option value="all">\s*All retained history\s*<\/option>/)
 })

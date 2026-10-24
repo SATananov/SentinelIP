@@ -1,5 +1,8 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +14,7 @@ from api.data_lifecycle import CleanupRequest
 from api.remote_sensors import local_management
 from database.data_lifecycle import _parse_retention, cleanup_data_lifecycle, preview_data_lifecycle
 from database.db import get_connection, initialize_database
+from database.event_exports import get_bounded_export_events
 from database.telemetry import create_web_observation, provision_sensor
 from database.web_detections import upsert_detections
 from services.finding_models import FindingConfidence, FindingSeverity
@@ -68,6 +72,45 @@ def insert_dns(path, deadline, key):
             ) VALUES (?, ?, ?, ?, 'example.test', 'A', 'NOERROR', '[]', 'test', ?)""",
             (sensor, key, NOW.isoformat(), NOW.isoformat(), deadline),
         ).lastrowid
+
+
+def insert_legacy_event(path, timestamp, *, source_ip="192.0.2.8", username=None,
+                        event_type="LOGIN_FAILED", severity="WARNING",
+                        message="SSH login failed", event_count=1):
+    with get_connection(path) as connection:
+        return connection.execute(
+            """INSERT INTO events(timestamp,source_ip,username,event_type,severity,message,event_count)
+               VALUES(?,?,?,?,?,?,?)""",
+            (timestamp, source_ip, username, event_type, severity, message, event_count),
+        ).lastrowid
+
+
+def protect_legacy_event(path, event_id):
+    with get_connection(path) as connection:
+        cursor = connection.execute(
+            """INSERT INTO threat_detections (
+                stable_key,threat_type,state,severity,confidence,source_ip,
+                primary_evidence_type,primary_evidence_id,anchor_id,reason,recommendation,
+                rule_id,rule_version,first_seen,last_seen,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (f"ssh-threat-{event_id}", "SSH_BRUTE_FORCE_THREAT", "SUSPECTED", "MEDIUM",
+             "MEDIUM", "192.0.2.8", "SSH_EVENT", event_id, event_id, "Repeated SSH failures.",
+             "Review authentication activity.", "test-rule", "1", NOW.isoformat(),
+             NOW.isoformat(), NOW.isoformat(), NOW.isoformat()),
+        )
+        threat_id = cursor.lastrowid
+        snapshot = json.dumps({
+            "evidence_id": event_id, "source_ip": "192.0.2.8", "username": None,
+            "event_type": "LOGIN_FAILED", "event_count": 1,
+            "timestamp": "2026-07-01T12:00:00",
+        }, sort_keys=True, separators=(",", ":"))
+        connection.execute(
+            """INSERT INTO threat_evidence(
+                threat_id,evidence_type,evidence_id,ssh_event_id,evidence_snapshot
+            ) VALUES (?,'SSH_EVENT',?,?,?)""",
+            (threat_id, event_id, event_id, snapshot),
+        )
+        return threat_id, snapshot
 
 
 def ensure_sensor(path, sensor_type):
@@ -134,11 +177,17 @@ def test_preview_route_is_direct_local_no_store_and_fixed(lifecycle_context):
     payload = response.json()
     assert set(payload) == {"evaluated_at", "items"}
     assert len(payload["items"]) >= 25
-    assert all(set(item) == {
+    item_keys = {
         "data_class", "policy_state", "total_rows", "expired_rows", "eligible_rows",
         "protected_by_review", "protected_by_dependency", "policy_undefined",
         "invalid_retention_rows", "oldest_eligible_at",
-    } for item in payload["items"])
+    }
+    legacy_keys = {
+        "malformed_skipped_rows", "future_skipped_rows", "oldest_retained_at",
+        "retention_days", "evaluated_at_local", "cutoff_at_local", "max_delete_rows",
+    }
+    assert all(set(item) == item_keys | (legacy_keys if item["data_class"] == "LEGACY_EVENTS" else set())
+               for item in payload["items"])
     assert [item["data_class"] for item in payload["items"]] == [
         "LEGACY_EVENTS", "NETWORKS", "DEVICES", "DEVICE_OBSERVATIONS", "INVENTORY_HISTORY",
         "CVE_CATALOG", "TELEMETRY_SENSORS", "DNS_OBSERVATIONS", "WEB_OBSERVATIONS",
@@ -244,8 +293,11 @@ def test_preview_policy_classes_and_database_are_unchanged(lifecycle_context):
         before = {name: connection.execute("SELECT COUNT(*) FROM " + name).fetchone()[0]
                   for name in ("events", "remote_sensor_tasks")}
     result = preview_data_lifecycle(path, NOW)
-    assert get_item(result, "LEGACY_EVENTS")["policy_state"] == "POLICY_UNDEFINED"
-    assert get_item(result, "LEGACY_EVENTS")["policy_undefined"] == 1
+    legacy = get_item(result, "LEGACY_EVENTS")
+    assert legacy["policy_state"] == "ACTIVE_RETENTION_POLICY"
+    assert legacy["retention_days"] == 90
+    assert legacy["malformed_skipped_rows"] == 1
+    assert legacy["policy_undefined"] == 0
     assert get_item(result, "REMOTE_SENSOR_TASKS")["policy_undefined"] == 0
     preserved = get_item(result, "DEVICES")
     assert preserved["policy_state"] == "PRESERVE"
@@ -273,7 +325,7 @@ def test_preview_uses_request_clock_and_does_not_query_payload_fields(lifecycle_
     assert "queried_domain" not in json.dumps(result)
 
 
-def test_schema_remains_43_and_preview_is_read_only(lifecycle_context):
+def test_schema_remains_45_and_preview_is_read_only(lifecycle_context):
     path = lifecycle_context["path"]
     with get_connection(path) as connection:
         before = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
@@ -355,11 +407,272 @@ def test_cleanup_trigger_failure_rolls_back_whole_batch(lifecycle_context):
         assert connection.execute("SELECT COUNT(*) FROM dns_observations WHERE id IN (?,?,?)", ids).fetchone()[0] == 3
 
 
-def test_cleanup_rejects_unapproved_class_and_schema_stays_43(lifecycle_context):
+def test_cleanup_rejects_unapproved_class_and_schema_stays_45(lifecycle_context):
     with pytest.raises(ValueError):
         cleanup_data_lifecycle("EVENTS", lifecycle_context["path"], NOW)
     with get_connection(lifecycle_context["path"]) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+
+
+def test_legacy_event_preview_uses_local_wall_clock_and_classifies_rows(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    insert_legacy_event(path, (cutoff + timedelta(seconds=1)).isoformat(), username=None)
+    insert_legacy_event(path, cutoff.isoformat(), message="at cutoff")
+    insert_legacy_event(path, (cutoff - timedelta(seconds=1)).isoformat(), message="older")
+    insert_legacy_event(path, (local_now + timedelta(seconds=1)).isoformat(), message="future")
+    insert_legacy_event(path, "not-an-iso-time", message="malformed")
+    insert_legacy_event(path, cutoff.isoformat(), severity="CRITICAL", message="bad enum")
+
+    result = preview_data_lifecycle(path, NOW)
+    item = get_item(result, "LEGACY_EVENTS")
+    assert item["retention_days"] == 90
+    assert item["evaluated_at_local"] == local_now.isoformat()
+    assert item["cutoff_at_local"] == cutoff.isoformat()
+    assert item["total_rows"] == 6
+    assert item["expired_rows"] == 2
+    assert item["eligible_rows"] == 2
+    assert item["malformed_skipped_rows"] == 2
+    assert item["future_skipped_rows"] == 1
+    assert item["max_delete_rows"] == 100
+    oldest = (cutoff - timedelta(seconds=1)).isoformat()
+    assert item["oldest_retained_at"] == oldest
+    assert item["oldest_eligible_at"] == oldest
+
+
+def test_legacy_event_null_username_is_valid_and_exports_see_only_retained_rows(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    expired_id = insert_legacy_event(path, (cutoff - timedelta(seconds=1)).isoformat())
+    recent_id = insert_legacy_event(path, local_now.isoformat(), username=None)
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 1
+    assert result["remaining_eligible"] == 0
+    rows = get_bounded_export_events(row_limit=5000, db_path=path)
+    assert [row["id"] for row in rows] == [recent_id]
+    assert expired_id not in {row["id"] for row in rows}
+
+
+def test_legacy_event_protection_preserves_threat_snapshot_and_review(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    old_time = (local_now - timedelta(days=120)).isoformat()
+    protected_id = insert_legacy_event(path, old_time, message="protected source")
+    threat_id, snapshot = protect_legacy_event(path, protected_id)
+    with get_connection(path) as connection:
+        connection.execute(
+            """INSERT INTO incident_reviews (
+                incident_key,title,summary,state,priority,confidence,created_at,updated_at,disposition
+            ) VALUES ('retention-review','Review','', 'OPEN','MEDIUM','MEDIUM',?,?, 'UNREVIEWED')""",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        review_id = connection.execute("SELECT last_insert_rowid()").fetchone()[0]
+        connection.execute(
+            """INSERT INTO incident_review_evidence(
+                incident_id,evidence_type,evidence_id,observed_at,added_at
+            ) VALUES (?,'THREAT_DETECTION',?,?,?)""",
+            (review_id, threat_id, NOW.isoformat(), NOW.isoformat()),
+        )
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 0
+    assert result["eligible_before"] == 0
+    assert result["protected_count"] == 1
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events WHERE id=?", (protected_id,)).fetchone()[0] == 1
+        row = connection.execute(
+            "SELECT ssh_event_id,evidence_snapshot FROM threat_evidence WHERE threat_id=?", (threat_id,)
+        ).fetchone()
+        assert tuple(row) == (protected_id, snapshot)
+    from database.incident_review_reports import build_incident_review_report
+    report = build_incident_review_report(review_id, NOW.isoformat(), path)
+    assert report["evidence"]["items"][0]["source_status"] == "AVAILABLE"
+
+
+@pytest.mark.parametrize("eligible_count", [0, 3, 100, 101, 205])
+def test_legacy_event_cleanup_deletes_one_oldest_first_batch(lifecycle_context, eligible_count):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    created = []
+    # Reverse insertion order to prove selection follows timestamp, then ID.
+    for index in reversed(range(eligible_count)):
+        event_time = cutoff - timedelta(seconds=index)
+        created.append((event_time, insert_legacy_event(path, event_time.isoformat(), message=str(index))))
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    expected_deleted = min(eligible_count, 100)
+    assert result["deleted_count"] == expected_deleted
+    assert result["remaining_eligible"] == eligible_count - expected_deleted
+    assert result["batch_limit"] == 100
+    with get_connection(path) as connection:
+        remaining = {row[0] for row in connection.execute("SELECT id FROM events")}
+    expected_removed = {
+        event_id for _, event_id in sorted(created, key=lambda item: (item[0], item[1]))[:expected_deleted]
+    }
+    assert remaining == {event_id for _, event_id in created} - expected_removed
+
+
+def test_legacy_event_cleanup_uses_id_ascending_for_equal_timestamps(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    event_ids = [insert_legacy_event(path, cutoff.isoformat()) for _ in range(101)]
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 100
+    with get_connection(path) as connection:
+        remaining = [row[0] for row in connection.execute("SELECT id FROM events ORDER BY id")]
+    assert remaining == [event_ids[-1]]
+
+
+def test_legacy_event_cleanup_preserves_malformed_future_and_recent_rows(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    malformed = insert_legacy_event(path, "bad timestamp")
+    future = insert_legacy_event(path, (local_now + timedelta(days=1)).isoformat())
+    recent = insert_legacy_event(path, (cutoff + timedelta(seconds=1)).isoformat())
+    invalid_field = insert_legacy_event(path, cutoff.isoformat(), event_type="UNEXPECTED")
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 0
+    assert result["malformed_skipped_rows"] == 2
+    assert result["future_skipped_rows"] == 1
+    with get_connection(path) as connection:
+        remaining = {row[0] for row in connection.execute("SELECT id FROM events")}
+    assert remaining == {malformed, future, recent, invalid_field}
+
+
+def test_legacy_event_cleanup_skips_invalid_required_storage_types(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    old_time = (local_now - timedelta(days=100)).isoformat()
+    with get_connection(path) as connection:
+        blob_ip = connection.execute(
+            """INSERT INTO events(timestamp,source_ip,username,event_type,severity,message,event_count)
+               VALUES(?,?,NULL,'LOGIN_FAILED','WARNING','message',1)""",
+            (old_time, sqlite3.Binary(b"192.0.2.8")),
+        ).lastrowid
+        real_count = connection.execute(
+            """INSERT INTO events(timestamp,source_ip,username,event_type,severity,message,event_count)
+               VALUES(?,'192.0.2.8',NULL,'LOGIN_FAILED','WARNING','message',1.5)""",
+            (old_time,),
+        ).lastrowid
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 0
+    assert result["malformed_skipped_rows"] == 2
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events WHERE id IN (?,?)", (blob_ip, real_count)).fetchone()[0] == 2
+
+
+def test_legacy_classifier_byte_bounds_text_with_embedded_nul(lifecycle_context):
+    path = lifecycle_context["path"]
+    event_id = insert_legacy_event(path, "2026-01-01T00:00:00")
+    with get_connection(path) as connection:
+        connection.execute(
+            "UPDATE events SET timestamp=? WHERE id=?",
+            ("2026-01-01T00:00:00\x00" + "x" * 4096, event_id),
+        )
+        connection.execute(
+            "UPDATE events SET source_ip=? WHERE id=?",
+            ("127.0.0.1\x00" + "x" * 4096, event_id),
+        )
+        connection.row_factory = sqlite3.Row
+        from database.data_lifecycle import _LEGACY_EVENT_CLASSIFICATION_SQL
+        row = connection.execute(_LEGACY_EVENT_CLASSIFICATION_SQL).fetchone()
+        assert row["timestamp_value"] is None
+        assert row["source_ip_value"] is None
+    item = get_item(preview_data_lifecycle(path, NOW), "LEGACY_EVENTS")
+    assert item["malformed_skipped_rows"] == 1
+    result = cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    assert result["deleted_count"] == 0
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events WHERE id=?", (event_id,)).fetchone()[0] == 1
+
+
+def test_legacy_event_delete_failure_rolls_back_entire_batch(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    ids = [insert_legacy_event(path, (cutoff - timedelta(seconds=i)).isoformat()) for i in range(3)]
+    with get_connection(path) as connection:
+        connection.execute(
+            """CREATE TRIGGER fail_legacy_delete BEFORE DELETE ON events
+               WHEN OLD.id = %d BEGIN SELECT RAISE(ABORT, 'forced'); END""" % ids[1]
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM events WHERE id IN (?,?,?)", ids).fetchone()[0] == 3
+
+
+def test_legacy_event_cleanup_serializes_a_concurrent_insert(lifecycle_context, monkeypatch):
+    import database.data_lifecycle as lifecycle
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    expired_id = insert_legacy_event(path, (cutoff - timedelta(days=1)).isoformat())
+    selected = threading.Event()
+    resume = threading.Event()
+    classify = lifecycle._classify_legacy_events
+
+    def pause_after_selection(connection, evaluated_at, *, select_limit=0):
+        result = classify(connection, evaluated_at, select_limit=select_limit)
+        selected.set()
+        if not resume.wait(timeout=5):
+            raise AssertionError("cleanup synchronization timed out")
+        return result
+
+    monkeypatch.setattr(lifecycle, "_classify_legacy_events", pause_after_selection)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(cleanup_data_lifecycle, "LEGACY_EVENTS", path, NOW)
+        try:
+            assert selected.wait(timeout=5)
+            competing = sqlite3.connect(path, timeout=0)
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    competing.execute(
+                        """INSERT INTO events(timestamp,source_ip,event_type,severity,message,event_count)
+                           VALUES(?,?,?,?,?,?)""",
+                        (local_now.isoformat(), "192.0.2.9", "SSH_PREAUTH", "INFO", "current", 1),
+                    )
+            finally:
+                competing.close()
+        finally:
+            resume.set()
+        result = future.result(timeout=5)
+    assert result["deleted_count"] == 1
+    current_id = insert_legacy_event(path, local_now.isoformat(), message="new current event")
+    with get_connection(path) as connection:
+        remaining = {row[0] for row in connection.execute("SELECT id FROM events")}
+    assert expired_id not in remaining
+    assert current_id in remaining
+
+
+def test_legacy_event_cleanup_lock_failure_is_closed_and_safe(lifecycle_context, monkeypatch):
+    import database.data_lifecycle as lifecycle
+    path = lifecycle_context["path"]
+    blocker = sqlite3.connect(path, timeout=0)
+    blocker.execute("BEGIN IMMEDIATE")
+    monkeypatch.setattr(lifecycle, "get_connection", lambda db_path: sqlite3.connect(db_path, timeout=0))
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_legacy_event_cleanup_audit_is_not_mislabeled_and_schema_stays_45(lifecycle_context):
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    cutoff = local_now - timedelta(days=90)
+    insert_legacy_event(path, (cutoff - timedelta(seconds=1)).isoformat())
+    cleanup_data_lifecycle("LEGACY_EVENTS", path, NOW)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 45
+        assert connection.execute(
+            "SELECT COUNT(*) FROM management_audit_events WHERE event_type='DATA_LIFECYCLE_CLEANUP_EXECUTED'"
+        ).fetchone()[0] == 0
 
 
 def test_dns_cleanup_uses_inclusive_boundary_and_one_clock(lifecycle_context, monkeypatch):
@@ -394,3 +707,16 @@ def test_cleanup_route_is_direct_local_strict_and_no_store(lifecycle_context):
     result = route.endpoint(request=request, response=response, body=body)
     assert response.headers["cache-control"] == "no-store"
     assert result["deleted_count"] == 0
+
+    path = lifecycle_context["path"]
+    local_now = NOW.astimezone().replace(tzinfo=None)
+    insert_legacy_event(path, (local_now - timedelta(days=91)).isoformat())
+    response = Response()
+    local_management(request, response)
+    result = route.endpoint(
+        request=request, response=response, body=CleanupRequest(data_class="LEGACY_EVENTS")
+    )
+    assert response.headers["cache-control"] == "no-store"
+    assert result["data_class"] == "LEGACY_EVENTS"
+    assert result["deleted_count"] == 1
+    assert result["batch_limit"] == 100
