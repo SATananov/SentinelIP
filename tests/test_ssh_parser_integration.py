@@ -45,12 +45,27 @@ def test_corrected_source_flows_to_detector_and_persisted_event(tmp_path):
 
     with sqlite3.connect(db_path) as connection:
         rows = connection.execute(
-            "SELECT source_ip, username, event_count FROM events ORDER BY id"
+            "SELECT source_ip, username, event_type, severity, message, event_count "
+            "FROM events ORDER BY id"
         ).fetchall()
 
     assert rows == [
-        ("203.0.113.7", "192.0.2.99", 1),
-        ("203.0.113.7", "198.51.100.44", 2),
+        (
+            "203.0.113.7",
+            "192.0.2.99",
+            "LOGIN_FAILED",
+            "INFO",
+            "SSH login failed",
+            1,
+        ),
+        (
+            "203.0.113.7",
+            "198.51.100.44",
+            "LOGIN_FAILED",
+            "INFO",
+            "SSH login failed",
+            2,
+        ),
     ]
 
 
