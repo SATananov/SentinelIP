@@ -87,7 +87,10 @@ for this parser-focused close-out. Phase 26 changes do not claim IPv6 support,
 SSH line-size bounds, username-size bounds, detector-state bounds, event-rate
 limits, or subprocess reliability.
 
-Explicitly out of scope are SSH collector subprocess lifecycle and stderr
-handling, child wait/reap and reconnect behavior, raw log-line and username
-size bounds, detector source-map bounds, burst/event-rate handling, IPv6
-support, and the separate authoritative TestClient reproducibility issue.
+Phase 26 itself did not implement SSH input bounds. Phase 27 later added an
+8,192-byte raw-line bound, a 256-byte UTF-8 username bound, and stale rolling
+detector-state expiry. Those later bounds do not impose an event-rate limit,
+active detector-state ceiling, or hard database-size limit. IPv6 support and
+the separate authoritative TestClient reproducibility issue remain out of
+scope. SSH collector subprocess lifecycle, stderr handling, child wait/reap,
+and reconnect behavior also remain out of scope.

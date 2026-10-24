@@ -1,3 +1,5 @@
+import pytest
+
 from collectors.live_ssh import (
     SSHInputRejectionReporter,
     _BoundedSSHLineReader,
@@ -75,6 +77,28 @@ def test_crlf_bytes_count_toward_limit():
     assert reporter.counts["oversized_line"] == 1
 
 
+@pytest.mark.parametrize(
+    ("data", "expected_line", "oversized"),
+    [
+        (b"x" * 8191 + b"\n", "x" * 8191, False),
+        (b"x" * 8192 + b"\n", None, True),
+        (b"x" * 8190 + b"\r\n", "x" * 8190, False),
+        (b"x" * 8191 + b"\r\n", None, True),
+        (b"x" * 8191 + b"\r", "x" * 8191, False),
+        (b"x" * 8192 + b"\r", None, True),
+        (b"x" * 8192, "x" * 8192, False),
+        (b"x" * 8193, None, True),
+    ],
+)
+def test_exact_raw_limit_for_all_terminators(data, expected_line, oversized):
+    lines, reader, reporter, stream = read_lines(data)
+
+    assert lines == ([] if oversized else [expected_line])
+    assert reporter.counts["oversized_line"] == int(oversized)
+    assert reader.max_candidate_bytes_seen <= 8192
+    assert stream.maximum_requested <= 1024
+
+
 def test_crlf_spanning_chunks_and_lone_cr_preserve_universal_newlines():
     lines, _reader, reporter, _stream = read_lines(
         b"one\r\ntwo\rthree\n", chunk_size=4
@@ -131,6 +155,27 @@ def test_consecutive_oversized_lines_then_valid_line():
     assert reporter.counts["oversized_line"] == 2
 
 
+@pytest.mark.parametrize(
+    ("oversized", "valid", "rejected_count"),
+    [
+        (b"x" * 8192 + b"\n", b"good\r\n", 1),
+        (b"x" * 8191 + b"\r\n", b"good\n", 1),
+        (b"x" * 8192 + b"\r", b"good\n", 1),
+        (
+            b"x" * 8192 + b"\n" + b"y" * 8191 + b"\r\n"
+            + b"z" * 8192 + b"\r",
+            b"good\n",
+            3,
+        ),
+    ],
+)
+def test_mixed_oversize_terminators_resynchronize(oversized, valid, rejected_count):
+    lines, _reader, reporter, _stream = read_lines(oversized + valid, chunk_size=7)
+
+    assert lines == ["good"]
+    assert reporter.counts["oversized_line"] == rejected_count
+
+
 def test_large_generated_line_does_not_grow_candidate_and_recovers():
     stream = GeneratedOversizeLine(2 * 1024 * 1024)
     reporter = SSHInputRejectionReporter()
@@ -164,6 +209,16 @@ def test_multiple_lines_in_one_chunk_and_invalid_decode_recovery(capsys):
     output = capsys.readouterr().out
     assert "invalid text encoding" in output
     assert "bad" not in output
+
+
+@pytest.mark.parametrize("terminator", [b"\n", b"\r\n", b"\r"])
+def test_invalid_decode_line_is_rejected_for_each_terminator(terminator):
+    lines, _reader, reporter, _stream = read_lines(
+        b"\xffbad" + terminator + b"good\n", chunk_size=1
+    )
+
+    assert lines == ["good"]
+    assert reporter.counts["invalid_encoding"] == 1
 
 
 def test_rejection_warnings_are_once_per_category_and_counts_are_cumulative(capsys):
