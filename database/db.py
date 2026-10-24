@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from database.migrations import apply_migrations
+from services.ssh_input_limits import validate_ssh_username
 
 
 DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
@@ -43,6 +44,7 @@ def save_event(
     event_count: int,
     db_path=DB_PATH,
 ):
+    validate_ssh_username(username)
     with get_connection(db_path) as connection:
         connection.execute(
             """
