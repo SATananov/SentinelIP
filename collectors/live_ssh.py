@@ -11,6 +11,15 @@ DEFAULT_HOST = "192.168.122.25"
 DEFAULT_USER = "tanashi"
 DEFAULT_KEY = "/home/tanashi/.ssh/sentinelip_ed25519"
 SSH_READ_CHUNK_BYTES = 1024
+TERMINATE_WAIT_SECONDS = 2.0
+KILL_WAIT_SECONDS = 2.0
+
+
+class SSHCollectorStartError(RuntimeError):
+    """A fixed safe error raised when the local SSH process cannot start."""
+
+    def __init__(self):
+        super().__init__("Unable to start SSH log collector.")
 
 
 class SSHInputRejectionReporter:
@@ -163,6 +172,75 @@ class _BoundedSSHLineReader:
             return None
 
 
+def _wait_for_child(process, timeout: float | None):
+    try:
+        if timeout is None:
+            return process.wait(), True, False
+        return process.wait(timeout=timeout), True, False
+    except subprocess.TimeoutExpired:
+        return None, False, True
+    except Exception:
+        return None, False, False
+
+
+def _cleanup_child(process):
+    """Terminate, escalate once if needed, and attempt to reap the child."""
+    cleanup_failed = False
+    terminate_requested = False
+    kill_requested = False
+
+    try:
+        returncode = process.poll()
+    except Exception:
+        returncode = None
+        cleanup_failed = True
+
+    if returncode is not None:
+        waited_returncode, waited, _timed_out = _wait_for_child(process, None)
+        if waited:
+            returncode = waited_returncode
+        else:
+            cleanup_failed = True
+        # Popen.poll() has already collected the exit status on the normal
+        # implementation; wait() is still attempted for the ownership contract.
+        return returncode, True, False, False, cleanup_failed
+
+    try:
+        process.terminate()
+        terminate_requested = True
+    except ProcessLookupError:
+        # The process may have exited after poll(). Still attempt wait below.
+        pass
+    except Exception:
+        cleanup_failed = True
+
+    returncode, waited, _timed_out = _wait_for_child(
+        process, TERMINATE_WAIT_SECONDS
+    )
+    if waited:
+        return returncode, True, terminate_requested, kill_requested, cleanup_failed
+    # A timeout means the child remained alive. If wait itself failed, kill is
+    # also the safest bounded cleanup attempt because its state is unknown.
+    try:
+        process.kill()
+        kill_requested = True
+    except ProcessLookupError:
+        pass
+    except Exception:
+        cleanup_failed = True
+
+    returncode, waited, timed_out = _wait_for_child(process, KILL_WAIT_SECONDS)
+    if not waited:
+        cleanup_failed = True
+    return (
+        returncode,
+        waited,
+        terminate_requested,
+        kill_requested,
+        cleanup_failed,
+    )
+
+
 def stream_ssh_logs(
     host: str = DEFAULT_HOST,
     user: str = DEFAULT_USER,
@@ -187,21 +265,48 @@ def stream_ssh_logs(
         "--no-pager",
     ]
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=0,
-    )
-
-    if process.stdout is None:
-        raise RuntimeError("Unable to read SSH log stream.")
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except OSError:
+        raise SSHCollectorStartError() from None
 
     owns_reporter = rejection_reporter is None
     reporter = rejection_reporter or SSHInputRejectionReporter()
+    normal_eof = False
     try:
+        if process.stdout is None:
+            raise RuntimeError("Unable to read SSH log stream.")
         yield from _BoundedSSHLineReader(process.stdout, reporter)
+        normal_eof = True
     finally:
+        returncode, reaped, terminate_requested, kill_requested, cleanup_failed = (
+            _cleanup_child(process)
+        )
+        try:
+            if process.stdout is not None:
+                process.stdout.close()
+        except Exception:
+            cleanup_failed = True
+
+        # All process and pipe cleanup occurs before console reporting, so a
+        # broken output stream cannot leave the child running or unreaped.
+        if kill_requested:
+            print("SSH log collector required forced termination.")
+        if cleanup_failed or not reaped:
+            print("SSH log collector cleanup failed; child exit could not be confirmed.")
+
+        if normal_eof:
+            if returncode == 0:
+                print("SSH log stream ended.")
+            elif returncode is not None:
+                print(f"SSH log collector exited unexpectedly (code {returncode}).")
+            else:
+                print("SSH log collector exited unexpectedly.")
+
         if owns_reporter:
             reporter.report_summary()
-        process.terminate()

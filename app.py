@@ -26,8 +26,9 @@ def main():
     print("Press Ctrl+C to stop.\n")
 
     rejection_reporter = SSHInputRejectionReporter()
+    stream = stream_ssh_logs(rejection_reporter=rejection_reporter)
     try:
-        for line in stream_ssh_logs(rejection_reporter=rejection_reporter):
+        for line in stream:
             event = parse_ssh_line(line)
 
             if not event:
@@ -80,7 +81,12 @@ def main():
         print(f"\nERROR: {exc}")
 
     finally:
-        rejection_reporter.report_summary()
+        try:
+            close_stream = getattr(stream, "close", None)
+            if close_stream is not None:
+                close_stream()
+        finally:
+            rejection_reporter.report_summary()
 
 
 if __name__ == "__main__":
