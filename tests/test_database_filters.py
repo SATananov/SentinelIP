@@ -1,6 +1,6 @@
 from database.db import (
+    find_source_ip,
     get_paginated_events,
-    get_source_ips,
     initialize_database,
     save_event,
 )
@@ -107,7 +107,7 @@ def test_filter_by_since(tmp_path):
     )
 
 
-def test_get_source_ips(tmp_path):
+def test_find_source_ip_exact_hit_miss_and_malformed_legacy_value(tmp_path):
     db_path = tmp_path / "test.db"
     initialize_database(db_path)
 
@@ -124,8 +124,13 @@ def test_get_source_ips(tmp_path):
         "10.0.0.1",
         "INFO",
     )
+    add_event(
+        db_path,
+        "2026-10-11T10:02:00",
+        "",
+        "INFO",
+    )
 
-    assert get_source_ips(db_path=db_path) == [
-        "10.0.0.1",
-        "10.0.0.2",
-    ]
+    assert find_source_ip("10.0.0.1", db_path=db_path) == "10.0.0.1"
+    assert find_source_ip("192.0.2.1", db_path=db_path) is None
+    assert find_source_ip("", db_path=db_path) == ""

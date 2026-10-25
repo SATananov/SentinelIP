@@ -7,6 +7,7 @@ from services.ssh_input_limits import validate_ssh_username
 
 
 DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
+TOP_SOURCE_SAMPLE_SIZE = 10_000
 
 
 def get_connection(db_path=DB_PATH):
@@ -170,17 +171,43 @@ def get_top_source_ips(limit: int = 10, db_path=DB_PATH):
     return [dict(row) for row in rows]
 
 
-def get_source_ips(db_path=DB_PATH):
+def find_source_ip(source_ip: str, db_path=DB_PATH) -> str | None:
+    """Return the exact stored source IP, if at least one event has it."""
     with get_connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT source_ip
+            FROM events
+            WHERE source_ip = ?
+            LIMIT 1
+            """,
+            (source_ip,),
+        ).fetchone()
+
+    return row[0] if row else None
+
+
+def get_recent_top_source_ips(limit: int = 10, db_path=DB_PATH):
+    """Return sample-local event totals for top sources in the newest events."""
+    with get_connection(db_path) as connection:
+        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
-            SELECT DISTINCT source_ip
-            FROM events
-            ORDER BY source_ip ASC
-            """
+            SELECT source_ip, COUNT(*) AS event_total
+            FROM (
+                SELECT source_ip
+                FROM events
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            GROUP BY source_ip
+            ORDER BY event_total DESC, source_ip ASC
+            LIMIT ?
+            """,
+            (TOP_SOURCE_SAMPLE_SIZE, limit),
         ).fetchall()
 
-    return [row[0] for row in rows]
+    return [dict(row) for row in rows]
 
 
 def get_severity_counts(db_path=DB_PATH):
@@ -278,10 +305,14 @@ def get_overview(db_path=DB_PATH):
     return {
         "total_events": get_event_count(db_path=db_path),
         "severity": severity_map,
-        "top_ips": get_top_source_ips(
+        "top_ips": get_recent_top_source_ips(
             limit=5,
             db_path=db_path,
         ),
+        "top_ips_basis": {
+            "mode": "latest_events",
+            "sample_size": TOP_SOURCE_SAMPLE_SIZE,
+        },
         "event_types": get_event_type_counts(
             db_path=db_path,
         ),

@@ -1,8 +1,61 @@
+import pytest
+
 from api.main import app
+from fastapi import HTTPException
+import api.main as api_main
 from local_operator_client import make_local_test_client
 
 
 client = make_local_test_client(app)
+
+
+def test_source_ips_route_avoids_lookup_for_empty_queries(monkeypatch):
+    def unexpected_lookup(_query):
+        raise AssertionError("empty query must not access the source-IP database")
+
+    monkeypatch.setattr(api_main, "find_source_ip", unexpected_lookup)
+    assert api_main.source_ips(q=None) == {"items": []}
+    assert api_main.source_ips(q="") == {"items": []}
+    assert api_main.source_ips(q="  \t ") == {"items": []}
+
+
+def test_source_ips_route_validates_canonical_ipv4_before_lookup(monkeypatch):
+    queried = []
+
+    def lookup(query):
+        queried.append(query)
+        return None if query == "192.0.2.2" else query
+
+    monkeypatch.setattr(api_main, "find_source_ip", lookup)
+    assert api_main.source_ips(q=" 192.0.2.1 ") == {"items": ["192.0.2.1"]}
+    assert api_main.source_ips(q="10.0.0.1") == {"items": ["10.0.0.1"]}
+    assert api_main.source_ips(q="255.255.255.255") == {
+        "items": ["255.255.255.255"]
+    }
+    assert api_main.source_ips(q="0.0.0.0") == {"items": ["0.0.0.0"]}
+    assert api_main.source_ips(q="192.0.2.2") == {"items": []}
+    assert queried == [
+        "192.0.2.1", "10.0.0.1", "255.255.255.255", "0.0.0.0", "192.0.2.2"
+    ]
+
+    for invalid in (
+        "192.168.001.1",
+        "192.168.1",
+        "999.1.1.1",
+        "1.2.3.4.5",
+        "::1",
+        "2001:db8::1",
+        "abc",
+        "1.2.3.4xyz",
+        "1" * 16,
+        "1" * 33,
+    ):
+        with pytest.raises(HTTPException) as error:
+            api_main.source_ips(q=invalid)
+        assert error.value.status_code == 422
+    assert queried == [
+        "192.0.2.1", "10.0.0.1", "255.255.255.255", "0.0.0.0", "192.0.2.2"
+    ]
 
 
 def test_health():
@@ -72,6 +125,10 @@ def test_top_ips():
     assert response.status_code == 200
     assert "items" in response.json()
     assert len(response.json()["items"]) <= 5
+    assert response.json()["top_ips_basis"] == {
+        "mode": "latest_events",
+        "sample_size": 10_000,
+    }
 
 
 def test_overview():
@@ -85,6 +142,10 @@ def test_overview():
     assert "severity" in data
     assert "top_ips" in data
     assert "event_types" in data
+    assert data["top_ips_basis"] == {
+        "mode": "latest_events",
+        "sample_size": 10_000,
+    }
 
     assert "INFO" in data["severity"]
     assert "WARNING" in data["severity"]
@@ -159,7 +220,7 @@ def test_source_ips():
     response = client.get("/source-ips")
 
     assert response.status_code == 200
-    assert "items" in response.json()
+    assert response.json() == {"items": []}
 
 
 def test_export_events_json():

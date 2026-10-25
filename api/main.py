@@ -1,4 +1,5 @@
 import csv
+import ipaddress
 
 from api.remote_sensors import local_management, register_remote_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
@@ -66,12 +67,13 @@ from database.db import (
     get_alerts,
     get_event_type_counts,
     get_events_over_time,
+    find_source_ip,
     get_filtered_events,
     get_overview,
     get_paginated_events,
     get_severity_counts,
-    get_source_ips,
-    get_top_source_ips,
+    get_recent_top_source_ips,
+    TOP_SOURCE_SAMPLE_SIZE,
     initialize_database,
 )
 from database.db import DB_PATH
@@ -769,9 +771,41 @@ def events(
 
 
 @app.get("/source-ips", dependencies=[Depends(local_management)])
-def source_ips():
+def source_ips(
+    q: str | None = Query(
+        default=None,
+        max_length=32,
+        description="Exact canonical IPv4 address to look up.",
+    ),
+):
+    if q is None:
+        return {"items": []}
+    if len(q) > 32:
+        raise HTTPException(status_code=422, detail="Source-IP query is too long.")
+
+    query = q.strip()
+    if not query:
+        return {"items": []}
+    if len(query) > 15:
+        raise HTTPException(status_code=422, detail="Invalid IPv4 address.")
+
+    try:
+        parsed = ipaddress.IPv4Address(query)
+    except ipaddress.AddressValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="A canonical dotted-decimal IPv4 address is required.",
+        ) from exc
+
+    if str(parsed) != query:
+        raise HTTPException(
+            status_code=422,
+            detail="A canonical dotted-decimal IPv4 address is required.",
+        )
+
+    match = find_source_ip(query)
     return {
-        "items": get_source_ips(),
+        "items": [match] if match is not None else [],
     }
 
 
@@ -816,9 +850,13 @@ def top_ip_stats(
     )
 ):
     return {
-        "items": get_top_source_ips(
+        "items": get_recent_top_source_ips(
             limit=limit,
         ),
+        "top_ips_basis": {
+            "mode": "latest_events",
+            "sample_size": TOP_SOURCE_SAMPLE_SIZE,
+        },
     }
 
 

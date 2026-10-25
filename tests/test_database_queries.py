@@ -2,6 +2,7 @@ from database.db import (
     get_alerts,
     get_event_count,
     get_recent_events,
+    get_recent_top_source_ips,
     get_top_source_ips,
     initialize_database,
     save_event,
@@ -108,4 +109,66 @@ def test_get_top_source_ips(tmp_path):
             "source_ip": "10.0.0.3",
             "event_total": 1,
         },
+    ]
+
+
+def test_recent_top_source_ips_tie_order_and_limit(tmp_path):
+    db_path = tmp_path / "test.db"
+    initialize_database(db_path)
+    add_event(db_path, "2026-10-11T09:00:00", "192.0.2.2")
+    add_event(db_path, "2026-10-11T09:00:01", "192.0.2.1")
+    add_event(db_path, "2026-10-11T09:00:02", "192.0.2.2")
+    add_event(db_path, "2026-10-11T09:00:03", "192.0.2.1")
+
+    assert get_recent_top_source_ips(limit=1, db_path=db_path) == [
+        {"source_ip": "192.0.2.1", "event_total": 2}
+    ]
+    assert get_recent_top_source_ips(limit=100, db_path=db_path) == [
+        {"source_ip": "192.0.2.1", "event_total": 2},
+        {"source_ip": "192.0.2.2", "event_total": 2},
+    ]
+
+
+def test_recent_top_source_ips_uses_latest_10000_event_ids(tmp_path):
+    import sqlite3
+
+    from database.db import TOP_SOURCE_SAMPLE_SIZE
+
+    db_path = tmp_path / "test.db"
+    initialize_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO events (
+                timestamp, source_ip, event_type, severity, message, event_count
+            ) VALUES (?, ?, 'SSH_PREAUTH', 'INFO', 'test', 1)
+            """,
+            [("2026-10-11T09:00:00", "198.51.100.1")]
+            + [("2026-10-11T09:00:01", "192.0.2.1")] * (TOP_SOURCE_SAMPLE_SIZE - 1)
+            + [("2026-10-11T09:00:02", "192.0.2.1")],
+        )
+
+    assert get_recent_top_source_ips(limit=5, db_path=db_path) == [
+        {"source_ip": "192.0.2.1", "event_total": TOP_SOURCE_SAMPLE_SIZE}
+    ]
+    assert {
+        "source_ip": "198.51.100.1",
+        "event_total": 1,
+    } in get_top_source_ips(limit=100, db_path=db_path)
+
+    add_event(db_path, "2026-10-11T09:00:03", "192.0.2.2")
+    assert get_recent_top_source_ips(limit=5, db_path=db_path) == [
+        {"source_ip": "192.0.2.1", "event_total": TOP_SOURCE_SAMPLE_SIZE - 1},
+        {"source_ip": "192.0.2.2", "event_total": 1},
+    ]
+
+
+def test_recent_top_source_ips_small_and_empty_database(tmp_path):
+    db_path = tmp_path / "test.db"
+    initialize_database(db_path)
+    assert get_recent_top_source_ips(db_path=db_path) == []
+
+    add_event(db_path, "2026-10-11T09:00:00", "203.0.113.1")
+    assert get_recent_top_source_ips(db_path=db_path) == [
+        {"source_ip": "203.0.113.1", "event_total": 1}
     ]
