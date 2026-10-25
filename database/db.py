@@ -1,4 +1,8 @@
 from contextlib import contextmanager
+import errno
+import logging
+import os
+import stat
 import sqlite3
 from pathlib import Path
 
@@ -8,10 +12,188 @@ from services.ssh_input_limits import validate_ssh_username
 
 DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
 TOP_SOURCE_SAMPLE_SIZE = 10_000
+_PLATFORM_NAME = os.name
+_DATABASE_MODE = 0o600
+_LOGGER = logging.getLogger(__name__)
+
+
+class DatabaseSecurityError(PermissionError):
+    """The SQLite database path could not be secured before opening it."""
+
+
+def _database_security_error(path: str, reason: str) -> DatabaseSecurityError:
+    return DatabaseSecurityError(
+        f"Cannot securely open SQLite database {path!r}: {reason} "
+        "Use a regular database file owned by the Core account in an existing "
+        "trusted directory, and grant that account permission to set mode 0600."
+    )
+
+
+def _open_flags(*, creating: bool = False) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if creating:
+        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    else:
+        # A FIFO must never make startup wait for a writer.
+        flags |= getattr(os, "O_NONBLOCK", 0)
+    return flags
+
+
+def _mode_text(mode: int) -> str:
+    return f"{stat.S_IMODE(mode):04o}"
+
+
+def _secure_posix_database(path: str) -> None:
+    parent = os.path.dirname(path) or os.curdir
+    try:
+        parent_stat = os.stat(parent)
+    except OSError as exc:
+        raise _database_security_error(
+            path, f"parent directory is unavailable ({exc.strerror})."
+        ) from exc
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        raise _database_security_error(path, "parent path is not a directory.")
+    if parent_stat.st_uid != os.geteuid():
+        raise _database_security_error(
+            path, "parent directory is not owned by the Core account."
+        )
+    if parent_stat.st_mode & 0o022:
+        raise _database_security_error(
+            path, "parent directory is group- or world-writable."
+        )
+
+    flags = _open_flags()
+    nofollow_supported = bool(getattr(os, "O_NOFOLLOW", 0))
+    while True:
+        try:
+            descriptor = os.open(path, _open_flags(creating=True), _DATABASE_MODE)
+        except FileExistsError:
+            break
+        except OSError as exc:
+            # Another process may have won the exclusive-create race on a
+            # platform that reports EEXIST as a generic OSError.
+            if exc.errno == errno.EEXIST:
+                break
+            raise _database_security_error(
+                path, f"secure creation failed ({exc.strerror})."
+            ) from exc
+        else:
+            try:
+                file_stat = os.fstat(descriptor)
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise _database_security_error(path, "new database path is not a regular file.")
+                if file_stat.st_uid != os.geteuid():
+                    raise _database_security_error(
+                        path, "new database file is not owned by the Core account."
+                    )
+                if stat.S_IMODE(file_stat.st_mode) != _DATABASE_MODE:
+                    os.fchmod(descriptor, _DATABASE_MODE)
+                if stat.S_IMODE(os.fstat(descriptor).st_mode) != _DATABASE_MODE:
+                    raise _database_security_error(
+                        path, "new database file could not be set to mode 0600."
+                    )
+            except DatabaseSecurityError:
+                raise
+            except OSError as exc:
+                raise _database_security_error(
+                    path, f"secure creation could not be verified ({exc.strerror})."
+                ) from exc
+            finally:
+                os.close(descriptor)
+            return
+
+    try:
+        path_stat = os.lstat(path)
+    except OSError as exc:
+        raise _database_security_error(path, f"database path cannot be inspected ({exc.strerror}).") from exc
+    if stat.S_ISLNK(path_stat.st_mode):
+        raise _database_security_error(path, "symbolic links are not permitted.")
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise _database_security_error(path, "database path must be a regular file.")
+    if path_stat.st_uid != os.geteuid():
+        raise _database_security_error(path, "database file is not owned by the Core account.")
+
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        # An owner may chmod a mode-000 file without opening it. Keep that
+        # recovery narrow and re-open with O_NOFOLLOW before SQLite sees it.
+        if (exc.errno not in (errno.EACCES, errno.EPERM)
+                or stat.S_IMODE(path_stat.st_mode) == _DATABASE_MODE):
+            raise _database_security_error(
+                path, f"database file cannot be securely opened ({exc.strerror})."
+            ) from exc
+        try:
+            if not nofollow_supported and os.chmod not in os.supports_follow_symlinks:
+                raise NotImplementedError("safe chmod of a path is unavailable")
+            os.chmod(path, _DATABASE_MODE, follow_symlinks=False)
+            descriptor = os.open(path, flags)
+        except (OSError, NotImplementedError) as chmod_exc:
+            detail = getattr(chmod_exc, "strerror", None) or str(chmod_exc)
+            raise _database_security_error(
+                path, f"database permissions could not be tightened ({detail})."
+            ) from chmod_exc
+
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise _database_security_error(path, "database path must be a regular file.")
+        if (file_stat.st_dev, file_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise _database_security_error(path, "database path changed during validation.")
+        if file_stat.st_uid != os.geteuid():
+            raise _database_security_error(path, "database file is not owned by the Core account.")
+        old_mode = stat.S_IMODE(file_stat.st_mode)
+        if old_mode != _DATABASE_MODE:
+            try:
+                os.fchmod(descriptor, _DATABASE_MODE)
+            except OSError as exc:
+                raise _database_security_error(
+                    path, f"database permissions could not be tightened ({exc.strerror})."
+                ) from exc
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != _DATABASE_MODE:
+                raise _database_security_error(
+                    path, "database file could not be set to mode 0600."
+                )
+            _LOGGER.info(
+                "Tightened SQLite database permissions path=%s old_mode=%s new_mode=0600",
+                path,
+                _mode_text(old_mode),
+            )
+    except DatabaseSecurityError:
+        raise
+    except OSError as exc:
+        raise _database_security_error(
+            path, f"database security could not be verified ({exc.strerror})."
+        ) from exc
+    finally:
+        os.close(descriptor)
+
+
+def _secure_database_path(db_path) -> str:
+    if db_path == ":memory:":
+        return ":memory:"
+    try:
+        path = os.path.abspath(os.fsdecode(os.fspath(db_path)))
+    except (TypeError, ValueError, OSError) as exc:
+        raise DatabaseSecurityError(
+            "SQLite database path must be a filesystem path or ':memory:'."
+        ) from exc
+
+    if _PLATFORM_NAME != "posix":
+        platform_name = "Windows" if _PLATFORM_NAME == "nt" else _PLATFORM_NAME
+        raise _database_security_error(
+            path,
+            f"{platform_name} ACL hardening is not implemented; file-backed databases "
+            "are refused until platform verification is complete.",
+        )
+    _secure_posix_database(path)
+    return path
 
 
 def get_connection(db_path=DB_PATH):
-    connection = sqlite3.connect(db_path)
+    secured_path = _secure_database_path(db_path)
+    connection = sqlite3.connect(secured_path)
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
