@@ -53,11 +53,14 @@ Local management creates tasks using:
   persisted `device_id`
 
 Management routes do not accept a target address. Sensors cannot call local
-management routes or change assignments. A result is reserved by a digest before
-inventory work; retries/duplicate submissions are rejected. Tasks expire after
-15 minutes, have no automatic retry loop, and stale pending/claimed/running tasks
-are marked failed when processed. An administrator may issue a new task after
-review.
+management routes or change assignments. In the original 10D implementation, a
+result was reserved by a digest before inventory work and duplicate submissions
+were rejected. Phase 32 later replaced that behavior with an atomic digest +
+inventory + completion transaction and replay-safe duplicate acknowledgement;
+see [Phase 32F — Inventory Task Atomicity Close-Out](inventory-task-atomicity-32f.md).
+Tasks expire after 15 minutes, have no automatic retry loop, and stale
+pending/claimed/running tasks are marked failed when processed. An administrator
+may issue a new task after review.
 
 The inventory APIs currently record provenance in each observation's `source`
 field as `remote-sensor:<sensor UUID>:task:<task UUID>`. Existing stable device
@@ -75,11 +78,12 @@ bounded by their existing scanner timeouts and output caps.
 
 The task record references the site, sensor, authorized scope, and optional
 persisted device; the live sensor-scope assignment is deliberately rechecked at
-each transition so removing an assignment blocks further task work. Inventory
-pipeline writes and task completion are not one cross-service atomic transaction:
-a process failure during ingestion can leave partial inventory evidence while a
-task remains reserved/running. Such tasks must be reviewed and, if needed,
-reissued; the reservation prevents an automatic duplicate ingestion attempt.
+each transition so removing an assignment blocks further task work. At the 10D
+checkpoint, inventory pipeline writes and task completion were not one
+cross-service atomic transaction: a process failure during ingestion could
+leave partial inventory evidence while a task remained reserved/running. Phase
+32 closes that gap; see the Phase 32F close-out document for the final
+transaction, retry, and replay contract.
 
 Migration 32 adds only the typed task table and claim index. It preserves 09D
 network/scope/device evidence and all 10A/10B/10C state. Database initialization
