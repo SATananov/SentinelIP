@@ -61,16 +61,24 @@ from unknown credentials or work across multiple Core replicas.
 
 ## Payload and endpoint behavior
 
-Sensor routes and the registration route accept at most 16 KiB of request body,
-including streamed requests without `Content-Length`; larger requests return 413
-before JSON validation or credential hashing. Query parameters are rejected on
-machine routes. No binary uploads are supported.
+By default, sensor routes and the registration route accept at most 16 KiB of
+request body, including streamed requests without `Content-Length`; larger
+requests return 413 before JSON validation or credential hashing. The sole
+request-size exception is `POST /sensor/tasks/{task_id}/result`, which accepts
+up to 1.25 MiB so every currently valid bounded task result can be transported.
+That route still counts streamed bytes and returns 413 above its limit. The
+task-result response remains capped at 16 KiB. Query parameters are rejected
+on machine routes. No binary uploads are supported.
+
+Web telemetry has a separate 65,536-byte request limit; DNS telemetry remains
+16,384 bytes. These limits are independent of the task-result allowance.
 
 | Method | Route | Transport behavior |
 |---|---|---|
 | POST | `/sensor-enrollment/register` | Bounded body; one-time enrollment still authorizes only one registration |
 | GET | `/sensor/self` | Requires all authentication, timestamp, and nonce headers |
 | POST | `/sensor/heartbeat` | Same checks; heartbeat fields remain bounded metadata |
+| POST | `/sensor/tasks/{task_id}/result` | Route-specific 1,310,720-byte request cap; all other sensor calls retain 16 KiB |
 
 Each authenticated call, including GET, consumes a nonce. Heartbeat updates
 `last_seen_at` using Core time and cannot set client status, alter assignments, or

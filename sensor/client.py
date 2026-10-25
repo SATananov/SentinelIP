@@ -11,12 +11,30 @@ from uuid import UUID
 from services.sensor_transport import authenticated_sensor_headers
 from .config import SensorConfig, _validate_core_url
 
+DEFAULT_SENSOR_REQUEST_MAX_BYTES = 16 * 1024
+# Derived from the current maximum valid task-result model. Reconcile model
+# maxima before reducing.
+TASK_RESULT_REQUEST_MAX_BYTES = 1_310_720
+DEFAULT_SENSOR_RESPONSE_MAX_BYTES = 16 * 1024
+
 
 class SensorClientError(RuntimeError):
     def __init__(self, code: str, *, status: int | None = None):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+class RequestBodyTooLargeError(ValueError):
+    """A locally serialized request exceeded its configured byte bound."""
+
+    def __init__(self, actual_bytes: int, allowed_bytes: int, endpoint: str):
+        self.actual_bytes = actual_bytes
+        self.allowed_bytes = allowed_bytes
+        self.endpoint = endpoint
+        super().__init__(
+            f'Request to {endpoint} is {actual_bytes} bytes; limit is {allowed_bytes} bytes.'
+        )
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -38,14 +56,15 @@ class CoreClient:
         if close is not None:
             close()
 
-    def _call(self, method: str, path: str, body: Mapping | None = None):
+    def _call(self, method: str, path: str, body: Mapping | None = None, *,
+              request_max_bytes: int = DEFAULT_SENSOR_REQUEST_MAX_BYTES):
         url = urljoin(self.config.core_url.rstrip('/') + '/', path.lstrip('/'))
         headers = authenticated_sensor_headers(
             self.config.sensor_uuid, self.config.sensor_credential, now=self._clock,
             nonce=self._nonce_factory() if self._nonce_factory else None)
         payload = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
-        if payload is not None and len(payload) > 16 * 1024:
-            raise ValueError('Sensor request exceeds the supported payload bound.')
+        if payload is not None and len(payload) > request_max_bytes:
+            raise RequestBodyTooLargeError(len(payload), request_max_bytes, path)
         headers['Accept'] = 'application/json'
         if payload is not None:
             headers['Content-Type'] = 'application/json'
@@ -54,7 +73,7 @@ class CoreClient:
             response = self._opener.open(request, timeout=self.config.request_timeout)
             with closing(response):
                 status = getattr(response, 'status', response.getcode())
-                response_data = response.read(16 * 1024 + 1)
+                response_data = response.read(DEFAULT_SENSOR_RESPONSE_MAX_BYTES + 1)
         except HTTPError as exc:
             status = exc.code
             # Do not parse or log a Core error body; it may echo untrusted input.
@@ -65,7 +84,7 @@ class CoreClient:
             reason = getattr(exc, 'reason', None)
             code = 'CORE_TIMEOUT' if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) else 'CORE_UNAVAILABLE'
             raise SensorClientError(code) from None
-        if not 200 <= status < 300 or len(response_data) > 16 * 1024:
+        if not 200 <= status < 300 or len(response_data) > DEFAULT_SENSOR_RESPONSE_MAX_BYTES:
             raise SensorClientError('CORE_HTTP_ERROR' if status >= 300 else 'INVALID_RESPONSE', status=status)
         if not response_data:
             raise SensorClientError('INVALID_RESPONSE', status=status)
@@ -146,7 +165,10 @@ class CoreClient:
                 raise ValueError('Service result exceeds its structured bounds.')
         else:
             raise ValueError('Unsupported result type.')
-        return self._call('POST', self._task_path(task_id, 'result'), payload)
+        return self._call(
+            'POST', self._task_path(task_id, 'result'), payload,
+            request_max_bytes=TASK_RESULT_REQUEST_MAX_BYTES,
+        )
 
     def submit_perimeter_events(self, events: list[Mapping]) -> dict:
         if not isinstance(events, list) or not 1 <= len(events) <= 32:
@@ -161,7 +183,7 @@ class CoreClient:
         return self._call('POST', '/sensor/perimeter-events', {'events': events})
 
     def fail(self, task_id: str, error_code: str) -> dict:
-        if error_code not in {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT'}:
+        if error_code not in {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT', 'RESULT_TOO_LARGE'}:
             raise ValueError('Unsupported task failure code.')
         return self._call('POST', self._task_path(task_id, 'fail'), {'error_code': error_code})
 

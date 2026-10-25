@@ -91,7 +91,8 @@ hard transaction-latency bound.
 After execution, the sensor retains one logical result body in memory until Core
 acknowledges it or permanently rejects it. Transient delivery failures (network
 errors/timeouts and retryable HTTP responses such as 5xx and 429) retry that
-same body with newly generated timestamp, nonce, and signature on each request.
+same body with newly generated authentication headers, timestamp, and nonce on
+each request.
 Delivery failure does not report task execution failure or rerun the scanner.
 Permanent rejection clears the pending result; actual local execution failure
 continues to use the task-failure path.
@@ -112,10 +113,12 @@ exactly-once delivery.
 
 - The schema remains **46**. No migration, index, result-attempt table, or
   schema change was added.
-- Existing request/result bounds, task type validation, target/scope
-  authorization, capability checks, nonce admission, and rate limits remain in
-  force. Sensor result body maximum remains 16 KiB; host results are bounded to
-  254 observations and service results to 21 ports and 21 services.
+- Existing task type validation, target/scope authorization, capability checks,
+  nonce admission, and rate limits remain in force. The original 16 KiB sensor
+  request limit was too small for all valid task results at the 254-observation
+  and service cardinality bounds; Phase 32R reconciles the transport contract.
+  See [Phase 32R-D](remote-task-result-envelope-32r-d.md) for exact request and
+  response limits, measured payload sizes, and runtime failure classification.
 - Local public discovery's host-discovery and service-discovery stages are not
   one cross-stage transaction. Each inventory result is atomic at its own
   service boundary.

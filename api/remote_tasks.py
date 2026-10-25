@@ -63,7 +63,7 @@ class ServicesResult(TaskInput):
 
 
 class TaskFailure(TaskInput):
-    error_code: Literal['SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT']
+    error_code: Literal['SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT', 'RESULT_TOO_LARGE']
 
 
 ResultInput = Annotated[NetworkResult | ServicesResult, Field(discriminator='task_type')]

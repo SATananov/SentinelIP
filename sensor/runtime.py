@@ -10,7 +10,12 @@ from services.remote_sensor_executor import RemoteSensorExecutor, task_context_f
 from services.remote_sensor_models import LocalExecutorGrant, RemoteSensorError, validate_remote_task
 from services.scanner_adapters.nmap_adapter import ScannerTimeoutError
 
-from .client import CoreClient, SensorClientError
+from .client import (
+    CoreClient,
+    RequestBodyTooLargeError,
+    SensorClientError,
+    TASK_RESULT_REQUEST_MAX_BYTES,
+)
 from .config import SensorConfig
 
 BACKOFF_SECONDS = (5, 10, 30, 60)
@@ -22,9 +27,19 @@ class _ResultDeliveryRetry(Exception):
         self.error_code = error_code
 
 
+class _ResultTooLarge(Exception):
+    def __init__(self, task_id: str, task_type: str, actual_bytes: int | None):
+        super().__init__('RESULT_TOO_LARGE')
+        self.task_id = task_id
+        self.task_type = task_type
+        self.actual_bytes = actual_bytes
+        self.allowed_bytes = TASK_RESULT_REQUEST_MAX_BYTES
+
+
 def _json_log(logger: logging.Logger, *, sensor_uuid: str, status: str,
               task_id: str | None = None, task_type: str | None = None,
-              error_code: str | None = None):
+              error_code: str | None = None, actual_bytes: int | None = None,
+              allowed_bytes: int | None = None):
     record = {
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'sensor_uuid': sensor_uuid,
@@ -36,6 +51,10 @@ def _json_log(logger: logging.Logger, *, sensor_uuid: str, status: str,
         record['task_type'] = task_type
     if error_code is not None:
         record['error_code'] = error_code
+    if actual_bytes is not None:
+        record['actual_bytes'] = actual_bytes
+    if allowed_bytes is not None:
+        record['allowed_bytes'] = allowed_bytes
     logger.info(json.dumps(record, sort_keys=True, separators=(',', ':')))
 
 
@@ -87,7 +106,15 @@ class SensorRuntime:
     def _deliver_result(self, task_id: str, task_type: str, payload: dict) -> bool:
         try:
             self.client.result(task_id, payload)
+        except RequestBodyTooLargeError as exc:
+            self._pending_result = None
+            self._result_backoff_index = 0
+            raise _ResultTooLarge(task_id, task_type, exc.actual_bytes) from exc
         except SensorClientError as exc:
+            if exc.status == 413:
+                self._pending_result = None
+                self._result_backoff_index = 0
+                raise _ResultTooLarge(task_id, task_type, None) from exc
             if self._result_delivery_is_retryable(exc):
                 self._pending_result = (task_id, task_type, payload)
                 raise _ResultDeliveryRetry(exc.code) from exc
@@ -105,6 +132,22 @@ class SensorRuntime:
         self._pending_result = None
         self._result_backoff_index = 0
         return True
+
+    def _report_result_too_large(self, error: _ResultTooLarge) -> None:
+        try:
+            self.client.fail(error.task_id, 'RESULT_TOO_LARGE')
+        except (ValueError, SensorClientError):
+            _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
+                      task_id=error.task_id, task_type=error.task_type,
+                      status='TASK_FAILURE_REPORT_FAILED', error_code='RESULT_TOO_LARGE',
+                      actual_bytes=error.actual_bytes, allowed_bytes=error.allowed_bytes)
+            raise
+        self._backoff_index = 0
+        self._result_backoff_index = 0
+        _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
+                  task_id=error.task_id, task_type=error.task_type,
+                  status='TASK_FAILED', error_code='RESULT_TOO_LARGE',
+                  actual_bytes=error.actual_bytes, allowed_bytes=error.allowed_bytes)
 
     def _retry_pending_result(self) -> None:
         pending = self._pending_result
@@ -180,6 +223,8 @@ class SensorRuntime:
             self._backoff_index = 0
             _json_log(self.logger, sensor_uuid=self.config.sensor_uuid, task_id=task.task_id,
                       task_type=task.task_type, status='TASK_COMPLETED')
+        except _ResultTooLarge as exc:
+            self._report_result_too_large(exc)
         except ScannerTimeoutError:
             self.client.fail(task.task_id, 'SCANNER_TIMEOUT')
             self._backoff_index = 0
@@ -214,7 +259,10 @@ class SensorRuntime:
         if self.stop_event.is_set():
             return 0
         if self._pending_result is not None:
-            self._retry_pending_result()
+            try:
+                self._retry_pending_result()
+            except _ResultTooLarge as exc:
+                self._report_result_too_large(exc)
             return self.config.poll_interval
         task = self.client.claim()
         self._backoff_index = 0

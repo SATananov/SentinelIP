@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from starlette.routing import get_route_path
 
 from database.remote_sensors import RemoteSensorStore
 from services.remote_sensor_models import (
@@ -19,6 +20,8 @@ from services.remote_sensor_models import (
 )
 
 MAX_SENSOR_BODY_BYTES = 16 * 1024
+# Derived from the maximum valid task-result model; reconcile model maxima before reducing.
+TASK_RESULT_BODY_MAX_BYTES = 1_310_720
 MAX_WEB_TELEMETRY_BODY_BYTES = 65_536
 MAX_DNS_TELEMETRY_BODY_BYTES = 16_384
 TELEMETRY_BODY_LIMITS = {
@@ -26,7 +29,22 @@ TELEMETRY_BODY_LIMITS = {
     '/telemetry/dns': MAX_DNS_TELEMETRY_BODY_BYTES,
 }
 TELEMETRY_BODY_TOO_LARGE_DETAIL = 'Telemetry request exceeds the allowed size.'
+TASK_RESULT_BODY_TOO_LARGE_DETAIL = 'Task result request body exceeds 1310720 bytes.'
 _TIMESTAMP_PATTERN = re.compile(r'^[0-9]{10}$')
+
+
+def _is_task_result_request(scope) -> bool:
+    """Match the task-result route shape without narrowing its string path parameter."""
+    if scope.get('method') != 'POST':
+        return False
+    path = get_route_path(scope)
+    # Starlette strips trailing slashes before redirecting to this route; apply
+    # the same body bound before that redirect so a valid result is not rejected.
+    path = path.rstrip('/') or '/'
+    parts = path.split('/')
+    if len(parts) != 5 or parts[1:3] != ['sensor', 'tasks'] or parts[4] != 'result':
+        return False
+    return bool(parts[3])
 
 
 class MachineMetadata(BaseModel):
@@ -66,14 +84,17 @@ class SensorBodyLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def __call__(self, scope, receive, send):
-        path = scope.get('path', '')
         if scope['type'] != 'http':
             await self.app(scope, receive, send)
             return
+        path = get_route_path(scope)
         telemetry_limit = TELEMETRY_BODY_LIMITS.get(path)
         if telemetry_limit is not None:
             max_bytes = telemetry_limit
             too_large_detail = TELEMETRY_BODY_TOO_LARGE_DETAIL
+        elif _is_task_result_request(scope):
+            max_bytes = TASK_RESULT_BODY_MAX_BYTES
+            too_large_detail = TASK_RESULT_BODY_TOO_LARGE_DETAIL
         elif path.startswith('/sensor/') or path == '/sensor-enrollment/register':
             max_bytes = self.max_bytes
             # Preserve the existing /sensor/* response contract exactly.

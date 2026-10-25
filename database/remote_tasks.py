@@ -24,6 +24,7 @@ TASK_FAILURE_MESSAGES = {
     'SCANNER_TIMEOUT': 'Sensor scanner timed out.',
     'SCANNER_FAILED': 'Sensor scanner reported a failure.',
     'INVALID_RESULT': 'Sensor returned an invalid result.',
+    'RESULT_TOO_LARGE': 'Sensor result exceeded the supported transport limit.',
     'RESULT_OUTSIDE_SCOPE': 'Sensor result was outside the assigned scope.',
 }
 TASK_FAILURE_CODES = frozenset(TASK_FAILURE_MESSAGES)
@@ -532,7 +533,8 @@ class RemoteTaskStore:
                           (now.isoformat(), error_code, task_id))
 
     def fail(self, sensor_id, task_id, code):
-        allowed = {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT', 'RESULT_OUTSIDE_SCOPE'}
+        allowed = {'SCANNER_TIMEOUT', 'SCANNER_FAILED', 'INVALID_RESULT',
+                   'RESULT_TOO_LARGE', 'RESULT_OUTSIDE_SCOPE'}
         if code not in allowed:
             raise RemoteTaskError('INVALID_FAILURE', 'Unsupported task failure code.')
         now = self.sensors._now()

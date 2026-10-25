@@ -28,7 +28,7 @@ Malformed timestamps are returned as unavailable (`null`); they do not imply exp
 
 ## Failure taxonomy
 
-Known failure codes are allowlisted: `TASK_EXPIRED`, `SENSOR_DISABLED`, `SCOPE_DISABLED`, `SCOPE_NOT_ASSIGNED`, `CAPABILITY_NOT_ALLOWED`, `TARGET_OUTSIDE_SCOPE`, `CANCELLED`, `SCANNER_TIMEOUT`, `SCANNER_FAILED`, `INVALID_RESULT`, and `RESULT_OUTSIDE_SCOPE`.
+Known failure codes are allowlisted: `TASK_EXPIRED`, `SENSOR_DISABLED`, `SCOPE_DISABLED`, `SCOPE_NOT_ASSIGNED`, `CAPABILITY_NOT_ALLOWED`, `TARGET_OUTSIDE_SCOPE`, `CANCELLED`, `SCANNER_TIMEOUT`, `SCANNER_FAILED`, `INVALID_RESULT`, `RESULT_TOO_LARGE`, and `RESULT_OUTSIDE_SCOPE`.
 
 The database does not constrain `error_code`, so unknown/malformed values are projected as `UNKNOWN_FAILURE`. `error_message` is never serialized. The response maps codes to fixed, neutral operator text; unknown values map to “Unknown task failure.”
 

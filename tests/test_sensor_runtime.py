@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from sensor.client import CoreClient, SensorClientError
+from sensor.client import CoreClient, RequestBodyTooLargeError, SensorClientError
 from sensor.config import SensorConfig, load_config
 from sensor.runtime import SensorRuntime
 from sensor.state import load_grants
@@ -343,6 +343,7 @@ def test_runtime_fails_task_when_scanner_times_out(tmp_path):
     SensorClientError('CORE_HTTP_ERROR', status=500),
     SensorClientError('CORE_HTTP_ERROR', status=503),
     SensorClientError('CORE_HTTP_ERROR', status=429),
+    SensorClientError('INVALID_RESPONSE', status=200),
 ])
 def test_result_delivery_retry_preserves_payload_and_does_not_reexecute(tmp_path, delivery_error):
     from services.scan_models import HostDiscoveryResult, ScanResult
@@ -376,6 +377,169 @@ def test_result_delivery_retry_preserves_payload_and_does_not_reexecute(tmp_path
     assert attempts[0] == attempts[1]
     assert runtime._pending_result is None
     assert [call[0] for call in client.calls].count('result') == 1
+
+
+@pytest.mark.parametrize('payload_kind', ['minimal_hosts', 'maximum_hosts', 'maximum_services'])
+def test_valid_large_result_reaches_production_client_and_completes(tmp_path, payload_kind):
+    from ipaddress import ip_network
+    from services.scan_models import HostDiscoveryResult, ScanResult
+    from services.service_models import (
+        PortObservation, ServiceDiscoveryResult, ServiceObservation,
+    )
+    from sensor.client import TASK_RESULT_REQUEST_MAX_BYTES
+
+    now = datetime.now()
+    cidr = '192.168.255.0/24'
+    ip = '192.168.255.20'
+    if payload_kind in {'minimal_hosts', 'maximum_hosts'}:
+        maximum = payload_kind == 'maximum_hosts'
+        observations = tuple(
+            HostDiscoveryResult(
+                str(address),
+                mac_address='aa:bb:cc:dd:ee:ff' if maximum else None,
+                hostname='😀' * 253 if maximum else None,
+                vendor='😀' * 128 if maximum else None,
+                discovered_at=now,
+                source='nmap',
+            )
+            for address in ip_network(cidr).hosts()
+        )
+        task = network_task(scope_cidr=cidr)
+        result = ScanResult(cidr, 'nmap', now, now, observations)
+        expected_bytes = 1_184_851 if maximum else 20_769
+    else:
+        task = network_task(
+            task_type='DISCOVER_SERVICES', scope_cidr=cidr,
+            target_ip=ip, target_device_id=18,
+        )
+        value = '😀' * 128
+        ports = tuple(PortObservation(ip, port, 'tcp', 'open', now, 'nmap')
+                      for port in range(1, 22))
+        services = tuple(ServiceObservation(
+            ip, port, 'tcp', value, value, value, value, 'HIGH', now, 'nmap'
+        ) for port in range(1, 22))
+        result = ServiceDiscoveryResult(ip, 'nmap', now, now, ports, services)
+        expected_bytes = 130_826
+
+    config, core_client, opener = make_client(
+        tmp_path, [FakeResponse({'status': 'COMPLETED'})]
+    )
+    fake_client, executor = FakeClient(task), FakeExecutor(result)
+    fake_client.result = lambda task_id, payload: (
+        fake_client.calls.append(('result', task_id, payload)),
+        core_client.result(task_id, payload),
+    )[1]
+    grant = LocalExecutorGrant(
+        SENSOR_UUID, 7, cidr, frozenset({'HOST_DISCOVERY', 'SERVICE_DISCOVERY'})
+    )
+    runtime = SensorRuntime(config, {7: grant}, fake_client, executor)
+
+    runtime.run_once()
+
+    assert len(executor.calls) == 1
+    assert len(opener.requests) == 1
+    assert len(opener.requests[0][0].data) == expected_bytes
+    assert expected_bytes <= TASK_RESULT_REQUEST_MAX_BYTES
+    assert runtime._pending_result is None
+    assert not any(call[0] == 'fail' for call in fake_client.calls)
+    assert [call[0] for call in fake_client.calls].count('result') == 1
+
+
+@pytest.mark.parametrize('result_error', [
+    RequestBodyTooLargeError(1_310_721, 1_310_720, '/sensor/tasks/id/result'),
+    SensorClientError('CORE_HTTP_ERROR', status=413),
+])
+def test_result_size_rejection_reports_result_too_large_and_does_not_retry(
+        tmp_path, result_error):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    now = datetime.now()
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', now, now,
+        (HostDiscoveryResult('192.168.1.20', discovered_at=now),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    client.result = lambda *_args: (_ for _ in ()).throw(result_error)
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+
+    runtime.run_once()
+
+    assert ('fail', TASK_ID, 'RESULT_TOO_LARGE') in client.calls
+    assert ('fail', TASK_ID, 'INVALID_RESULT') not in client.calls
+    assert runtime._pending_result is None
+    assert len(executor.calls) == 1
+    assert sum(call[0] == 'claim' for call in client.calls) == 1
+
+
+def test_oversize_on_pending_retry_reports_failure_without_reexecuting(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+    from sensor.runtime import _ResultDeliveryRetry
+
+    now = datetime.now()
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', now, now,
+        (HostDiscoveryResult('192.168.1.20', discovered_at=now),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    attempts = []
+
+    def result_delivery(*args):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise SensorClientError('CORE_UNAVAILABLE')
+        raise SensorClientError('CORE_HTTP_ERROR', status=413)
+
+    client.result = result_delivery
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    with pytest.raises(_ResultDeliveryRetry):
+        runtime.run_once()
+    runtime.run_once()
+
+    assert ('fail', TASK_ID, 'RESULT_TOO_LARGE') in client.calls
+    assert runtime._pending_result is None
+    assert len(executor.calls) == 1
+    assert attempts[0] == attempts[1]
+    assert sum(call[0] == 'claim' for call in client.calls) == 1
+
+
+@pytest.mark.parametrize('status', [400, 409, 422])
+def test_semantic_result_rejections_are_not_mislabeled_as_too_large(tmp_path, status):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    now = datetime.now()
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', now, now,
+        (HostDiscoveryResult('192.168.1.20', discovered_at=now),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    client.result = lambda *_args: (_ for _ in ()).throw(
+        SensorClientError('CORE_HTTP_ERROR', status=status)
+    )
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+
+    runtime.run_once()
+
+    assert runtime._pending_result is None
+    assert not any(call[0] == 'fail' for call in client.calls)
+
+
+def test_invalid_result_model_remains_invalid_result(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    now = datetime.now()
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', now, now,
+        tuple(HostDiscoveryResult(f'192.168.1.{host}', discovered_at=now)
+              for host in range(1, 256)),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+
+    runtime.run_once()
+
+    assert ('fail', TASK_ID, 'INVALID_RESULT') in client.calls
+    assert ('fail', TASK_ID, 'RESULT_TOO_LARGE') not in client.calls
+    assert not any(call[0] == 'result' for call in client.calls)
 
 
 @pytest.mark.parametrize('status', [400, 409])
