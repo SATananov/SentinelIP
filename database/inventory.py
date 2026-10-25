@@ -276,6 +276,23 @@ def list_devices(
     return [_as_device(row) for row in rows]
 
 
+def list_online_devices(
+    network_id: int, db_path=DB_PATH, conn: sqlite3.Connection | None = None
+):
+    """List only current online network devices for scan reconciliation."""
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """SELECT * FROM devices
+               WHERE network_id = ? AND status = 'ONLINE'
+               ORDER BY id ASC""",
+            (network_id,),
+        ).fetchall()
+
+    return [_as_device(row) for row in rows]
+
+
 def update_device_state(
     device_id: int,
     *,
