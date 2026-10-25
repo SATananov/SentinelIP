@@ -362,7 +362,9 @@ def test_claimed_result_ingestion_inventory_provenance_and_retry(context):
         evidence = c.execute("SELECT source FROM device_observations WHERE ip_address='192.168.1.55'").fetchone()[0]
         assert evidence == f"remote-sensor:{sensor.record['sensor_uuid']}:task:{task_id}"
         assert c.execute('SELECT status FROM remote_sensor_tasks WHERE id=?',(task_id,)).fetchone()[0]=='COMPLETED'
-    assert machine.post(f'/sensor/tasks/{task_id}/result', headers=headers(context), json=payload).status_code == 409
+    duplicate = machine.post(f'/sensor/tasks/{task_id}/result', headers=headers(context), json=payload)
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {'task_id': task_id, 'status': 'COMPLETED', 'duplicate': True}
     assert machine.post(f'/sensor/tasks/{task_id}/result', headers=headers(context), json={**payload,'target_ip':'8.8.8.8'}).status_code == 422
     with get_connection(context['path']) as c:
         assert c.execute("SELECT COUNT(*) FROM device_observations WHERE source=?",(evidence,)).fetchone()[0] == 1

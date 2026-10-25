@@ -1,8 +1,11 @@
 import json
 import logging
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 import ssl
 from threading import Event
+from urllib.error import HTTPError
 from urllib.request import HTTPSHandler
 import uuid
 
@@ -332,6 +335,240 @@ def test_runtime_fails_task_when_scanner_times_out(tmp_path):
     _, _, runtime = runtime_components(tmp_path, client, executor)
     runtime.run_once()
     assert ('fail', TASK_ID, 'SCANNER_TIMEOUT') in client.calls
+
+
+@pytest.mark.parametrize('delivery_error', [
+    SensorClientError('CORE_UNAVAILABLE'),
+    SensorClientError('CORE_TIMEOUT'),
+    SensorClientError('CORE_HTTP_ERROR', status=500),
+    SensorClientError('CORE_HTTP_ERROR', status=503),
+    SensorClientError('CORE_HTTP_ERROR', status=429),
+])
+def test_result_delivery_retry_preserves_payload_and_does_not_reexecute(tmp_path, delivery_error):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+    from sensor.runtime import _ResultDeliveryRetry
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    original_result = client.result
+    attempts = []
+
+    def fail_once(task_id, payload):
+        attempts.append((task_id, payload))
+        if len(attempts) == 1:
+            raise delivery_error
+        return original_result(task_id, payload)
+
+    client.result = fail_once
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    with pytest.raises(_ResultDeliveryRetry):
+        runtime.run_once()
+    pending = runtime._pending_result
+    assert pending is not None
+    assert ('fail', TASK_ID, 'SCANNER_FAILED') not in client.calls
+    assert ('fail', TASK_ID, 'INVALID_RESULT') not in client.calls
+
+    runtime.run_once()
+    assert len(executor.calls) == 1
+    assert attempts[0] == attempts[1]
+    assert runtime._pending_result is None
+    assert [call[0] for call in client.calls].count('result') == 1
+
+
+@pytest.mark.parametrize('status', [400, 409])
+def test_permanent_result_rejection_is_not_retried_or_failed_again(tmp_path, status):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+
+    def reject(*_args):
+        raise SensorClientError('CORE_HTTP_ERROR', status=status)
+
+    client.result = reject
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    runtime.run_once()
+    assert runtime._pending_result is None
+    assert not any(call[0] == 'fail' for call in client.calls)
+
+
+def test_result_retry_uses_same_body_and_fresh_request_nonce(tmp_path):
+    payload = {'task_type': 'DISCOVER_NETWORK', 'observations': []}
+    failed = HTTPError(
+        f'https://core.example.test/sensor/tasks/{TASK_ID}/result',
+        503, 'Unavailable', {}, BytesIO(b''),
+    )
+    _, client, opener = make_client(
+        tmp_path, [failed, FakeResponse({'task_id': TASK_ID, 'status': 'COMPLETED', 'duplicate': True})]
+    )
+    with pytest.raises(SensorClientError) as exc:
+        client.result(TASK_ID, payload)
+    assert exc.value.status == 503
+    assert client.result(TASK_ID, payload)['duplicate'] is True
+    first, second = opener.requests
+    assert first[0].data == second[0].data
+    assert first[0].get_header('X-sentinel-nonce') != second[0].get_header('X-sentinel-nonce')
+
+
+def test_result_retry_backoff_is_capped_and_never_fails_task(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+
+    def unavailable(*_args):
+        raise SensorClientError('CORE_HTTP_ERROR', status=503)
+
+    client.result = unavailable
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    delays = []
+    elapsed = [0.0]
+    runtime._monotonic = lambda: elapsed[0]
+
+    def stop_after_five(delay):
+        delays.append(delay)
+        elapsed[0] += delay
+        if len(delays) == 5:
+            runtime.stop_event.set()
+
+    runtime._sleep = stop_after_five
+    runtime.run()
+    assert delays == [5, 10, 30, 60, 60]
+    assert len(executor.calls) == 1
+    assert runtime._pending_result is not None
+    assert not any(call[0] == 'fail' for call in client.calls)
+
+
+def test_pending_result_schedule_survives_heartbeat_failures_and_recovery(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    elapsed = [0.0]
+    events = []
+    result_attempts = []
+    heartbeat_attempts = []
+
+    def heartbeat():
+        heartbeat_attempts.append(elapsed[0])
+        events.append(('heartbeat', elapsed[0]))
+        if len(heartbeat_attempts) == 2:
+            raise SensorClientError('CORE_UNAVAILABLE')
+        return {}
+
+    def unavailable_result(task_id, payload):
+        result_attempts.append((elapsed[0], task_id, payload))
+        events.append(('result', elapsed[0]))
+        raise SensorClientError('CORE_HTTP_ERROR', status=503)
+
+    client.heartbeat = heartbeat
+    client.result = unavailable_result
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    runtime._monotonic = lambda: elapsed[0]
+    delays = []
+
+    def advance(delay):
+        delays.append(delay)
+        elapsed[0] += delay
+        if len(delays) == 5:
+            runtime.stop_event.set()
+
+    runtime._sleep = advance
+    runtime.run()
+
+    assert delays == [5, 10, 30, 60, 60]
+    assert [attempt[0] for attempt in result_attempts] == [0, 5, 15, 45, 105]
+    assert heartbeat_attempts == [0, 45, 105]
+    assert events.index(('heartbeat', 45)) < events.index(('result', 45))
+    assert events.index(('heartbeat', 105)) < events.index(('result', 105))
+    assert len(executor.calls) == 1
+    assert len({repr(attempt[2]) for attempt in result_attempts}) == 1
+    assert sum(call[0] == 'claim' for call in client.calls) == 1
+    assert runtime._pending_result is not None
+    assert not any(call[0] == 'fail' for call in client.calls)
+
+
+def test_successful_pending_delivery_resets_result_backoff(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    original_result = client.result
+    attempts = []
+
+    def fail_twice(task_id, payload):
+        attempts.append((task_id, payload))
+        if len(attempts) <= 2:
+            raise SensorClientError('CORE_HTTP_ERROR', status=503)
+        return original_result(task_id, payload)
+
+    client.result = fail_twice
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    delays = []
+
+    def stop_after_poll(delay):
+        delays.append(delay)
+        if len(delays) == 3:
+            runtime.stop_event.set()
+
+    runtime._sleep = stop_after_poll
+    runtime.run()
+    assert delays == [5, 10, runtime.config.poll_interval]
+    assert len(attempts) == 3 and attempts[0] == attempts[1] == attempts[2]
+    assert runtime._pending_result is None
+    assert runtime._result_backoff_index == 0
+    assert len(executor.calls) == 1
+    assert not any(call[0] == 'fail' for call in client.calls)
+
+
+def test_pending_result_is_attempted_even_when_due_heartbeat_fails(tmp_path):
+    from services.scan_models import HostDiscoveryResult, ScanResult
+    from sensor.runtime import _ResultDeliveryRetry
+
+    result = ScanResult(
+        '192.168.1.0/24', 'nmap', datetime.now(), datetime.now(),
+        (HostDiscoveryResult('192.168.1.20', discovered_at=datetime.now()),),
+    )
+    client, executor = FakeClient(network_task()), FakeExecutor(result)
+    original_result = client.result
+    attempts = []
+
+    def fail_once(task_id, payload):
+        attempts.append((task_id, payload))
+        if len(attempts) == 1:
+            raise SensorClientError('CORE_HTTP_ERROR', status=503)
+        return original_result(task_id, payload)
+
+    client.result = fail_once
+    _, _, runtime = runtime_components(tmp_path, client, executor)
+    with pytest.raises(_ResultDeliveryRetry):
+        runtime.run_once()
+    runtime._heartbeat_due = 0
+
+    def heartbeat_failure():
+        raise SensorClientError('CORE_UNAVAILABLE')
+
+    client.heartbeat = heartbeat_failure
+    runtime.run_once()
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert len(executor.calls) == 1
+    assert runtime._pending_result is None
+    assert not any(call[0] == 'fail' for call in client.calls)
 
 
 def test_transport_backoff_is_bounded_and_resets_after_success(tmp_path):

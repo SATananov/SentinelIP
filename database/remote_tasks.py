@@ -428,6 +428,96 @@ class RemoteTaskStore:
             raise RemoteTaskError('TASK_EXPIRED', 'Task expired.', 409)
         return task
 
+    def prepare_result_in_transaction(self, connection, sensor_id, task_id, task_type, result_digest):
+        """Validate and load a result task without taking transaction ownership."""
+        row = connection.execute(
+            'SELECT * FROM remote_sensor_tasks WHERE id=? AND sensor_id=?',
+            (task_id, sensor_id),
+        ).fetchone()
+        if row is None:
+            raise RemoteTaskError('TASK_NOT_FOUND', 'Task not found.', 404)
+        task = dict(row)
+
+        if task['status'] == 'COMPLETED':
+            if task['result_digest'] == result_digest and task['task_type'] == task_type:
+                return {'duplicate': True, 'task': task}
+            raise RemoteTaskError('RESULT_CONFLICT', 'Task already completed with a different result.', 409)
+        if task['status'] != 'RUNNING':
+            raise RemoteTaskError('INVALID_TRANSITION', 'Task is not accepting a result.', 409)
+        if task['result_digest'] is not None:
+            raise RemoteTaskError('RESULT_STATE_AMBIGUOUS', 'Task has a result reservation without completion.', 409)
+        now = self.sensors._now().isoformat()
+        if now >= task['expires_at']:
+            connection.execute(
+                "UPDATE remote_sensor_tasks SET status='FAILED',failed_at=?,error_code='TASK_EXPIRED',error_message='Task expired.' WHERE id=? AND status='RUNNING' AND result_digest IS NULL",
+                (now, task_id),
+            )
+            return {'expired': True, 'task': task}
+        if task['task_type'] != task_type:
+            raise RemoteTaskError('INVALID_RESULT', 'Result type does not match task.', 400)
+
+        sensor, scope, assignment = self._revalidate(connection, task)
+        network = connection.execute(
+            'SELECT * FROM networks WHERE id=?', (scope['network_id'],)
+        ).fetchone()
+        if network is None:
+            raise RemoteTaskError('SCOPE_DISABLED', 'Assigned network is unavailable.', 403)
+        task['network'] = dict(network)
+        task['network']['authorized'] = bool(task['network']['authorized'])
+        task['network']['enabled'] = bool(task['network']['enabled'])
+        task['scope_cidr'] = assignment['canonical_target']
+        task['sensor_uuid'] = sensor['sensor_uuid']
+        if task['target_device_id'] is not None:
+            device = connection.execute(
+                'SELECT * FROM devices WHERE id=?', (task['target_device_id'],)
+            ).fetchone()
+            if device is None:
+                raise RemoteTaskError('TARGET_OUTSIDE_SCOPE', 'Task device is no longer eligible.', 403)
+            task['device'] = dict(device)
+        return {'duplicate': False, 'expired': False, 'task': task, 'digest': result_digest}
+
+    @staticmethod
+    def reserve_result_in_transaction(connection, task_id, result_digest):
+        cursor = connection.execute(
+            "UPDATE remote_sensor_tasks SET result_digest=? WHERE id=? AND status='RUNNING' AND result_digest IS NULL",
+            (result_digest, task_id),
+        )
+        if cursor.rowcount != 1:
+            raise RemoteTaskError('INVALID_TRANSITION', 'Task result reservation was lost.', 409)
+
+    def complete_result_in_transaction(self, connection, task_id, result_digest):
+        now = self.sensors._now().isoformat()
+        cursor = connection.execute(
+            "UPDATE remote_sensor_tasks SET status='COMPLETED',completed_at=?,error_code=NULL,error_message=NULL WHERE id=? AND status='RUNNING' AND result_digest=?",
+            (now, task_id, result_digest),
+        )
+        if cursor.rowcount != 1:
+            raise RemoteTaskError('INVALID_TRANSITION', 'Task result reservation was lost.', 409)
+
+    def fail_result_permanently(self, sensor_id, task_id, error_code):
+        """Persist a semantic result rejection without consuming its digest."""
+        now = self.sensors._now().isoformat()
+        with self.sensors._connection(write=True) as connection:
+            row = connection.execute(
+                'SELECT status,result_digest,expires_at FROM remote_sensor_tasks WHERE id=? AND sensor_id=?',
+                (task_id, sensor_id),
+            ).fetchone()
+            if row is None or row['status'] != 'RUNNING' or row['result_digest'] is not None:
+                return False
+            if now >= row['expires_at']:
+                error_code = 'TASK_EXPIRED'
+                message = 'Task expired.'
+            else:
+                message = TASK_FAILURE_MESSAGES.get(error_code, 'Sensor returned an invalid result.')
+            if error_code not in TASK_FAILURE_CODES:
+                error_code = 'INVALID_RESULT'
+                message = TASK_FAILURE_MESSAGES['INVALID_RESULT']
+            connection.execute(
+                "UPDATE remote_sensor_tasks SET status='FAILED',failed_at=?,error_code=?,error_message=? WHERE id=? AND status='RUNNING' AND result_digest IS NULL",
+                (now, error_code, message, task_id),
+            )
+            return True
+
     def finish_result(self, task_id, digest, *, error_code=None):
         now = self.sensors._now()
         with self.sensors._connection(write=True) as c:

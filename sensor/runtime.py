@@ -16,6 +16,12 @@ from .config import SensorConfig
 BACKOFF_SECONDS = (5, 10, 30, 60)
 
 
+class _ResultDeliveryRetry(Exception):
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
 def _json_log(logger: logging.Logger, *, sensor_uuid: str, status: str,
               task_id: str | None = None, task_type: str | None = None,
               error_code: str | None = None):
@@ -66,6 +72,49 @@ class SensorRuntime:
         self.logger = logger or logging.getLogger('sentinelip.sensor')
         self._heartbeat_due = 0.0
         self._backoff_index = 0
+        self._result_backoff_index = 0
+        self._pending_result: tuple[str, str, dict] | None = None
+
+    @staticmethod
+    def _result_delivery_is_retryable(error: SensorClientError) -> bool:
+        status = error.status
+        return (
+            status is None
+            or status in {200, 408, 425, 429}
+            or status >= 500
+        )
+
+    def _deliver_result(self, task_id: str, task_type: str, payload: dict) -> bool:
+        try:
+            self.client.result(task_id, payload)
+        except SensorClientError as exc:
+            if self._result_delivery_is_retryable(exc):
+                self._pending_result = (task_id, task_type, payload)
+                raise _ResultDeliveryRetry(exc.code) from exc
+            self._pending_result = None
+            self._result_backoff_index = 0
+            _json_log(self.logger, sensor_uuid=self.config.sensor_uuid, task_id=task_id,
+                      task_type=task_type, status='TASK_RESULT_REJECTED',
+                      error_code=exc.code)
+            return False
+        except (ValueError, TypeError):
+            raise
+        except Exception:
+            self._pending_result = (task_id, task_type, payload)
+            raise _ResultDeliveryRetry('RESULT_DELIVERY_FAILED') from None
+        self._pending_result = None
+        self._result_backoff_index = 0
+        return True
+
+    def _retry_pending_result(self) -> None:
+        pending = self._pending_result
+        if pending is None:
+            return
+        task_id, task_type, payload = pending
+        if self._deliver_result(task_id, task_type, payload):
+            self._backoff_index = 0
+            _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
+                      task_id=task_id, task_type=task_type, status='TASK_COMPLETED')
 
     def _heartbeat_if_due(self):
         now = self._monotonic()
@@ -124,7 +173,10 @@ class SensorRuntime:
             else:
                 # validate_remote_task rejects this before start; keep dispatch closed as well.
                 raise RemoteSensorError('Unsupported task type.')
-            self.client.result(task.task_id, _result_payload(task, result))
+            result_payload = _result_payload(task, result)
+            if not self._deliver_result(task.task_id, task.task_type, result_payload):
+                self._backoff_index = 0
+                return
             self._backoff_index = 0
             _json_log(self.logger, sensor_uuid=self.config.sensor_uuid, task_id=task.task_id,
                       task_type=task.task_type, status='TASK_COMPLETED')
@@ -138,6 +190,8 @@ class SensorRuntime:
             self._backoff_index = 0
             _json_log(self.logger, sensor_uuid=self.config.sensor_uuid, task_id=task.task_id,
                       task_type=task.task_type, status='TASK_FAILED', error_code='INVALID_RESULT')
+        except _ResultDeliveryRetry:
+            raise
         except Exception:
             # Never log exception text: scanner and HTTP internals may include sensitive data.
             try:
@@ -149,9 +203,19 @@ class SensorRuntime:
                       task_type=task.task_type, status='TASK_FAILED', error_code='SCANNER_FAILED')
 
     def run_once(self) -> int:
-        self._heartbeat_if_due()
+        pending_result = self._pending_result is not None
+        try:
+            self._heartbeat_if_due()
+        except SensorClientError as exc:
+            if not pending_result:
+                raise
+            _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
+                      status='HEARTBEAT_FAILED', error_code=exc.code)
         if self.stop_event.is_set():
             return 0
+        if self._pending_result is not None:
+            self._retry_pending_result()
+            return self.config.poll_interval
         task = self.client.claim()
         self._backoff_index = 0
         if task is None:
@@ -170,6 +234,15 @@ class SensorRuntime:
                           status='CORE_UNAVAILABLE', error_code=exc.code)
                 delay = BACKOFF_SECONDS[min(self._backoff_index, len(BACKOFF_SECONDS) - 1)]
                 self._backoff_index = min(self._backoff_index + 1, len(BACKOFF_SECONDS) - 1)
+            except _ResultDeliveryRetry as exc:
+                _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
+                          status='RESULT_DELIVERY_RETRY', error_code=exc.error_code)
+                delay = BACKOFF_SECONDS[
+                    min(self._result_backoff_index, len(BACKOFF_SECONDS) - 1)
+                ]
+                self._result_backoff_index = min(
+                    self._result_backoff_index + 1, len(BACKOFF_SECONDS) - 1
+                )
             except Exception:
                 _json_log(self.logger, sensor_uuid=self.config.sensor_uuid,
                           status='RUNTIME_ERROR', error_code='SCANNER_FAILED')
