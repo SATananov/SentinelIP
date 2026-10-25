@@ -1,4 +1,5 @@
 from datetime import datetime
+import sqlite3
 
 from database import changes as changes_db
 from database.db import DB_PATH
@@ -12,8 +13,9 @@ def _confidence(value: str | ChangeConfidence) -> ChangeConfidence:
 def persist_changes(
     records: list[ChangeRecord],
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
-    return [changes_db.create_change(record, db_path) for record in records]
+    return [changes_db.create_change(record, db_path, conn=conn) for record in records]
 
 
 def device_observation_changes(

@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime
 
-from database.db import DB_PATH, get_connection, initialize_database
+from database.db import DB_PATH, connection_context, get_connection, initialize_database
 from services.public_target_policy import PublicTargetPolicyError, normalize_public_ipv4
 
 
@@ -25,11 +25,11 @@ def create_device(
     status: str,
     identity_confidence: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             INSERT INTO devices (
@@ -224,11 +224,10 @@ def save_scope_device_observation(
     return dict(row)
 
 
-def get_device(device_id: int, db_path=DB_PATH):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+def get_device(device_id: int, db_path=DB_PATH, conn: sqlite3.Connection | None = None):
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         row = connection.execute(
             "SELECT * FROM devices WHERE id = ?",
             (device_id,),
@@ -237,11 +236,12 @@ def get_device(device_id: int, db_path=DB_PATH):
     return _as_device(row)
 
 
-def find_device_by_stable_key(stable_key: str, db_path=DB_PATH):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+def find_device_by_stable_key(
+    stable_key: str, db_path=DB_PATH, conn: sqlite3.Connection | None = None
+):
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         row = connection.execute(
             "SELECT * FROM devices WHERE stable_key = ?",
             (stable_key,),
@@ -250,8 +250,9 @@ def find_device_by_stable_key(stable_key: str, db_path=DB_PATH):
     return _as_device(row)
 
 
-def list_devices(network_id: int | None = None, db_path=DB_PATH):
-    initialize_database(db_path)
+def list_devices(
+    network_id: int | None = None, db_path=DB_PATH, conn: sqlite3.Connection | None = None
+):
     parameters = []
     where_clause = ""
 
@@ -259,8 +260,9 @@ def list_devices(network_id: int | None = None, db_path=DB_PATH):
         where_clause = "WHERE network_id = ?"
         parameters.append(network_id)
 
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         rows = connection.execute(
             f"""
             SELECT *
@@ -284,11 +286,11 @@ def update_device_state(
     hostname: str | None,
     vendor: str | None,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             UPDATE devices
@@ -332,11 +334,11 @@ def save_observation(
     observed_at: str,
     source: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         cursor = connection.execute(
             """
             INSERT INTO device_observations (
@@ -395,8 +397,8 @@ def mark_devices_offline(
     observed_device_ids: set[int],
     observed_at: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
     parameters = [observed_at, network_id]
     exclusion = ""
 
@@ -405,7 +407,7 @@ def mark_devices_offline(
         exclusion = f"AND id NOT IN ({placeholders})"
         parameters.extend(sorted(observed_device_ids))
 
-    with get_connection(db_path) as connection:
+    with connection_context(db_path, conn=conn) as connection:
         connection.execute(
             f"""
             UPDATE devices

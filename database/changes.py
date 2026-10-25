@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from database.db import DB_PATH, get_connection, initialize_database
+from database.db import DB_PATH, connection_context, get_connection, initialize_database
 from services.change_models import ChangeRecord, serialize_change_value
 
 
@@ -18,16 +18,20 @@ def _as_change(row):
     return result
 
 
-def create_change(change: ChangeRecord, db_path=DB_PATH):
+def create_change(
+    change: ChangeRecord,
+    db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
+):
     if not isinstance(change, ChangeRecord):
         raise TypeError("change must be a ChangeRecord.")
 
-    initialize_database(db_path)
     created_at = change.observed_at.isoformat(timespec="seconds")
     metadata_json = serialize_change_value(change.metadata_json)
 
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         cursor = connection.execute(
             """
             INSERT INTO changes (

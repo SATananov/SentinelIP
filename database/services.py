@@ -1,6 +1,6 @@
 import sqlite3
 
-from database.db import DB_PATH, get_connection, initialize_database
+from database.db import DB_PATH, connection_context, get_connection, initialize_database
 
 
 def _as_record(row):
@@ -15,11 +15,11 @@ def create_port(
     first_seen: str,
     last_seen: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             INSERT INTO ports (
@@ -61,11 +61,11 @@ def find_port(
     port_number: int,
     transport: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         row = connection.execute(
             """
             SELECT * FROM ports
@@ -99,11 +99,11 @@ def update_port(
     last_seen: str,
     state: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             UPDATE ports
@@ -130,11 +130,11 @@ def save_port_observation(
     observed_at: str,
     source: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         cursor = connection.execute(
             """
             INSERT INTO port_observations (
@@ -196,11 +196,11 @@ def create_service(
     first_seen: str,
     last_seen: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             INSERT INTO services (
@@ -240,11 +240,12 @@ def create_service(
     return _as_record(row)
 
 
-def find_service_by_port(port_id: int, db_path=DB_PATH):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+def find_service_by_port(
+    port_id: int, db_path=DB_PATH, conn: sqlite3.Connection | None = None
+):
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         row = connection.execute(
             "SELECT * FROM services WHERE port_id = ?",
             (port_id,),
@@ -279,11 +280,11 @@ def update_service(
     confidence: str,
     last_seen: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         connection.execute(
             """
             UPDATE services
@@ -328,11 +329,11 @@ def save_service_observation(
     observed_at: str,
     source: str,
     db_path=DB_PATH,
+    conn: sqlite3.Connection | None = None,
 ):
-    initialize_database(db_path)
-
-    with get_connection(db_path) as connection:
-        connection.row_factory = sqlite3.Row
+    with connection_context(db_path, conn=conn) as connection:
+        if conn is None:
+            connection.row_factory = sqlite3.Row
         cursor = connection.execute(
             """
             INSERT INTO service_observations (

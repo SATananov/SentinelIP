@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import sqlite3
 from pathlib import Path
 
@@ -32,6 +33,23 @@ def initialize_database(db_path=DB_PATH):
         )
         connection.commit()
         apply_migrations(connection)
+
+
+@contextmanager
+def connection_context(db_path=DB_PATH, *, conn: sqlite3.Connection | None = None):
+    """Use a caller-owned connection or initialize and own a standalone one.
+
+    With ``conn`` supplied, ``db_path`` is ignored and the caller retains
+    responsibility for the transaction and connection lifecycle. The supplied
+    connection must have foreign keys enabled and use ``sqlite3.Row`` results.
+    """
+    if conn is not None:
+        yield conn
+        return
+
+    initialize_database(db_path)
+    with get_connection(db_path) as connection:
+        yield connection
 
 
 def save_event(
