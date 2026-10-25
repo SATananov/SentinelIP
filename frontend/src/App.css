@@ -488,7 +488,8 @@ h2 {
   text-transform: uppercase;
 }
 
-.filters select {
+.filters select,
+.filters input {
   min-width: 180px;
   padding: 9px 34px 9px 10px;
   border: 1px solid #343b48;
@@ -500,8 +501,43 @@ h2 {
   font-size: 13px;
 }
 
-.filters select:focus {
+.filters select:focus,
+.filters input:focus {
   border-color: #5977aa;
+}
+
+.source-ip-filter {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-ip-filter input {
+  min-width: 180px;
+}
+
+.source-ip-filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.source-ip-filter button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.source-ip-filter-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: #ff98a3;
+  font-size: 12px;
+}
+
+.source-ip-basis {
+  margin: 7px 0 0;
+  color: #929bad;
+  font-size: 12px;
 }
 
 .clear-filters {
@@ -520,8 +556,23 @@ h2 {
 
   .filters label,
   .filters select,
+  .filters input,
   .clear-filters {
     width: 100%;
+  }
+
+  .source-ip-filter {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .source-ip-filter-actions {
+    width: 100%;
+  }
+
+  .source-ip-filter-actions button {
+    flex: 1;
   }
 }
 

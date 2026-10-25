@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   buildExportQuery,
@@ -27,6 +28,23 @@ test('preset export query sends time_range and omits custom bounds', () => {
   assert.equal(query.has('until'), false)
   assert.equal(query.get('severity'), 'ALERT')
   assert.equal(query.get('source_ip'), '192.0.2.1')
+})
+
+test('export query uses the applied filter when the draft differs', () => {
+  const appliedIpFilter = '192.0.2.1'
+  const draftIpInput = '10.0.0.1'
+  const query = buildExportQuery({
+    rangeMode: 'preset',
+    timeRange: 'all',
+    sourceIp: appliedIpFilter,
+  })
+
+  assert.equal(query.get('source_ip'), appliedIpFilter)
+  assert.notEqual(query.get('source_ip'), draftIpInput)
+
+  const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(appSource, /sourceIp:\s*ipFilter\s*\|\|\s*'ALL'/)
+  assert.doesNotMatch(appSource, /sourceIp:\s*ipDraft/)
 })
 
 test('custom export query sends offset-aware bounds and omits time_range', () => {

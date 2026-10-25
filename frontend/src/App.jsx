@@ -35,11 +35,18 @@ import {
   createReviewIntakeRequest,
   isValidReviewEvidenceContext,
 } from './services/reviewEvidenceContext.js'
+import { createOperationsRequestGuard } from './services/incidentReviewRequestGuard.js'
+import {
+  buildEventsQuery,
+  resolveSourceIpApply,
+  topIpBasisLabel,
+} from './services/sourceIpFilter.js'
 
 import './App.css'
 
 function App() {
   const reviewIntakeToken = useRef(0)
+  const [dashboardRequestGuard] = useState(createOperationsRequestGuard)
   const [reviewIntakeRequest, setReviewIntakeRequest] = useState(null)
   const [reviewIntakeSubmitting, setReviewIntakeSubmitting] = useState(false)
   const [investigationNavigation, setInvestigationNavigation] = useState(null)
@@ -61,7 +68,6 @@ function App() {
   const [events, setEvents] = useState([])
   const [eventsTotal, setEventsTotal] = useState(0)
   const [timeline, setTimeline] = useState([])
-  const [sourceIps, setSourceIps] = useState([])
 
   const [error, setError] = useState(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -78,7 +84,9 @@ function App() {
   }, [])
 
   const [severityFilter, setSeverityFilter] = useState('ALL')
-  const [ipFilter, setIpFilter] = useState('ALL')
+  const [ipDraft, setIpDraft] = useState('')
+  const [ipFilter, setIpFilter] = useState('')
+  const [ipValidationError, setIpValidationError] = useState('')
   const [timeRange, setTimeRange] = useState('all')
   const [exportRangeMode, setExportRangeMode] = useState('preset')
   const [exportFromLocal, setExportFromLocal] = useState('')
@@ -103,7 +111,9 @@ function App() {
     if (!request) return
     setInvestigationNavigation(request)
     if (request.kind === 'LEGACY_EVENT' && query?.queryType === 'IP_ADDRESS' && query.value) {
+      setIpDraft(query.value)
       setIpFilter(query.value)
+      setIpValidationError('')
       setTimeRange('all')
       setPage(1)
     }
@@ -116,6 +126,7 @@ function App() {
   }, [openInvestigationContext])
 
   const offset = (page - 1) * pageSize
+  const topIpSampleLabel = topIpBasisLabel(overview.top_ips_basis)
 
   const totalPages = Math.max(
     1,
@@ -123,19 +134,13 @@ function App() {
   )
 
   const eventsUrl = useMemo(() => {
-    const params = new URLSearchParams({
-      limit: String(pageSize),
-      offset: String(offset),
-      time_range: timeRange,
+    const params = buildEventsQuery({
+      limit: pageSize,
+      offset,
+      timeRange,
+      severity: severityFilter,
+      sourceIp: ipFilter,
     })
-
-    if (severityFilter !== 'ALL') {
-      params.set('severity', severityFilter)
-    }
-
-    if (ipFilter !== 'ALL') {
-      params.set('source_ip', ipFilter)
-    }
 
     return `${API_BASE}/events?${params.toString()}`
   }, [
@@ -153,7 +158,7 @@ function App() {
       fromLocal: exportFromLocal,
       untilLocal: exportUntilLocal,
       severity: severityFilter,
-      sourceIp: ipFilter,
+      sourceIp: ipFilter || 'ALL',
     })
   }, [
     exportRangeMode,
@@ -165,6 +170,7 @@ function App() {
   ])
 
   const loadData = useCallback(async () => {
+    const requestId = dashboardRequestGuard.begin('dashboard')
     try {
       setIsRefreshing(true)
       setError(null)
@@ -175,14 +181,12 @@ function App() {
         alertsResponse,
         eventsResponse,
         timelineResponse,
-        sourceIpsResponse,
       ] = await Promise.all([
         fetch(`${API_BASE}/health`),
         fetch(`${API_BASE}/overview`),
         fetch(`${API_BASE}/alerts?limit=5`),
         fetch(eventsUrl),
         fetch(`${API_BASE}/stats/timeline?limit=30`),
-        fetch(`${API_BASE}/source-ips`),
       ])
 
       if (
@@ -190,8 +194,7 @@ function App() {
         !overviewResponse.ok ||
         !alertsResponse.ok ||
         !eventsResponse.ok ||
-        !timelineResponse.ok ||
-        !sourceIpsResponse.ok
+        !timelineResponse.ok
       ) {
         throw new Error('API request failed')
       }
@@ -202,15 +205,15 @@ function App() {
         alertsData,
         eventsData,
         timelineData,
-        sourceIpsData,
       ] = await Promise.all([
         healthResponse.json(),
         overviewResponse.json(),
         alertsResponse.json(),
         eventsResponse.json(),
         timelineResponse.json(),
-        sourceIpsResponse.json(),
       ])
+
+      if (!dashboardRequestGuard.isCurrent('dashboard', requestId)) return
 
       setHealth(healthData)
       setOverview(overviewData)
@@ -218,15 +221,18 @@ function App() {
       setEvents(eventsData.events)
       setEventsTotal(eventsData.total)
       setTimeline(timelineData.items)
-      setSourceIps(sourceIpsData.items)
       setLastUpdated(new Date())
     } catch (err) {
-      setError(err.message)
-      setHealth(null)
+      if (dashboardRequestGuard.isCurrent('dashboard', requestId)) {
+        setError(err.message)
+        setHealth(null)
+      }
     } finally {
-      setIsRefreshing(false)
+      if (dashboardRequestGuard.isCurrent('dashboard', requestId)) {
+        setIsRefreshing(false)
+      }
     }
-  }, [eventsUrl])
+  }, [dashboardRequestGuard, eventsUrl])
 
   useEffect(() => {
     const initialLoad = setTimeout(() => {
@@ -240,8 +246,9 @@ function App() {
     return () => {
       clearTimeout(initialLoad)
       clearInterval(interval)
+      dashboardRequestGuard.invalidate('dashboard')
     }
-  }, [loadData])
+  }, [dashboardRequestGuard, loadData])
 
   function severityClass(value) {
     return `severity-badge severity-${value.toLowerCase()}`
@@ -273,8 +280,28 @@ function App() {
     setPage(1)
   }
 
-  function handleIpChange(event) {
-    setIpFilter(event.target.value)
+  function handleIpDraftChange(event) {
+    setIpDraft(event.target.value)
+    setIpValidationError('')
+  }
+
+  function applyIpFilter(event) {
+    event.preventDefault()
+    const result = resolveSourceIpApply(ipDraft, ipFilter)
+    if (result.error) {
+      setIpValidationError(result.error)
+      return
+    }
+    setIpDraft(result.draft)
+    setIpFilter(result.applied)
+    setIpValidationError('')
+    setPage(1)
+  }
+
+  function clearIpFilter() {
+    setIpDraft('')
+    setIpFilter('')
+    setIpValidationError('')
     setPage(1)
   }
 
@@ -285,7 +312,9 @@ function App() {
 
   function clearFilters() {
     setSeverityFilter('ALL')
-    setIpFilter('ALL')
+    setIpDraft('')
+    setIpFilter('')
+    setIpValidationError('')
     setTimeRange('all')
     setPage(1)
   }
@@ -561,6 +590,11 @@ function App() {
               </p>
 
               <h2>Top Source IPs</h2>
+              {topIpSampleLabel && (
+                <p className="source-ip-basis" role="note">
+                  {topIpSampleLabel}
+                </p>
+              )}
             </div>
           </div>
 
@@ -580,7 +614,7 @@ function App() {
                   </span>
 
                   <strong>
-                    {item.event_total} events
+                    {item.event_total} {topIpSampleLabel ? 'recent events' : 'events'}
                   </strong>
                 </div>
               ))}
@@ -740,27 +774,41 @@ function App() {
             </select>
           </label>
 
-          <label>
-            <span>Source IP</span>
-
-            <select
-              value={ipFilter}
-              onChange={handleIpChange}
-            >
-              <option value="ALL">
-                All source IPs
-              </option>
-
-              {sourceIps.map((ip) => (
-                <option
-                  key={ip}
-                  value={ip}
-                >
-                  {ip}
-                </option>
-              ))}
-            </select>
-          </label>
+          <form className="source-ip-filter" onSubmit={applyIpFilter}>
+            <label htmlFor="source-ip-filter-input">
+              <span>Source IP</span>
+              <input
+                id="source-ip-filter-input"
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                maxLength={15}
+                placeholder="192.0.2.1"
+                value={ipDraft}
+                onChange={handleIpDraftChange}
+                aria-describedby={ipValidationError ? 'source-ip-filter-error' : undefined}
+                aria-invalid={Boolean(ipValidationError)}
+              />
+            </label>
+            <div className="source-ip-filter-actions">
+              <button className="clear-filters" type="submit">
+                Apply
+              </button>
+              <button
+                className="clear-filters"
+                type="button"
+                onClick={clearIpFilter}
+                disabled={!ipDraft && !ipFilter}
+              >
+                Clear IP
+              </button>
+            </div>
+            {ipValidationError && (
+              <p id="source-ip-filter-error" className="source-ip-filter-error" role="alert">
+                {ipValidationError}
+              </p>
+            )}
+          </form>
 
           <label>
             <span>Time range</span>
