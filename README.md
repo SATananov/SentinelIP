@@ -202,6 +202,13 @@ Start the FastAPI backend from the repository root:
 python -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+File-backed SentinelIP Core databases are currently supported on POSIX systems
+with the database permission contract described in
+[`docs/core-database-permissions-36c.md`](docs/core-database-permissions-36c.md).
+File-backed Core startup on Windows intentionally fails closed until a verified
+Windows ACL implementation is available. This does not change the separately
+packaged Windows sensor support.
+
 The dashboard expects the API at `http://127.0.0.1:8000`.
 This is the default when `VITE_SENTINELIP_API_BASE` is unset. For sensor-enabled
 direct-TLS Core deployment, set the frontend variable explicitly to the loopback

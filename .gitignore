@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 
 database/*.db
+database/*.db-journal
+database/*.db-wal
+database/*.db-shm
 
 .env
 .env.*

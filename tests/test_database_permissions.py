@@ -276,17 +276,32 @@ def test_concurrent_secure_creation_never_replaces_or_exposes_database(tmp_path)
         ).fetchone() == ("retained",)
 
 
-def test_windows_file_database_fails_closed_without_acl_support(tmp_path, monkeypatch):
-    path = tmp_path / "windows.sqlite3"
+@pytest.mark.parametrize("platform_name", ["nt", "unsupported-os"])
+def test_unsupported_platform_file_database_fails_closed_without_acl_support(
+    tmp_path, monkeypatch, platform_name
+):
+    path = tmp_path / f"{platform_name}.sqlite3"
     sqlite_calls = []
-    monkeypatch.setattr(database_db, "_PLATFORM_NAME", "nt")
+    monkeypatch.setattr(database_db, "_PLATFORM_NAME", platform_name)
     monkeypatch.setattr(database_db.sqlite3, "connect", lambda *args, **kwargs: sqlite_calls.append(args))
 
-    with pytest.raises(database_db.DatabaseSecurityError, match="Windows ACL hardening is not implemented"):
+    diagnostic = "Windows ACL hardening is not implemented" if platform_name == "nt" else (
+        f"{platform_name} ACL hardening is not implemented"
+    )
+    with pytest.raises(database_db.DatabaseSecurityError, match=diagnostic):
         database_db.get_connection(path)
 
     assert sqlite_calls == []
     assert not path.exists()
+
+
+def test_memory_database_remains_available_on_unsupported_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr(database_db, "_PLATFORM_NAME", "nt")
+    connection = database_db.get_connection(":memory:")
+    try:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        connection.close()
 
 
 def test_database_directory_mode_is_not_modified(tmp_path):
@@ -323,3 +338,77 @@ def test_rollback_journal_wal_and_shm_are_not_more_permissive_than_database(tmp_
         connection.commit()
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("umask", [0o022, 0o000])
+def test_sidecars_remain_owner_only_under_common_and_permissive_umasks(tmp_path, umask):
+    path = tmp_path / f"sidecars-{umask:o}.sqlite3"
+    prior_umask = os.umask(umask)
+    connection = None
+    try:
+        connection = database_db.get_connection(path)
+        connection.execute("CREATE TABLE records (value TEXT)")
+        connection.commit()
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO records VALUES ('rollback')")
+        journal = Path(f"{path}-journal")
+        journal_stat = journal.stat()
+        assert stat.S_ISREG(journal_stat.st_mode)
+        assert journal_stat.st_uid == os.geteuid()
+        assert stat.S_IMODE(journal_stat.st_mode) <= 0o600
+        connection.commit()
+        assert not journal.exists()
+
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("INSERT INTO records VALUES ('wal')")
+        for sidecar in (Path(f"{path}-wal"), Path(f"{path}-shm")):
+            sidecar_stat = sidecar.stat()
+            assert stat.S_ISREG(sidecar_stat.st_mode)
+            assert sidecar_stat.st_uid == os.geteuid()
+            assert stat.S_IMODE(sidecar_stat.st_mode) <= 0o600
+        connection.commit()
+    finally:
+        if connection is not None:
+            connection.close()
+        os.umask(prior_umask)
+
+
+def test_secure_online_backup_and_restore_preserve_schema_and_integrity(tmp_path):
+    source_path = tmp_path / "source.sqlite3"
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir(mode=0o700)
+    backup_dir.chmod(0o700)
+    backup_path = backup_dir / "sentinelip-backup.sqlite3"
+    restored_path = tmp_path / "restored.sqlite3"
+    database_db.initialize_database(source_path)
+
+    source = database_db.get_connection(source_path)
+    try:
+        fd = os.open(backup_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o600
+        finally:
+            os.close(fd)
+        backup = sqlite3.connect(backup_path)
+        try:
+            source.backup(backup)
+            assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert backup.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
+        finally:
+            backup.close()
+    finally:
+        source.close()
+
+    assert stat.S_IMODE(backup_path.stat().st_mode) == 0o600
+    backup = sqlite3.connect(backup_path)
+    restored = database_db.get_connection(restored_path)
+    try:
+        backup.backup(restored)
+        assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert restored.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
+    finally:
+        restored.close()
+        backup.close()
+    assert stat.S_IMODE(restored_path.stat().st_mode) == 0o600
