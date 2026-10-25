@@ -1,8 +1,9 @@
 from collections.abc import Mapping
+import sqlite3
 
 from database import services as services_db
 from database import scopes as scopes_db
-from database.db import DB_PATH
+from database.db import DB_PATH, get_connection, initialize_database
 from services.change_detection import (
     persist_changes,
     port_observation_changes,
@@ -87,8 +88,9 @@ class ServiceInventoryService:
         network: Mapping[str, object],
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, list[dict]]:
-        return self._process_result(*_context(network, device), result)
+        return self._process_result(*_context(network, device), result, conn=conn)
 
     def process_public_result(
         self,
@@ -112,7 +114,9 @@ class ServiceInventoryService:
             or device["id"] <= 0
             or device.get("last_ip_address") not in addresses):
             raise ServiceInventoryError("The device is outside the authorized CIDR scope.")
-        inventory = self._process_result(None, device["id"], device["last_ip_address"], result)
+        inventory = self._process_result(
+            None, device["id"], device["last_ip_address"], result
+        )
         inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
             scope, device, result
         )
@@ -149,8 +153,34 @@ class ServiceInventoryService:
         device_id: int,
         target_ip: str,
         result: ServiceDiscoveryResult,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[str, list[dict]]:
+        services_to_persist = self._validate_result(target_ip, result)
 
+        if conn is not None:
+            return self._apply_result(
+                network_id, device_id, result, services_to_persist, conn
+            )
+
+        initialize_database(self.db_path)
+        connection = get_connection(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            inventory = self._apply_result(
+                network_id, device_id, result, services_to_persist, connection
+            )
+            connection.commit()
+            return inventory
+        except BaseException:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _validate_result(target_ip: str, result: ServiceDiscoveryResult):
         if not isinstance(result, ServiceDiscoveryResult):
             raise ServiceInventoryError("A normalized service result is required.")
 
@@ -164,11 +194,6 @@ class ServiceInventoryService:
                 "Failed service results cannot update inventory."
             )
 
-        port_keys = {
-            (port.port, port.transport)
-            for port in result.ports
-        }
-
         for port in result.ports:
             if not isinstance(port, PortObservation):
                 raise ServiceInventoryError("Invalid port observation.")
@@ -176,6 +201,9 @@ class ServiceInventoryService:
             if port.ip_address != target_ip:
                 raise ServiceInventoryError("Port target does not match device.")
 
+        port_keys = {(port.port, port.transport) for port in result.ports}
+
+        services_to_persist = []
         for service in result.services:
             if not isinstance(service, ServiceObservation):
                 raise ServiceInventoryError("Invalid service observation.")
@@ -188,6 +216,20 @@ class ServiceInventoryService:
                     "Service evidence must refer to an observed port."
                 )
 
+            if has_service_evidence(service.normalized_evidence()):
+                services_to_persist.append(service)
+
+        return services_to_persist
+
+    def _apply_result(
+        self,
+        network_id: int | None,
+        device_id: int,
+        result: ServiceDiscoveryResult,
+        services_to_persist: list[ServiceObservation],
+        conn: sqlite3.Connection,
+    ) -> dict[str, list[dict]]:
+
         ports = []
         port_records = {}
 
@@ -198,6 +240,7 @@ class ServiceInventoryService:
                 port_number=port.port,
                 transport=port.transport,
                 db_path=self.db_path,
+                conn=conn,
             )
 
             if previous is None:
@@ -209,6 +252,7 @@ class ServiceInventoryService:
                     first_seen=observed_at,
                     last_seen=observed_at,
                     db_path=self.db_path,
+                    conn=conn,
                 )
             else:
                 current = {
@@ -225,12 +269,14 @@ class ServiceInventoryService:
                             observed_at=port.observed_at,
                         ),
                         db_path=self.db_path,
+                        conn=conn,
                     )
                 record = services_db.update_port(
                     port_id=previous["id"],
                     last_seen=observed_at,
                     state=port.state,
                     db_path=self.db_path,
+                    conn=conn,
                 )
 
             if previous is None:
@@ -243,6 +289,7 @@ class ServiceInventoryService:
                             observed_at=port.observed_at,
                         ),
                         db_path=self.db_path,
+                        conn=conn,
                     )
 
             services_db.save_port_observation(
@@ -255,23 +302,20 @@ class ServiceInventoryService:
                 observed_at=observed_at,
                 source=port.source,
                 db_path=self.db_path,
+                conn=conn,
             )
             port_records[(port.port, port.transport)] = record
             ports.append(record)
 
         services = []
 
-        for service in result.services:
-            evidence = service.normalized_evidence()
-
-            if not has_service_evidence(evidence):
-                continue
-
+        for service in services_to_persist:
             port_record = port_records[(service.port, service.transport)]
             observed_at = service.observed_at.isoformat(timespec="seconds")
             previous = services_db.find_service_by_port(
                 port_id=port_record["id"],
                 db_path=self.db_path,
+                conn=conn,
             )
 
             if previous is None:
@@ -286,6 +330,7 @@ class ServiceInventoryService:
                     first_seen=observed_at,
                     last_seen=observed_at,
                     db_path=self.db_path,
+                    conn=conn,
                 )
             else:
                 current = {
@@ -306,6 +351,7 @@ class ServiceInventoryService:
                             observed_at=service.observed_at,
                         ),
                         db_path=self.db_path,
+                        conn=conn,
                     )
                 record = services_db.update_service(
                     service_id=previous["id"],
@@ -316,6 +362,7 @@ class ServiceInventoryService:
                     confidence=service.confidence,
                     last_seen=observed_at,
                     db_path=self.db_path,
+                    conn=conn,
                 )
 
             if previous is None:
@@ -328,6 +375,7 @@ class ServiceInventoryService:
                             observed_at=service.observed_at,
                         ),
                         db_path=self.db_path,
+                        conn=conn,
                     )
 
             services_db.save_service_observation(
@@ -342,6 +390,7 @@ class ServiceInventoryService:
                 observed_at=observed_at,
                 source=service.source,
                 db_path=self.db_path,
+                conn=conn,
             )
             services.append(record)
 
