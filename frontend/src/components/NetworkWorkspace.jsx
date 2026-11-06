@@ -511,7 +511,7 @@ function NetworkWorkspace({ investigationRequest = null, onOpenInvestigationCont
         </div>
         <span className="network-boundary">AUTHORIZED TARGETS ONLY</span>
       </div>
-      {investigationNavigationError?.nonce === investigationRequest?.nonce && <p className="network-error" role="status">{investigationNavigationError.message}</p>}
+      {investigationNavigationError && investigationNavigationError.nonce === investigationRequest?.nonce && <p className="network-error" role="status">{investigationNavigationError.message}</p>}
 
       {workspaceError && <div className="network-error" role="alert">{workspaceError}</div>}
 

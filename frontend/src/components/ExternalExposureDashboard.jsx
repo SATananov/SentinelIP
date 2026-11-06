@@ -123,8 +123,8 @@ function ExternalExposureDashboard({ refreshSignal, onStartReview, reviewIntakeS
       </div>
 
       {error && <div className="error-box">{error}</div>}
-      {investigationDetailError?.nonce === investigationRequest?.nonce && <div className="error-box" role="alert">{investigationDetailError.message}</div>}
-      {investigationDetail?.nonce === investigationRequest?.nonce && <aside className="investigation-domain-detail" aria-label="Selected exposure record">
+      {investigationDetailError && investigationDetailError.nonce === investigationRequest?.nonce && <div className="error-box" role="alert">{investigationDetailError.message}</div>}
+      {investigationDetail && investigationDetail.nonce === investigationRequest?.nonce && <aside className="investigation-domain-detail" aria-label="Selected exposure record">
         <div className="panel-heading"><h3>{investigationDetail.kind.replaceAll('_', ' ')} · {investigationDetail.id}</h3>
           <button type="button" onClick={() => setInvestigationDetail(null)}>Close detail</button></div>
         <dl>{EXPOSURE_DETAIL_FIELDS.filter(([key]) => {

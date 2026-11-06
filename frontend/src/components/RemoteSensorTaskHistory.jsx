@@ -204,7 +204,7 @@ function RemoteSensorTaskHistory({ selectedSensor, refreshSignal = 0, createdTas
           <InvestigationPivotActions pivots={taskContextPivots(selectedTask)} onNavigate={onOpenInvestigationContext} />
         </aside>
       )}
-      {lookupTask?.nonce === investigationRequest?.nonce && !selectedTask && (
+      {lookupTask && lookupTask.nonce === investigationRequest?.nonce && !selectedTask && (
         <aside className="remote-sensor-detail remote-task-detail" aria-label={`Task found by investigation search: ${lookupTask.entity_id}`}>
           <div className="remote-sensor-detail-heading"><h4>Task found by Investigation Search</h4>
             <button type="button" onClick={() => { setLookupTask(null); setSelectedTaskId(null) }}>Close details</button></div>
