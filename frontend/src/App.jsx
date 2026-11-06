@@ -23,7 +23,11 @@ import ExternalActivityDashboard from './components/ExternalActivityDashboard.js
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
 import InvestigationLookup from './components/InvestigationLookup.jsx'
 import DataLifecycle from './components/DataLifecycle.jsx'
+import HelpGuide from './components/HelpGuide.jsx'
+import AboutSentinelIP from './components/AboutSentinelIP.jsx'
+import useWorkspaceNavigation, { skipToWorkspaceMain } from './hooks/useWorkspaceNavigation.js'
 import { createInvestigationNavigationRequest, investigationPanelForKind } from './services/investigationNavigation.js'
+import { moduleForInvestigationKind, WORKSPACE_MODULES, workspaceHash } from './services/workspaceNavigation.js'
 import { API_BASE } from './services/apiBase.js'
 import {
   buildExportQuery,
@@ -45,6 +49,8 @@ import {
 import './App.css'
 
 function App() {
+  const { activeModule, helpTopic, navigateToModule, selectHelpTopic } = useWorkspaceNavigation()
+  const previousOperationalModule = useRef('overview')
   const reviewIntakeToken = useRef(0)
   const [dashboardRequestGuard] = useState(createOperationsRequestGuard)
   const [reviewIntakeRequest, setReviewIntakeRequest] = useState(null)
@@ -110,6 +116,7 @@ function App() {
     const request = createInvestigationNavigationRequest(item, query, investigationNavigationNonce.current)
     if (!request) return
     setInvestigationNavigation(request)
+    navigateToModule(moduleForInvestigationKind(request.kind))
     if (request.kind === 'LEGACY_EVENT' && query?.queryType === 'IP_ADDRESS' && query.value) {
       setIpDraft(query.value)
       setIpFilter(query.value)
@@ -117,9 +124,16 @@ function App() {
       setTimeRange('all')
       setPage(1)
     }
-    const destinationPanelId = investigationPanelForKind(request.kind)
-    window.requestAnimationFrame(() => document.getElementById(destinationPanelId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
-  }, [])
+  }, [navigateToModule])
+
+  useEffect(() => {
+    if (!investigationNavigation) return undefined
+    const destinationPanelId = investigationPanelForKind(investigationNavigation.kind)
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(destinationPanelId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeModule, investigationNavigation])
 
   const openInvestigationResult = useCallback((item, query) => {
     openInvestigationContext(item.destination_kind, item.destination_id, item, query)
@@ -127,6 +141,38 @@ function App() {
 
   const offset = (page - 1) * pageSize
   const topIpSampleLabel = topIpBasisLabel(overview.top_ips_basis)
+  const modules = WORKSPACE_MODULES.filter(({ id }) => id !== 'data-lifecycle')
+  const moduleHelpTopic = {
+    overview: 'overview', 'scope-discovery': 'scope', 'remote-sensors': 'sensors',
+    operations: 'operations', detections: 'detections', perimeter: 'perimeter',
+    'events-analytics': 'events', 'data-lifecycle': 'lifecycle',
+  }[activeModule] ?? 'getting-started'
+
+  useEffect(() => {
+    if (!['help', 'about'].includes(activeModule)) previousOperationalModule.current = activeModule
+  }, [activeModule])
+
+  useEffect(() => {
+    if (activeModule !== 'help') return undefined
+    const onKeyDown = (event) => {
+      const target = event.target
+      if (event.key === 'Escape'
+          && !(target instanceof HTMLInputElement)
+          && !(target instanceof HTMLTextAreaElement)
+          && !(target instanceof HTMLSelectElement)
+          && !target?.isContentEditable) {
+        navigateToModule(previousOperationalModule.current)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [activeModule, navigateToModule])
+
+  function handleModuleLink(event, moduleId) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    navigateToModule(moduleId)
+  }
 
   const totalPages = Math.max(
     1,
@@ -384,29 +430,59 @@ function App() {
   const exportDisabled = !exportParams || !customExportRangeValid || exporting
 
   return (
-    <div className="dashboard">
+    <div className="app-shell">
+      <a className="skip-link" href="#main-content" onClick={(event) => skipToWorkspaceMain(event, activeModule)}>Skip to main content</a>
+      <aside className="app-sidebar" aria-label="Application sidebar">
+        <a className="sidebar-brand" href={workspaceHash('overview')}
+          onClick={(event) => handleModuleLink(event, 'overview')}>
+          <img className="brand-mark" src="/favicon-48.png" alt="" width="38" height="38" />
+          <span><strong>SentinelIP</strong><small>Security Operations</small></span>
+        </a>
+        <nav className="module-nav" aria-label="Main navigation">
+          <p className="nav-label">Workspace</p>
+          {modules.map(({ id, label }) => (
+            <a key={id} href={workspaceHash(id)} aria-current={activeModule === id ? 'page' : undefined}
+              onClick={(event) => handleModuleLink(event, id)}><NavIcon name={id} />{label}</a>
+          ))}
+          <div className="nav-divider" />
+          <p className="nav-label">Local operator</p>
+          <a className="operator-nav-link" href={workspaceHash('data-lifecycle')}
+            aria-current={activeModule === 'data-lifecycle' ? 'page' : undefined}
+            onClick={(event) => handleModuleLink(event, 'data-lifecycle')}><NavIcon name="data-lifecycle" />Data Lifecycle</a>
+        </nav>
+        <nav className="support-nav" aria-label="Support and information">
+          <p className="nav-label">Support &amp; Information</p>
+          {['help', 'about'].map((id) => {
+            const label = id === 'help' ? 'Help & User Guide' : 'About SentinelIP'
+            return <a key={id} href={workspaceHash(id)} aria-current={activeModule === id ? 'page' : undefined}
+              onClick={(event) => handleModuleLink(event, id)}><NavIcon name={id} />{label}</a>
+          })}
+        </nav>
+        <div className="sidebar-caption">Security Operations Workspace</div>
+      </aside>
+
+      <div className="workspace-column">
       <header className="dashboard-header">
         <div>
-          <p className="eyebrow">
-            Security Monitoring
-          </p>
-
+          <p className="eyebrow">Security Operations Platform</p>
           <h1>SentinelIP</h1>
-
-          <p className="subtitle">
-            Network visibility, monitoring, threat detection, correlation, and incident review
-          </p>
+          <p className="subtitle">Security Operations Workspace</p>
         </div>
 
         <div className="header-actions">
+          <button className="header-help-button" type="button" onClick={() => navigateToModule('help', moduleHelpTopic)} aria-label={`Help for ${activeModule === 'help' ? 'current topic' : WORKSPACE_MODULES.find(({ id }) => id === activeModule)?.label ?? 'workspace'}`}>
+            <NavIcon name="help" /> Help
+          </button>
           <div
             className={`status ${
               health?.status === 'ok'
                 ? 'online'
                 : 'offline'
             }`}
+            role="status"
+            aria-live="polite"
           >
-            <span className="status-dot" />
+            <span className="status-dot" aria-hidden="true" />
 
             {health?.status === 'ok'
               ? 'API Online'
@@ -418,24 +494,30 @@ function App() {
             type="button"
             onClick={loadData}
             disabled={isRefreshing}
+            aria-label={isRefreshing ? 'Refreshing dashboard data' : 'Refresh dashboard data'}
           >
             {isRefreshing
               ? 'Refreshing...'
               : 'Refresh now'}
           </button>
 
-          <span className="last-updated">
+          <span className="last-updated" aria-label={`Last updated ${formatUpdatedTime(lastUpdated)}`}>
             Last updated: {formatUpdatedTime(lastUpdated)}
           </span>
         </div>
       </header>
 
+      <main id="main-content" className="dashboard" tabIndex="-1">
       {error && (
-        <div className="error-box">
+        <div className="error-box" role="alert">
           {error}
         </div>
       )}
 
+      <section className="module-section workspace-module" id="module-overview" aria-labelledby="workspace-heading-overview"
+        hidden={activeModule !== 'overview'} inert={activeModule !== 'overview'}>
+      <div className="module-heading"><div><p className="panel-kicker">Workspace</p><h2 id="workspace-heading-overview" tabIndex="-1">Overview</h2></div>
+        <p className="module-description">Current event volume and severity summary.</p></div>
       <section className="cards">
         <article className="card total-card">
           <span>Total Events</span>
@@ -458,14 +540,51 @@ function App() {
         </article>
       </section>
 
-      <InvestigationLookup onOpenResult={openInvestigationResult} />
-      <DataLifecycle />
+      <section className="panel activity-spark-panel" aria-labelledby="activity-spark-title">
+        <div className="panel-heading"><div><p className="panel-kicker">Security activity</p><h2 id="activity-spark-title">Recent event volume</h2></div>
+          <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>View analytics</a></div>
+        {timeline.length === 0 ? <p className="empty-state">No timeline data.</p> : (() => {
+          const items = timeline.slice(-12)
+          const max = Math.max(1, ...items.map((item) => Number(item.total) || 0))
+          return <div className="activity-spark" role="img" aria-label={`Event volume for the latest ${items.length} timeline intervals`}>
+            {items.map((item, index) => <span key={`${item.minute}-${index}`} title={`${item.minute}: ${item.total} events`}
+              style={{ '--bar-height': `${Math.max(5, ((Number(item.total) || 0) / max) * 100)}%` }} />)}
+          </div>
+        })()}
+      </section>
 
+      <section className="panel overview-alert-preview" aria-labelledby="overview-alerts-title">
+        <div className="panel-heading"><div><p className="panel-kicker">Latest activity</p><h2 id="overview-alerts-title">Recent Alerts</h2></div>
+          <span className="panel-count">{alerts.length}</span></div>
+        {alerts.length === 0 ? <p className="empty-state">No alerts recorded.</p> : <div className="alert-list">
+          {alerts.slice(0, 3).map((alert) => <article className="alert-item overview-alert-item" key={alert.id}>
+            <div className="alert-item-top"><span className={severityClass(alert.severity)}>{alert.severity}</span>
+              <span className="event-time">{alert.timestamp}</span></div>
+            <strong>{alert.message}</strong>
+          </article>)}
+        </div>}
+        <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>Open Events &amp; Analytics</a>
+      </section>
+      <div className="overview-quick-links" aria-label="Quick links">
+        {modules.slice(1).map(({ id, label }) => <a key={id} href={workspaceHash(id)} onClick={(event) => handleModuleLink(event, id)}>{label}<span aria-hidden="true">→</span></a>)}
+      </div>
+      </section>
+
+      <section className="module-section workspace-module" id="module-scope-discovery" aria-labelledby="workspace-heading-scope-discovery"
+        hidden={activeModule !== 'scope-discovery'} inert={activeModule !== 'scope-discovery'}>
+        <div className="module-heading"><div><p className="panel-kicker">Authorized scope</p><h2 id="workspace-heading-scope-discovery" tabIndex="-1">Scope &amp; Discovery</h2></div></div>
+        <InvestigationLookup onOpenResult={openInvestigationResult} />
       <NetworkWorkspace investigationRequest={investigationNavigation} onOpenInvestigationContext={openInvestigationContext} />
+      </section>
 
+      <section className="module-section workspace-module" id="module-remote-sensors" aria-labelledby="workspace-heading-remote-sensors"
+        hidden={activeModule !== 'remote-sensors'} inert={activeModule !== 'remote-sensors'}>
+        <div className="module-heading"><div><p className="panel-kicker">Fleet operations</p><h2 id="workspace-heading-remote-sensors" tabIndex="-1">Remote Sensors</h2></div></div>
       <RemoteSensorFleet investigationRequest={investigationNavigation} onOpenInvestigationContext={openInvestigationContext} />
+      </section>
 
       <SecurityReviewPanel
+        activeModule={activeModule}
         refreshSignal={lastUpdated}
         investigationRequest={investigationNavigation}
         onOpenInvestigationContext={openInvestigationContext}
@@ -476,6 +595,9 @@ function App() {
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
 
+      <section className="module-section workspace-module" id="module-perimeter" aria-labelledby="workspace-heading-perimeter"
+        hidden={activeModule !== 'perimeter'} inert={activeModule !== 'perimeter'}>
+      <div className="module-heading"><div><p className="panel-kicker">Network edge</p><h2 id="workspace-heading-perimeter" tabIndex="-1">Perimeter</h2></div></div>
       <ExternalActivityDashboard
         refreshSignal={lastUpdated}
         investigationRequest={investigationNavigation}
@@ -491,7 +613,11 @@ function App() {
         onStartReview={startReviewFromEvidence}
         reviewIntakeSubmitting={reviewIntakeSubmitting}
       />
+      </section>
 
+      <section className="module-section workspace-module" id="module-events-analytics" aria-labelledby="workspace-heading-events-analytics"
+        hidden={activeModule !== 'events-analytics'} inert={activeModule !== 'events-analytics'}>
+      <div className="module-heading"><div><p className="panel-kicker">Event intelligence</p><h2 id="workspace-heading-events-analytics" tabIndex="-1">Events &amp; Analytics</h2></div></div>
       <section className="panel" id="legacy-events-history">
         <div className="panel-heading">
           <div>
@@ -1027,12 +1153,51 @@ function App() {
           </div>
         </div>
       </section>
+      </section>
+
+      <section className="module-section workspace-module operator-module" id="module-data-lifecycle" aria-labelledby="workspace-heading-data-lifecycle"
+        hidden={activeModule !== 'data-lifecycle'} inert={activeModule !== 'data-lifecycle'}>
+        <div className="module-heading"><div><p className="panel-kicker">Local operator</p><h2 id="workspace-heading-data-lifecycle" tabIndex="-1">Data Lifecycle</h2></div></div>
+        <DataLifecycle />
+      </section>
+      <section className="module-section workspace-module support-module" id="module-help" aria-labelledby="workspace-heading-help"
+        hidden={activeModule !== 'help'} inert={activeModule !== 'help'}>
+        <div className="module-heading"><div><p className="panel-kicker">Support &amp; Information</p><h2 id="workspace-heading-help" tabIndex="-1">Help &amp; User Guide</h2></div>
+          <button type="button" className="text-link-button" onClick={() => navigateToModule(previousOperationalModule.current)}>Return to workspace</button></div>
+        <HelpGuide topicId={helpTopic} onTopicChange={selectHelpTopic} />
+      </section>
+      <section className="module-section workspace-module support-module" id="module-about" aria-labelledby="workspace-heading-about"
+        hidden={activeModule !== 'about'} inert={activeModule !== 'about'}>
+        <div className="module-heading"><div><p className="panel-kicker">Support &amp; Information</p><h2 id="workspace-heading-about" tabIndex="-1">About SentinelIP</h2></div></div>
+        <AboutSentinelIP />
+      </section>
+      </main>
 
       <footer className="dashboard-footer">
-        Automatic refresh every 5 seconds
+        <strong>Tanashi Studio™</strong>
+        <span>Automatic refresh every 5 seconds</span>
+        <span>© 2026 Tanashi Studio. All rights reserved.</span>
       </footer>
+      </div>
     </div>
   )
 }
 
 export default App
+
+function NavIcon({ name }) {
+  const shared = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false }
+  const shapes = {
+    overview: <><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="11" width="7" height="10" rx="1" /><rect x="3" y="14" width="8" height="7" rx="1" /></>,
+    'scope-discovery': <><circle cx="12" cy="12" r="8.5" /><path d="M3.8 12h16.4M12 3.5a13 13 0 0 1 0 17M12 3.5a13 13 0 0 0 0 17" /></>,
+    'remote-sensors': <><path d="M12 18v3M8 21h8M5 14a10 10 0 0 1 14 0M8 10a5.7 5.7 0 0 1 8 0M11 6a1.5 1.5 0 0 1 2 0" /><circle cx="12" cy="17" r="1" /></>,
+    operations: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4.5V3h6v1.5M8 10h8M8 14h8M8 18h5" /></>,
+    detections: <><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6l8-3Z" /><path d="M12 8v5M12 16h.01" /></>,
+    perimeter: <><circle cx="12" cy="12" r="8.5" /><path d="M12 12 19 7M12 4v2M20 12h-2M12 20v-2M4 12h2" /><circle cx="12" cy="12" r="2" /></>,
+    'events-analytics': <><path d="M3 20h18M5 16l4-5 4 2 6-8" /><circle cx="5" cy="16" r="1" /><circle cx="9" cy="11" r="1" /><circle cx="13" cy="13" r="1" /><circle cx="19" cy="5" r="1" /></>,
+    'data-lifecycle': <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" /></>,
+    help: <><circle cx="12" cy="12" r="9" /><path d="M9.7 9a2.4 2.4 0 1 1 4.4 1.3c-.9 1.1-2.1 1.4-2.1 3M12 17h.01" /></>,
+    about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
+  }
+  return <svg className="nav-icon" {...shared}>{shapes[name]}</svg>
+}

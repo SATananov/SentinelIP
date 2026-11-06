@@ -289,7 +289,7 @@ function SecurityDetail({
   )
 }
 
-function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, investigationRequest = null, onStartReview,
+function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, investigationRequest = null, activeModule = 'detections', onStartReview,
   onOpenInvestigationContext = null,
   onClearReviewIntake, onReviewIntakeSubmitting, reviewIntakeSubmitting = false }) {
   const [data, setData] = useState({
@@ -394,6 +394,8 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, invest
 
   return (
     <section className="security-layer" id="security-review">
+      <div className="security-workspace-part" id="module-operations"
+        hidden={activeModule !== 'operations'} inert={activeModule !== 'operations'}>
       <IncidentReviewOperations
         refreshSignal={refreshSignal}
         reviewRefreshSignal={reviewOperationsRefreshSignal}
@@ -406,10 +408,13 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, invest
           onPromotionSubmitting={onReviewIntakeSubmitting}
           onOpenInvestigationContext={onOpenInvestigationContext} />}
       />
+      </div>
+      <section className="security-workspace-part" id="module-detections" aria-labelledby="workspace-heading-detections"
+        hidden={activeModule !== 'detections'} inert={activeModule !== 'detections'}>
       <div className="security-layer-heading">
         <div>
           <p className="panel-kicker">Deterministic Security Pipeline</p>
-          <h2>Threats, Correlations & Security Incidents</h2>
+          <h2 id="workspace-heading-detections" tabIndex="-1">Threats, Correlations &amp; Security Incidents</h2>
           <p className="security-layer-copy">
             Persisted backend interpretations only. The dashboard does not
             run detection, correlation, or incident creation.
@@ -545,6 +550,7 @@ function SecurityReviewPanel({ refreshSignal, reviewIntakeRequest = null, invest
               ))}
             </div>}
       </article>
+      </section>
     </section>
   )
 }

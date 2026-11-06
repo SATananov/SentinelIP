@@ -174,8 +174,8 @@ function IncidentReviewOperations({ refreshSignal, reviewRefreshSignal = 0, onSe
   const currentPage = page ? Math.floor(page.offset / page.limit) + 1 : 1
 
   return (
-    <section className="panel review-operations">
-      <div className="panel-heading"><div><p className="panel-kicker">Analyst Operations</p><h2>Operations Summary</h2>
+    <section className="panel review-operations" aria-labelledby="workspace-heading-operations">
+      <div className="panel-heading"><div><p className="panel-kicker">Analyst Operations</p><h2 id="workspace-heading-operations" tabIndex="-1">Operations Summary</h2>
         <p className="security-layer-copy">Priority reflects analyst review workload. Review age is time since creation and does not indicate severity.</p>
         <p className="security-layer-copy">Attention signals describe analyst workflow conditions. They do not change review priority, state, or disposition.</p></div>
         <span className="panel-count">{loading ? '…' : page?.total ?? 0}</span></div>
