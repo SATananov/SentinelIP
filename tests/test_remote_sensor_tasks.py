@@ -402,20 +402,90 @@ def test_service_task_result_uses_derived_device_and_existing_inventory(context)
         assert c.execute('SELECT source FROM service_observations').fetchone()[0]==source
 
 
-def test_result_rejects_wrong_type_device_mutation_and_transport_replay(context):
-    store, admin, machine, sensor, scope = context['store'],context['admin'],context['machine'],context['sensor'],context['scope']
-    task=admin.post(f"/sensors/{sensor.record['id']}/tasks/discover-services",json={
-        'scope_id':scope['id'],'device_id':context['device']['id']}).json()
-    machine.post('/sensor/tasks/claim',headers=headers(context))
-    machine.post(f"/sensor/tasks/{task['id']}/start",headers=headers(context))
-    wrong=machine.post(f"/sensor/tasks/{task['id']}/result",headers=headers(context),json={
-        'task_type':'DISCOVER_NETWORK','observations':[]})
+def test_wrong_result_type_fails_task_and_rejects_later_result(context):
+    store = context['store']
+    admin = context['admin']
+    machine = context['machine']
+    sensor = context['sensor']
+    scope = context['scope']
+    device = context['device']
+
+    created = admin.post(
+        f"/sensors/{sensor.record['id']}/tasks/discover-services",
+        json={'scope_id': scope['id'], 'device_id': device['id']}
+    )
+    assert created.status_code == 201
+    task_id = created.json()['id']
+
+    assert machine.post(
+        '/sensor/tasks/claim', headers=headers(context)
+    ).status_code == 200
+
+    assert machine.post(
+        f'/sensor/tasks/{task_id}/start', headers=headers(context)
+    ).status_code == 200
+
+    wrong = machine.post(
+        f'/sensor/tasks/{task_id}/result',
+        headers=headers(context),
+        json={'task_type': 'DISCOVER_NETWORK', 'observations': []}
+    )
     assert wrong.status_code == 400
-    with get_connection(store.db_path) as c:
-        c.execute('UPDATE devices SET last_ip_address=? WHERE id=?',('192.168.2.20',context['device']['id']))
-    result=machine.post(f"/sensor/tasks/{task['id']}/result",headers=headers(context),json={
-        'task_type':'DISCOVER_SERVICES','ports':[],'services':[]})
+
+    with get_connection(store.db_path) as connection:
+        status = connection.execute(
+            'SELECT status FROM remote_sensor_tasks WHERE id=?',
+            (task_id,)
+        ).fetchone()[0]
+
+    assert status == 'FAILED'
+
+    replay = machine.post(
+        f'/sensor/tasks/{task_id}/result',
+        headers=headers(context),
+        json={'task_type': 'DISCOVER_SERVICES', 'ports': [], 'services': []}
+    )
+    assert replay.status_code == 409
+    assert replay.json()['detail']['code'] == 'INVALID_TRANSITION'
+
+
+def test_device_outside_scope_rejected_before_task_result(context):
+    store = context['store']
+    admin = context['admin']
+    machine = context['machine']
+    sensor = context['sensor']
+    scope = context['scope']
+    device = context['device']
+
+    created = admin.post(
+        f"/sensors/{sensor.record['id']}/tasks/discover-services",
+        json={'scope_id': scope['id'], 'device_id': device['id']}
+    )
+    assert created.status_code == 201
+    task_id = created.json()['id']
+
+    assert machine.post(
+        '/sensor/tasks/claim', headers=headers(context)
+    ).status_code == 200
+
+    assert machine.post(
+        f'/sensor/tasks/{task_id}/start', headers=headers(context)
+    ).status_code == 200
+
+    with get_connection(store.db_path) as connection:
+        connection.execute(
+            'UPDATE devices SET last_ip_address=? WHERE id=?',
+            ('192.168.2.20', device['id'])
+        )
+
+    result = machine.post(
+        f'/sensor/tasks/{task_id}/result',
+        headers=headers(context),
+        json={'task_type': 'DISCOVER_SERVICES', 'ports': [], 'services': []}
+    )
+
     assert result.status_code == 403
+    assert result.json()['detail']['code'] == 'TARGET_OUTSIDE_SCOPE'
 
 
 def test_no_execution_escape_routes_and_scope_assignment_is_management_only(context):
