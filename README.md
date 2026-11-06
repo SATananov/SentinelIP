@@ -271,10 +271,18 @@ At the Release Readiness 01 checkpoint, the verified baseline was:
 
 ## Releases
 
-Current verified release baseline: **v0.1.0**.
+Latest tagged source release: **v1.0.1** (2026-11-06).
 
-See [CHANGELOG.md](CHANGELOG.md) for the verified release summary and known
-watchpoints.
+The v1.0.1 source archive has been verified against the Git release tag:
+517 files matched, with no missing, extra, or changed files.
+
+The v1.0.1 update adds frontend investigation-navigation null guards and
+SentinelIP application branding.
+
+The latest fully documented historical test baseline remains v0.1.0.
+A complete v1.0.1 Python test-suite PASS has not yet been established.
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and verification scope.
 
 ## Development status
 

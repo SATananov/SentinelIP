@@ -6,6 +6,31 @@ SentinelIP remains under active development. Release notes describe verified
 project state at the tagged commit; they do not imply proof of compromise,
 malware, phishing, exploitation, or attacker identity.
 
+## [v1.0.1] — 2026-11-06
+
+Frontend stability and application branding update.
+
+### Fixed
+
+- Added investigation-navigation null guards in frontend dashboard components.
+- Added regression coverage for investigation null-guard behavior.
+
+### Branding
+
+- Added SentinelIP favicon and application icon assets.
+- Updated frontend HTML application branding.
+
+### Release verification
+
+- Release tag resolves to commit `4ac6c499b14a1e3bf04af8655feb109d7adf50eb`.
+- Clean source ZIP verified against all 517 tracked release files.
+- No missing, extra, or changed source files in the verified ZIP.
+- Full v1.0.1 Python test-suite PASS remains unconfirmed.
+
+The v1.0.1 update does not introduce Core API or remote sensor protocol changes.
+
+---
+
 ## [v0.1.0] — 2026-10-12
 
 First verified defensive security platform baseline.
