@@ -33,6 +33,31 @@ Each layer remains distinct. A finding, threat, correlation, or incident review
 is not automatically proof of compromise, malware, phishing, exploitation, or
 attacker identity.
 
+## Local dashboard (current `main`)
+
+The Linux development checkout includes a React/Vite dashboard backed by the
+local FastAPI Core. The dashboard offers seven persistent workspace modules:
+
+- **Overview** — the four backend-owned event/severity totals, a compact recent
+  activity chart, and up to three recent alert previews.
+- **Scope & Discovery** — authorized scope, inventory, discovery and investigation
+  entry points.
+- **Remote Sensors** — sensor fleet, management and bounded task workflows.
+- **Operations** — operational workload and explicit Incident Review workflows.
+- **Detections** — existing security detections and investigation context.
+- **Perimeter** — available perimeter and external-exposure review views.
+- **Events & Analytics** — event history, timeline, filters and bounded exports.
+
+**Data Lifecycle** is a separate local-operator destination; **Help & User Guide**
+and **About SentinelIP** are separate support destinations. The desktop layout
+uses a sidebar and narrow screens provide a Workspace menu. Hash-based routes
+support direct links and browser Back/Forward without remounting the workspace
+or discarding its form and filter state.
+
+These UI features are included in local source checkpoint `1eec263` and are
+not part of the earlier tagged `v1.0.1` source release. The UI does not imply a
+packaged Linux or Windows desktop installer.
+
 ## Project documentation
 
 - [Frontend dashboard](frontend/README.md)
@@ -155,14 +180,17 @@ runtime.
 
 ## API and dashboard
 
-The FastAPI backend exposes existing event, analytics, reporting,
-authorized-network, telemetry, and read-only security-review functionality.
+The FastAPI backend exposes event, analytics, reporting, authorized-network,
+telemetry, read-only threat/correlation review and explicit operator-managed
+Incident Review workflows. Some management operations are state-changing and
+require deliberate operator actions and their existing backend safeguards.
 
-Threat, correlation, and incident review endpoints are read-only.
-
-The React dashboard presents established backend state. It does not run threat
-detection, create correlations, open incidents, or mutate security
-interpretation.
+The React dashboard displays backend-derived security signals. It does not
+independently run detection or correlation engines, infer compromise, or
+create security meaning. It can issue bounded, explicit requests to create and
+manage Incident Review records, attach evidence and perform other supported
+operator workflows; the backend remains authoritative for validation, state
+and security interpretation.
 
 ## Reports
 
@@ -217,13 +245,26 @@ name; the local frontend uses loopback. See
 [`docs/operator-boundary-21d.md`](docs/operator-boundary-21d.md) for the
 deployment, certificate, and operator-boundary contract.
 
-In another terminal, start the React frontend:
+In a separate terminal, start the React frontend from the repository root:
 
 ```bash
 cd frontend
-npm install
-npm run dev
+npm ci
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
 ```
+
+Open `http://127.0.0.1:5173/`. Keep the API process running separately on
+`127.0.0.1:8000`. Check its read-only health endpoint with:
+
+```bash
+curl -i http://127.0.0.1:8000/health
+```
+
+These are **development commands**, not a one-click installer or automatically
+managed background service. Do not assume a running Vite server also starts
+FastAPI; use separate terminals and avoid starting a second server on a busy
+port. Database-backed API operations can change local state; use authorized
+scopes and explicit operator approval for actions that mutate data.
 
 The Vite development server is allowed by the local API CORS configuration at
 `http://127.0.0.1:5173` and `http://localhost:5173`.
@@ -258,10 +299,17 @@ Run frontend checks:
 ```bash
 cd frontend
 npm run lint
+node --test tests/*.test.js
 npm run build
 ```
 
-At the Release Readiness 01 checkpoint, the verified baseline was:
+At local source checkpoint `1eec263` (2026-11-07), the frontend checks were
+reported as **194/194 Node tests passing**, with ESLint and Vite build PASS
+on Kali Linux. This is a **frontend-only** verification; it is not a complete
+backend, sensor, end-to-end or desktop packaging certification. The Vite build
+still reports a non-blocking large JavaScript chunk warning.
+
+At the earlier Release Readiness 01 checkpoint, the verified baseline was:
 
 - 607 backend tests passing
 - 102 DNS sensor tests passing
@@ -271,7 +319,9 @@ At the Release Readiness 01 checkpoint, the verified baseline was:
 
 ## Releases
 
-Latest tagged source release: **v1.0.1** (2026-11-06).
+Latest tagged source release at this documentation update: **v1.0.1**
+(2026-11-06). The current `main` development checkpoint `1eec263` is newer,
+but it is **not** a new tagged release.
 
 The v1.0.1 source archive has been verified against the Git release tag:
 517 files matched, with no missing, extra, or changed files.
