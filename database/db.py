@@ -10,15 +10,46 @@ from database.migrations import apply_migrations
 from services.ssh_input_limits import validate_ssh_username
 
 
-DB_PATH = Path(__file__).resolve().parent / "sentinelip.db"
-TOP_SOURCE_SAMPLE_SIZE = 10_000
-_PLATFORM_NAME = os.name
-_DATABASE_MODE = 0o600
-_LOGGER = logging.getLogger(__name__)
+DATABASE_PATH_ENV = "SENTINELIP_DATABASE_PATH"
 
 
 class DatabaseSecurityError(PermissionError):
     """The SQLite database path could not be secured before opening it."""
+
+
+def resolve_database_path(configured_value=None) -> Path:
+    """Resolve the process-wide Core database path without opening SQLite."""
+    if configured_value is None:
+        configured_value = os.environ.get(DATABASE_PATH_ENV)
+    if configured_value is None:
+        return Path(__file__).resolve().parent / "sentinelip.db"
+    if not isinstance(configured_value, str) or not configured_value.strip():
+        raise DatabaseSecurityError(
+            f"{DATABASE_PATH_ENV} must be a non-empty absolute filesystem path."
+        )
+    if configured_value != configured_value.strip():
+        raise DatabaseSecurityError(
+            f"{DATABASE_PATH_ENV} must not contain leading or trailing whitespace."
+        )
+    if configured_value == ":memory:" or configured_value.lower().startswith("file:"):
+        raise DatabaseSecurityError(
+            f"{DATABASE_PATH_ENV} must not use SQLite URI or in-memory syntax."
+        )
+    if "\x00" in configured_value:
+        raise DatabaseSecurityError(f"{DATABASE_PATH_ENV} contains a NUL byte.")
+    candidate = Path(configured_value)
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        raise DatabaseSecurityError(
+            f"{DATABASE_PATH_ENV} must be an unambiguous absolute path without '..'."
+        )
+    return candidate
+
+
+DB_PATH = resolve_database_path()
+TOP_SOURCE_SAMPLE_SIZE = 10_000
+_PLATFORM_NAME = os.name
+_DATABASE_MODE = 0o600
+_LOGGER = logging.getLogger(__name__)
 
 
 def _database_security_error(path: str, reason: str) -> DatabaseSecurityError:
@@ -174,7 +205,12 @@ def _secure_database_path(db_path) -> str:
     if db_path == ":memory:":
         return ":memory:"
     try:
-        path = os.path.abspath(os.fsdecode(os.fspath(db_path)))
+        raw_path = os.fsdecode(os.fspath(db_path))
+        if raw_path.lower().startswith("file:"):
+            raise ValueError("SQLite URI paths are not permitted")
+        if "\x00" in raw_path:
+            raise ValueError("NUL byte")
+        path = os.path.abspath(raw_path)
     except (TypeError, ValueError, OSError) as exc:
         raise DatabaseSecurityError(
             "SQLite database path must be a filesystem path or ':memory:'."
