@@ -81,7 +81,8 @@ test('about copy stays within verified capabilities and carries required attribu
 
 test('help and about layouts adapt to narrow screens with visible keyboard focus', async () => {
   assert.match(css, /\.help-layout, \.about-grid \{ grid-template-columns: 1fr; \}/)
-  assert.match(css, /\.support-nav \{ display: flex; overflow-x: auto/)
+  assert.match(css, /\.mobile-workspace-menu \{[^}]*overflow-y: auto/s)
+  assert.match(await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8'), /mobile-workspace-menu[\s\S]*?Support &amp; Information[\s\S]*?About SentinelIP/)
   const globalCss = await readFile(new URL('../src/index.css', import.meta.url), 'utf8')
   assert.match(globalCss, /:focus-visible/)
 })

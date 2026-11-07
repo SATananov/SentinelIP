@@ -58,6 +58,14 @@ function App() {
   const [investigationNavigation, setInvestigationNavigation] = useState(null)
   const investigationNavigationNonce = useRef(0)
   const [health, setHealth] = useState(null)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const mobileMenuButtonRef = useRef(null)
+
+  useEffect(() => {
+    const closeMobileMenu = () => setMobileMenuOpen(false)
+    window.addEventListener('hashchange', closeMobileMenu)
+    return () => window.removeEventListener('hashchange', closeMobileMenu)
+  }, [])
 
   const [overview, setOverview] = useState({
     total_events: 0,
@@ -172,6 +180,21 @@ function App() {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     navigateToModule(moduleId)
+  }
+
+  function handleMobileMenuKeyDown(event) {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    setMobileMenuOpen(false)
+    mobileMenuButtonRef.current?.focus()
+  }
+
+  function selectMobileDestination(event, moduleId) {
+    handleModuleLink(event, moduleId)
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    setMobileMenuOpen(false)
+    mobileMenuButtonRef.current?.focus()
   }
 
   const totalPages = Math.max(
@@ -458,6 +481,30 @@ function App() {
               onClick={(event) => handleModuleLink(event, id)}><NavIcon name={id} />{label}</a>
           })}
         </nav>
+        <div className="mobile-workspace">
+          <button ref={mobileMenuButtonRef} id="mobile-workspace-button" className="mobile-workspace-button"
+            type="button" aria-label={`Workspace: ${WORKSPACE_MODULES.find(({ id }) => id === activeModule)?.label ?? (activeModule === 'help' ? 'Help & User Guide' : 'About SentinelIP')}`}
+            aria-expanded={mobileMenuOpen} aria-controls="mobile-workspace-menu"
+            onClick={() => setMobileMenuOpen((open) => !open)} onKeyDown={handleMobileMenuKeyDown}>
+            <span><small>Workspace</small><strong>{WORKSPACE_MODULES.find(({ id }) => id === activeModule)?.label ?? (activeModule === 'help' ? 'Help & User Guide' : 'About SentinelIP')}</strong></span>
+            <span className={`mobile-menu-indicator${mobileMenuOpen ? ' is-open' : ''}`} aria-hidden="true">⌄</span>
+          </button>
+          <nav id="mobile-workspace-menu" className="mobile-workspace-menu" aria-label="Workspace destinations"
+            hidden={!mobileMenuOpen} inert={!mobileMenuOpen} onKeyDown={handleMobileMenuKeyDown}>
+            <p className="mobile-menu-group-label">Workspace</p>
+            {modules.map(({ id, label }) => <a key={id} href={workspaceHash(id)} aria-current={activeModule === id ? 'page' : undefined}
+              onClick={(event) => selectMobileDestination(event, id)}><NavIcon name={id} />{label}<span className="mobile-destination-check" aria-hidden="true">{activeModule === id ? '✓' : ''}</span></a>)}
+            <p className="mobile-menu-group-label">Local operator</p>
+            <a href={workspaceHash('data-lifecycle')} aria-current={activeModule === 'data-lifecycle' ? 'page' : undefined}
+              onClick={(event) => selectMobileDestination(event, 'data-lifecycle')}><NavIcon name="data-lifecycle" />Data Lifecycle<span className="mobile-destination-check" aria-hidden="true">{activeModule === 'data-lifecycle' ? '✓' : ''}</span></a>
+            <p className="mobile-menu-group-label">Support &amp; Information</p>
+            {['help', 'about'].map((id) => {
+              const label = id === 'help' ? 'Help & User Guide' : 'About SentinelIP'
+              return <a key={id} href={workspaceHash(id)} aria-current={activeModule === id ? 'page' : undefined}
+                onClick={(event) => selectMobileDestination(event, id)}><NavIcon name={id} />{label}<span className="mobile-destination-check" aria-hidden="true">{activeModule === id ? '✓' : ''}</span></a>
+            })}
+          </nav>
+        </div>
         <div className="sidebar-caption">Security Operations Workspace</div>
       </aside>
 
@@ -518,7 +565,7 @@ function App() {
         hidden={activeModule !== 'overview'} inert={activeModule !== 'overview'}>
       <div className="module-heading"><div><p className="panel-kicker">Workspace</p><h2 id="workspace-heading-overview" tabIndex="-1">Overview</h2></div>
         <p className="module-description">Current event volume and severity summary.</p></div>
-      <section className="cards">
+      <section className="cards overview-kpis" aria-label="Event summary">
         <article className="card total-card">
           <span>Total Events</span>
           <strong>{overview.total_events}</strong>
@@ -540,31 +587,52 @@ function App() {
         </article>
       </section>
 
-      <section className="panel activity-spark-panel" aria-labelledby="activity-spark-title">
-        <div className="panel-heading"><div><p className="panel-kicker">Security activity</p><h2 id="activity-spark-title">Recent event volume</h2></div>
-          <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>View analytics</a></div>
-        {timeline.length === 0 ? <p className="empty-state">No timeline data.</p> : (() => {
-          const items = timeline.slice(-12)
-          const max = Math.max(1, ...items.map((item) => Number(item.total) || 0))
-          return <div className="activity-spark" role="img" aria-label={`Event volume for the latest ${items.length} timeline intervals`}>
-            {items.map((item, index) => <span key={`${item.minute}-${index}`} title={`${item.minute}: ${item.total} events`}
-              style={{ '--bar-height': `${Math.max(5, ((Number(item.total) || 0) / max) * 100)}%` }} />)}
-          </div>
-        })()}
-      </section>
+      <div className="overview-content-grid">
+        <section className="panel activity-spark-panel" aria-labelledby="activity-spark-title">
+          <div className="panel-heading"><div><p className="panel-kicker">Security activity</p><h2 id="activity-spark-title">Recent event volume</h2></div>
+            <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>View analytics</a></div>
+          {timeline.length === 0 ? <p className="empty-state">No timeline data.</p> : (() => {
+            const items = timeline.slice(-12)
+            const max = Math.max(1, ...items.map((item) => Number(item.total) || 0))
+            return <>
+              <div className="activity-spark" aria-hidden="true">
+                {items.map((item, index) => <span key={`${item.minute}-${index}`}
+                  style={{ '--bar-height': `${Math.max(5, ((Number(item.total) || 0) / max) * 100)}%` }} />)}
+              </div>
+              <ol className="activity-accessible-values" aria-label="Displayed activity interval counts">
+                {items.map((item, index) => <li key={`${item.minute}-${index}`}>
+                  {item.minute}: {item.total} events
+                </li>)}
+              </ol>
+              <details className="activity-interval-details">
+                <summary>View activity interval values</summary>
+                <ol className="activity-interval-list" aria-label="Displayed activity intervals">
+                  {items.map((item, index) => <li key={`${item.minute}-${index}`}>
+                    <time>{item.minute}</time><span>{item.total} events</span>
+                  </li>)}
+                </ol>
+              </details>
+            </>
+          })()}
+        </section>
 
-      <section className="panel overview-alert-preview" aria-labelledby="overview-alerts-title">
-        <div className="panel-heading"><div><p className="panel-kicker">Latest activity</p><h2 id="overview-alerts-title">Recent Alerts</h2></div>
-          <span className="panel-count">{alerts.length}</span></div>
-        {alerts.length === 0 ? <p className="empty-state">No alerts recorded.</p> : <div className="alert-list">
-          {alerts.slice(0, 3).map((alert) => <article className="alert-item overview-alert-item" key={alert.id}>
-            <div className="alert-item-top"><span className={severityClass(alert.severity)}>{alert.severity}</span>
-              <span className="event-time">{alert.timestamp}</span></div>
-            <strong>{alert.message}</strong>
-          </article>)}
-        </div>}
-        <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>Open Events &amp; Analytics</a>
-      </section>
+        <section className="panel overview-alert-preview" aria-labelledby="overview-alerts-title">
+          <div className="panel-heading"><div><p className="panel-kicker">Latest activity</p><h2 id="overview-alerts-title">Recent Alerts</h2></div></div>
+          {alerts.length === 0 ? <p className="empty-state">No alerts recorded.</p> : <div className="alert-list">
+            {alerts.slice(0, 3).map((alert) => <article className="alert-item overview-alert-item" key={alert.id}>
+              <div className="alert-item-top"><span className={severityClass(alert.severity)}>{alert.severity}</span>
+                <span className="event-time">{alert.timestamp}</span></div>
+              <strong>{alert.message}</strong>
+              <div className="overview-alert-meta">
+                {alert.source_ip && <span>Source: {alert.source_ip}</span>}
+                {alert.event_type && <span>Type: {alert.event_type}</span>}
+                {Number(alert.event_count) > 1 && <span>Events: {alert.event_count}</span>}
+              </div>
+            </article>)}
+          </div>}
+          <a className="text-link" href={workspaceHash('events-analytics')} onClick={(event) => handleModuleLink(event, 'events-analytics')}>Open Events &amp; Analytics</a>
+        </section>
+      </div>
       <div className="overview-quick-links" aria-label="Quick links">
         {modules.slice(1).map(({ id, label }) => <a key={id} href={workspaceHash(id)} onClick={(event) => handleModuleLink(event, id)}>{label}<span aria-hidden="true">→</span></a>)}
       </div>
