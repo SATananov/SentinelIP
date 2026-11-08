@@ -18,6 +18,7 @@ import {
 
 import SecurityReviewPanel from './components/SecurityReviewPanel.jsx'
 import NetworkWorkspace from './components/NetworkWorkspace.jsx'
+import ReconLab from './components/ReconLab.jsx'
 import RemoteSensorFleet from './components/RemoteSensorFleet.jsx'
 import ExternalActivityDashboard from './components/ExternalActivityDashboard.jsx'
 import ExternalExposureDashboard from './components/ExternalExposureDashboard.jsx'
@@ -151,7 +152,7 @@ function App() {
   const topIpSampleLabel = topIpBasisLabel(overview.top_ips_basis)
   const modules = WORKSPACE_MODULES.filter(({ id }) => id !== 'data-lifecycle')
   const moduleHelpTopic = {
-    overview: 'overview', 'scope-discovery': 'scope', 'remote-sensors': 'sensors',
+    overview: 'overview', 'recon-lab': 'scope', 'scope-discovery': 'scope', 'remote-sensors': 'sensors',
     operations: 'operations', detections: 'detections', perimeter: 'perimeter',
     'events-analytics': 'events', 'data-lifecycle': 'lifecycle',
   }[activeModule] ?? 'getting-started'
@@ -636,6 +637,12 @@ function App() {
       <div className="overview-quick-links" aria-label="Quick links">
         {modules.slice(1).map(({ id, label }) => <a key={id} href={workspaceHash(id)} onClick={(event) => handleModuleLink(event, id)}>{label}<span aria-hidden="true">→</span></a>)}
       </div>
+      </section>
+
+      <section className="module-section workspace-module" id="module-recon-lab" aria-labelledby="workspace-heading-recon-lab"
+        hidden={activeModule !== 'recon-lab'} inert={activeModule !== 'recon-lab'}>
+        <div className="module-heading"><div><p className="panel-kicker">Security assessment</p><h2 id="workspace-heading-recon-lab" tabIndex="-1">Recon Lab</h2></div></div>
+        <ReconLab active={activeModule === 'recon-lab'} onNavigate={navigateToModule} />
       </section>
 
       <section className="module-section workspace-module" id="module-scope-discovery" aria-labelledby="workspace-heading-scope-discovery"
@@ -1257,6 +1264,7 @@ function NavIcon({ name }) {
   const shared = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false }
   const shapes = {
     overview: <><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="11" width="7" height="10" rx="1" /><rect x="3" y="14" width="8" height="7" rx="1" /></>,
+    'recon-lab': <><circle cx="12" cy="12" r="8" /><path d="M12 1v4M12 19v4M1 12h4M19 12h4M9 12h6M12 9v6" /></>,
     'scope-discovery': <><circle cx="12" cy="12" r="8.5" /><path d="M3.8 12h16.4M12 3.5a13 13 0 0 1 0 17M12 3.5a13 13 0 0 0 0 17" /></>,
     'remote-sensors': <><path d="M12 18v3M8 21h8M5 14a10 10 0 0 1 14 0M8 10a5.7 5.7 0 0 1 8 0M11 6a1.5 1.5 0 0 1 2 0" /><circle cx="12" cy="17" r="1" /></>,
     operations: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4.5V3h6v1.5M8 10h8M8 14h8M8 18h5" /></>,

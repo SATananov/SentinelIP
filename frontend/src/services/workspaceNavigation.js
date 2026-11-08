@@ -1,5 +1,6 @@
 export const WORKSPACE_MODULES = Object.freeze([
   { id: 'overview', label: 'Overview' },
+  { id: 'recon-lab', label: 'Recon Lab' },
   { id: 'scope-discovery', label: 'Scope & Discovery' },
   { id: 'remote-sensors', label: 'Remote Sensors' },
   { id: 'operations', label: 'Operations' },

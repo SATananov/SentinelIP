@@ -2,6 +2,7 @@ import csv
 import ipaddress
 
 from api.remote_sensors import local_management, register_remote_routes
+from api.recon_evidence import register_recon_evidence_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
 from api.remote_tasks import register_remote_task_routes
 from api.perimeter_ingestion import register_perimeter_ingestion_routes
@@ -1579,3 +1580,5 @@ register_external_exposure_change_routes(app, lambda: DB_PATH)
 register_external_exposure_dashboard_routes(app, lambda: DB_PATH)
 register_incident_review_routes(app, lambda: DB_PATH)
 app.add_middleware(SensorBodyLimitMiddleware)
+
+register_recon_evidence_routes(app, lambda: DB_PATH)
