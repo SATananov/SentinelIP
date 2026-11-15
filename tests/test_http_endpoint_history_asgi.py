@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.http_fingerprint import register_http_fingerprint_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware
 from database.db import get_connection, initialize_database
+from database.services import create_port, save_port_observation
 from services.http_endpoint_observations import persist_http_endpoint_observation
 from tests.test_http_endpoint_history_api import _add_target, _http_result, _store
 
@@ -31,6 +32,66 @@ def _database_connection(path):
 
 def create_app():
     database_path = os.environ["SENTINELIP_DATABASE_PATH"]
+    from services import http_endpoint_fingerprint as fingerprint
+
+    class FixtureChannel:
+        def __init__(self, port):
+            self.port = port
+            self.response = (
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n"
+                b"Server: fixture/1\r\nDate: Sun, 15 Nov 2026 12:00:00 GMT\r\n"
+                b"Set-Cookie: secret=fixture\r\n\r\nBODY-SECRET"
+            )
+            self.sent = bytearray()
+            self.closed = False
+
+        async def sendall(self, data, deadline):
+            self.sent.extend(data)
+
+        async def recv(self, size, deadline):
+            result = self.response[:size]
+            self.response = self.response[size:]
+            return result
+
+        def close(self):
+            self.closed = True
+
+    class FixtureConnector:
+        async def connect(self, target_ip, port, deadline):
+            if port == 9444:
+                raise ConnectionRefusedError("fixture refusal")
+            return FixtureChannel(port)
+
+    async def establish_fixture_tls(cls, channel, context, server_hostname, deadline):
+        if channel.port == 9443:
+            raise fingerprint._TLSHandshakeFailure("untrusted_certificate", verification_failed=True)
+        return type("FixtureTLSChannel", (), {
+            "ssl_object": object(),
+            "sendall": channel.sendall,
+            "recv": channel.recv,
+            "close": channel.close,
+        })()
+
+    def verified_fixture_tls(ssl_object, endpoint):
+        return {
+            "protocol_version": "TLSv1.3",
+            "cipher": {"name": "TLS_AES_256_GCM_SHA384", "protocol": "TLSv1.3", "bits": 256},
+            "certificate_subject": [{"name": "commonName", "value": "fixture.local"}],
+            "certificate_issuer": [{"name": "commonName", "value": "fixture CA"}],
+            "not_before": "2026-11-15T00:00:00+00:00",
+            "not_after": "2027-11-15T00:00:00+00:00",
+            "subject_alt_names": [{"type": "IP Address", "value": endpoint["target_ip"]}],
+            "sha256_fingerprint": "c" * 64,
+            "certificate_verification": "VERIFIED",
+            "hostname_verification": None,
+            "ip_address_verification": "MATCHED",
+            "verification_name": endpoint["target_ip"],
+            "error_category": None,
+        }
+
+    fingerprint.DirectIPv4Connector = FixtureConnector
+    fingerprint._TLSChannel.establish = classmethod(establish_fixture_tls)
+    fingerprint._verified_tls_observation = verified_fixture_tls
     app = FastAPI()
     app.add_middleware(
         CORSMiddleware,
@@ -87,9 +148,13 @@ class LocalApi:
         self.close()
         raise TimeoutError(f"Uvicorn did not become ready within 10 seconds: {last_error}")
 
-    def request(self, path, headers=None):
+    def request(self, path, headers=None, *, method="GET", body=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=2)
-        connection.request("GET", path, headers=headers or {})
+        request_headers = dict(headers or {})
+        payload = None if body is None else json.dumps(body)
+        if payload is not None:
+            request_headers.setdefault("Content-Type", "application/json")
+        connection.request(method, path, body=payload, headers=request_headers)
         response = connection.getresponse()
         body = response.read(2_200_000)
         connection.close()
@@ -114,9 +179,19 @@ def asgi_fixture(tmp_path):
     initialize_database(database_path)
     first = _add_target(database_path, "asgi-first", "192.168.51.0/24", "192.168.51.10")
     second = _add_target(database_path, "asgi-second", "192.168.52.0/24", "192.168.52.10")
+    extra_ports = {}
+    for number in (8443, 9443, 9444):
+        port = create_port(first[1]["id"], number, "tcp", "open", "2026-10-01T00:00:00+00:00",
+                           "2026-10-01T00:00:00+00:00", database_path)
+        save_port_observation(
+            device_id=first[1]["id"], port_id=port["id"], ip_address=first[1]["last_ip_address"],
+            port_number=number, transport="tcp", state="open",
+            observed_at="2026-10-01T00:00:00+00:00", source="nmap", db_path=database_path,
+        )
+        extra_ports[number] = port
     server = LocalApi(database_path)
     try:
-        yield database_path, first, second, server
+        yield database_path, first, second, extra_ports, server
     finally:
         server.close()
 
@@ -127,7 +202,7 @@ def _path(target):
 
 
 def test_real_uvicorn_http_history_authorization_pagination_and_no_side_effects(asgi_fixture):
-    database_path, first, second, server = asgi_fixture
+    database_path, first, second, _, server = asgi_fixture
     equal_time = "2026-11-01T12:00:00+00:00"
     initial = [_store(database_path, first, observed_at=equal_time) for _ in range(4)]
     https = _store(database_path, first, scheme="https", observed_at="2026-11-02T12:00:00+00:00")
@@ -210,7 +285,7 @@ def test_real_uvicorn_http_history_authorization_pagination_and_no_side_effects(
 
 
 def test_real_uvicorn_denies_sensor_and_forwarded_headers_before_history_reads(asgi_fixture):
-    database_path, first, _, server = asgi_fixture
+    database_path, first, _, _, server = asgi_fixture
     _store(database_path, first)
     for headers in (
         {"X-Sensor-UUID": "fixture"},
@@ -220,3 +295,74 @@ def test_real_uvicorn_denies_sensor_and_forwarded_headers_before_history_reads(a
         {"Host": "example.invalid"},
     ):
         assert server.request(_path(first), headers)[0] == 403
+
+
+def test_real_uvicorn_inspection_persists_http_https_failures_and_history_readback(asgi_fixture):
+    database_path, first, _, extra_ports, server = asgi_fixture
+
+    def inspect_path(port):
+        return (f"/scopes/{first[0]['id']}/devices/{first[1]['id']}/ports/"
+                f"{port['id']}/fingerprint-http")
+
+    http_status, _, http_body = server.request(
+        inspect_path(first[2]), method="POST", body={"scheme": "http"},
+    )
+    assert http_status == 200
+    assert http_body["outcome"] == "RESPONSE_RECEIVED"
+    assert http_body["persistence"]["status"] == "PERSISTED"
+    http_id = http_body["persistence"]["observation_id"]
+    http_run = http_body["persistence"]["scan_run_id"]
+    assert server.request(_path(first) + f"?scan_run_id={http_run}")[2]["items"][0]["id"] == http_id
+    assert "BODY-SECRET" not in json.dumps(http_body)
+    assert "secret" not in json.dumps(http_body).lower()
+
+    https_status, _, https_body = server.request(
+        inspect_path(extra_ports[8443]), method="POST", body={"scheme": "https"},
+    )
+    assert https_status == 200 and https_body["outcome"] == "RESPONSE_RECEIVED"
+    https_id = https_body["persistence"]["observation_id"]
+    https_run = https_body["persistence"]["scan_run_id"]
+    history = server.request(
+        _path((first[0], first[1], extra_ports[8443])) + f"?scan_run_id={https_run}"
+    )[2]
+    assert history["returned"] == 1
+    assert history["items"][0]["id"] == https_id
+    assert history["items"][0]["tls"]["verification_status"] == "VERIFIED"
+    assert history["items"][0]["tls"]["sha256_fingerprint"] == "c" * 64
+
+    failed_status, _, failed_body = server.request(
+        inspect_path(extra_ports[9443]), method="POST", body={"scheme": "https"},
+    )
+    assert failed_status == 200
+    assert failed_body["outcome"] == "TLS_VERIFICATION_FAILED"
+    assert failed_body["persistence"]["status"] == "PERSISTED"
+    failed_history = server.request(
+        _path((first[0], first[1], extra_ports[9443]))
+        + f"?scan_run_id={failed_body['persistence']['scan_run_id']}"
+    )[2]["items"][0]
+    assert failed_history["id"] == failed_body["persistence"]["observation_id"]
+    assert failed_history["tls"]["verification_status"] == "FAILED"
+    assert failed_history["tls"]["certificate_subject"] is None
+    assert failed_history["tls"]["sha256_fingerprint"] is None
+
+    refused_status, _, refused_body = server.request(
+        inspect_path(extra_ports[9444]), method="POST", body={"scheme": "http"},
+    )
+    assert refused_status == 200 and refused_body["outcome"] == "CONNECTION_FAILED"
+    assert refused_body["persistence"]["status"] == "PERSISTED"
+    assert server.request(
+        _path((first[0], first[1], extra_ports[9444]))
+        + f"?scan_run_id={refused_body['persistence']['scan_run_id']}"
+    )[2]["items"][0]["outcome"] == "CONNECTION_FAILED"
+
+    with _database_connection(database_path) as connection:
+        rows = connection.execute(
+            "SELECT COUNT(*) FROM http_endpoint_observations WHERE device_id=?",
+            (first[1]["id"],),
+        ).fetchone()[0]
+        stored_tls = connection.execute(
+            "SELECT verification_status,sha256_fingerprint FROM http_tls_observations "
+            "WHERE endpoint_observation_id=?", (failed_body["persistence"]["observation_id"],),
+        ).fetchone()
+    assert rows == 4
+    assert tuple(stored_tls) == ("FAILED", None)

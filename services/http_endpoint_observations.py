@@ -409,11 +409,12 @@ def _validate_relationships(connection, data):
         raise HttpEndpointPersistenceError("HTTP Host value does not match the authorized endpoint.")
 
 
-def persist_http_endpoint_observation(result, db_path=DB_PATH, *, started_at=None):
+def persist_http_endpoint_observation(result, db_path=DB_PATH, *, started_at=None, completed_at=None):
     data = _metadata(result)
     started = _timestamp(started_at, "started_at") if started_at is not None else data["observed_at"]
-    if datetime.fromisoformat(started) > datetime.fromisoformat(data["observed_at"]):
-        raise HttpEndpointPersistenceError("Run start time cannot follow observation time.")
+    completed = _timestamp(completed_at, "completed_at") if completed_at is not None else data["observed_at"]
+    if datetime.fromisoformat(started) > datetime.fromisoformat(completed):
+        raise HttpEndpointPersistenceError("Run start time cannot follow completion time.")
     connection = get_connection(db_path)
     try:
         if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
@@ -433,7 +434,7 @@ def persist_http_endpoint_observation(result, db_path=DB_PATH, *, started_at=Non
                (id, scope_id, profile, scanner, scanner_version, started_at, completed_at, status, error_category)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (scan_run_id, data["scope_id"], SCAN_PROFILE, SCANNER_ID, "1.0", started,
-             data["observed_at"], "COMPLETED" if data["outcome"] == "RESPONSE_RECEIVED" else "FAILED",
+             completed, "COMPLETED" if data["outcome"] == "RESPONSE_RECEIVED" else "FAILED",
              data["error_category"]),
         )
         if cursor.rowcount != 1:
@@ -442,7 +443,7 @@ def persist_http_endpoint_observation(result, db_path=DB_PATH, *, started_at=Non
             """INSERT INTO recon_scan_targets
                (run_id, target_ip, device_id, started_at, completed_at, outcome, error_category)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (scan_run_id, data["target_ip"], data["device_id"], started, data["observed_at"],
+            (scan_run_id, data["target_ip"], data["device_id"], started, completed,
              "COMPLETED" if data["outcome"] == "RESPONSE_RECEIVED" else "FAILED",
              data["error_category"]),
         )

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
@@ -11,6 +12,7 @@ from services.http_endpoint_history import (
     HistoryCursorError,
     list_http_endpoint_history,
 )
+from services.http_endpoint_observations import persist_http_endpoint_observation
 
 
 class HttpFingerprintRequest(BaseModel):
@@ -57,12 +59,37 @@ def register_http_fingerprint_routes(app: FastAPI, db_path_provider: Callable):
         port_id: int,
         payload: HttpFingerprintRequest,
     ):
-        service = HttpEndpointFingerprintService(db_path_provider())
+        db_path = db_path_provider()
+        service = HttpEndpointFingerprintService(db_path)
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
-            return await service.inspect(
+            result = await service.inspect(
                 scope_id, device_id, port_id, scheme=payload.scheme,
             )
         except HttpEndpointError as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
         except HostnameReauthorizationRequired as exc:
             raise HTTPException(409, str(exc)) from exc
+        if result.get("outcome") == "CAPACITY_REJECTED":
+            return {**result, "persistence": {"status": "NOT_ATTEMPTED", "reason": "capacity_rejected"}}
+        try:
+            persisted = persist_http_endpoint_observation(
+                result, db_path, started_at=started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except Exception as exc:
+            raise HTTPException(503, {
+                "code": "observation_persistence_failed",
+                "message": "Inspection completed but its observation could not be stored.",
+                "inspection_outcome": result.get("outcome"),
+                "persistence_status": "FAILED",
+            }) from exc
+        return {
+            **result,
+            "persistence": {
+                "status": "PERSISTED",
+                "observation_id": persisted["observation_id"],
+                "scan_run_id": persisted["scan_run_id"],
+                "scan_target_id": persisted["scan_target_id"],
+            },
+        }
