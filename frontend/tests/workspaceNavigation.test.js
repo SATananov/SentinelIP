@@ -8,7 +8,7 @@ import {
 } from '../src/services/workspaceNavigation.js'
 
 test('module selection and direct links accept current and Phase 26B-B hashes', () => {
-  assert.equal(WORKSPACE_MODULES.length, 8) // Seven workspace modules plus local operator utility.
+  assert.equal(WORKSPACE_MODULES.length, 9) // Eight workspace modules plus local operator utility.
   assert.equal(moduleFromHash('#workspace/events-analytics'), 'events-analytics')
   assert.equal(moduleFromHash('#module-overview'), 'overview')
   assert.equal(moduleFromHash('#module-remote-sensors'), 'remote-sensors')

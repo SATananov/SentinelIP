@@ -3,8 +3,7 @@ import { API_BASE } from './apiBase.js'
 async function evidenceRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...options })
   if (!response.ok) {
-    let detail = ''
-    try { const body = await response.json(); detail = body.detail || '' } catch { detail = '' }
+    const detail = await response.json().then((body) => body?.detail || '').catch(() => '')
     throw new Error(detail || `Evidence request failed (${response.status})`)
   }
   return response.status === 204 ? null : response.json()

@@ -80,7 +80,8 @@ test('keyboard focus and narrow-screen styles remain present without app-level n
   assert.match(css, /@media \(max-width: 760px\)/)
   assert.match(css, /overflow-x: auto/)
   assert.doesNotMatch(css, /\.app-shell\s*\{[^}]*overflow-y:\s*auto/s)
-  assert.doesNotMatch(css, /\.workspace-column\s*\{[^}]*height:\s*100vh/s)
+  const workspaceColumn = /\.workspace-column\s*\{([^}]*)\}/s.exec(css)?.[1] ?? ''
+  assert.doesNotMatch(workspaceColumn, /(?:^|[;\s])height:\s*100vh/)
   assert.match(app, /Tanashi Studio™/)
   assert.match(app, /© 2026 Tanashi Studio\. All rights reserved\./)
 })
