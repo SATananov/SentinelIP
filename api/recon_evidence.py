@@ -11,6 +11,7 @@ from api.remote_sensors import local_management
 from database.db import get_connection, initialize_database
 from database.inventory import get_device
 from database.findings import list_device_findings
+from api.recon_assessment_report import register_recon_assessment_report_routes
 
 MAX_IMAGE_BYTES = 1_048_576
 MAX_IMAGES_PER_DEVICE = 20
@@ -52,6 +53,7 @@ def serialize(row, include_image=False):
 
 
 def register_recon_evidence_routes(app: FastAPI, db_path_provider: Callable):
+    register_recon_assessment_report_routes(app, db_path_provider)
     def connect():
         path = db_path_provider()
         initialize_database(path)
