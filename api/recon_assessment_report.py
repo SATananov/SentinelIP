@@ -5,9 +5,21 @@ from typing import Callable
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import Response
 
 from api.remote_sensors import local_management
 from database.db import get_connection
+from services.recon_assessment_exports import (
+    DOCX_MIME,
+    HTML_CSP,
+    HTML_MIME,
+    PDF_MIME,
+    ReportOutputLimitError,
+    load_export_images,
+    render_assessment_docx,
+    render_assessment_html,
+    render_assessment_pdf,
+)
 
 REPORT_SCHEMA_VERSION = "1.0"
 MAX_DEVICES = 100
@@ -22,6 +34,35 @@ def register_recon_assessment_report_routes(app: FastAPI, db_path_provider: Call
     @app.get("/recon/scopes/{scope_id}/assessment-report", dependencies=[Depends(local_management)])
     def get_assessment_report(scope_id: int):
         return build_assessment_report(scope_id, db_path_provider())
+
+    def export(scope_id, renderer, media_type, extension):
+        path = db_path_provider()
+        report = build_assessment_report(scope_id, path)
+        images = load_export_images(report, path)
+        try:
+            body = renderer(report, images)
+        except ReportOutputLimitError as exc:
+            raise HTTPException(413, str(exc)) from exc
+        headers = {
+            "Content-Disposition": f'attachment; filename="sentinelip-assessment-{scope_id}-{report["report_id"]}.{extension}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        if extension == "html":
+            headers["Content-Security-Policy"] = HTML_CSP
+        return Response(content=body, media_type=media_type, headers=headers)
+
+    @app.get("/recon/scopes/{scope_id}/assessment-report/pdf", dependencies=[Depends(local_management)])
+    def get_assessment_report_pdf(scope_id: int):
+        return export(scope_id, render_assessment_pdf, PDF_MIME, "pdf")
+
+    @app.get("/recon/scopes/{scope_id}/assessment-report/docx", dependencies=[Depends(local_management)])
+    def get_assessment_report_docx(scope_id: int):
+        return export(scope_id, render_assessment_docx, DOCX_MIME, "docx")
+
+    @app.get("/recon/scopes/{scope_id}/assessment-report/html", dependencies=[Depends(local_management)])
+    def get_assessment_report_html(scope_id: int):
+        return export(scope_id, render_assessment_html, HTML_MIME, "html")
 
 
 def build_assessment_report(scope_id: int, db_path: str):

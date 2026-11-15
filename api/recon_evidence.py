@@ -52,6 +52,37 @@ def serialize(row, include_image=False):
     return item
 
 
+def verify_authorized_device_scope(device_id, db_path):
+    device = get_device(device_id, db_path=db_path)
+    if device is None:
+        raise HTTPException(404, 'Device not found.')
+    with get_connection(db_path) as conn:
+        owned = conn.execute(
+            """SELECT 1 FROM devices d JOIN authorized_scopes s
+                 ON ((s.scope_type='PRIVATE_NETWORK' AND EXISTS (
+                        SELECT 1 FROM network_scope_links l
+                        WHERE l.scope_id=s.id AND l.network_id=d.network_id))
+                     OR (s.scope_type IN ('PUBLIC_IPV4','PUBLIC_CIDR','HOSTNAME')
+                         AND d.scope_id=s.id AND d.network_id IS NULL))
+               WHERE d.id=? AND s.authorized=1 AND s.enabled=1
+                 AND s.authorization_confirmed_at IS NOT NULL
+                 AND s.authorization_confirmation_version IS NOT NULL
+                 AND s.authorization_source IS NOT NULL
+                 AND ((s.scope_type='PUBLIC_IPV4' AND d.last_ip_address=s.canonical_target)
+                   OR (s.scope_type='PUBLIC_CIDR' AND EXISTS (
+                        SELECT 1 FROM scope_cidr_addresses a WHERE a.scope_id=s.id
+                          AND a.canonical_cidr=s.canonical_target AND a.ipv4_address=d.last_ip_address))
+                   OR (s.scope_type='HOSTNAME' AND EXISTS (
+                        SELECT 1 FROM scope_hostname_addresses a WHERE a.scope_id=s.id
+                          AND a.ipv4_address=d.last_ip_address AND a.approved=1))
+                   OR s.scope_type='PRIVATE_NETWORK')""",
+            (device_id,),
+        ).fetchone()
+    if owned is None:
+        raise HTTPException(403, 'Device is not in an enabled authorized scope.')
+    return device
+
+
 def register_recon_evidence_routes(app: FastAPI, db_path_provider: Callable):
     register_recon_assessment_report_routes(app, db_path_provider)
     def connect():
@@ -60,8 +91,7 @@ def register_recon_evidence_routes(app: FastAPI, db_path_provider: Callable):
         return get_connection(path)
 
     def verify_device(device_id, db_path):
-        if get_device(device_id, db_path=db_path) is None:
-            raise HTTPException(404, 'Device not found.')
+        verify_authorized_device_scope(device_id, db_path)
 
     @app.get('/recon/devices/{device_id}/evidence', dependencies=[Depends(local_management)])
     def list_evidence(device_id: int):

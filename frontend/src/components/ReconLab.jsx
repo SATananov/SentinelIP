@@ -198,7 +198,7 @@ function ReconLab({ active, onNavigate }) {
             <section><h4>Services ({review.services?.length || 0})</h4>{review.services?.length ? review.services.map((x) => <p key={x.id}>{x.service_name || 'Unknown'} · {[x.product, x.version].filter(Boolean).join(' ') || 'Unknown version'}</p>) : <p>No recorded services.</p>}</section>
             <section><h4>Findings ({review.findings?.length || 0})</h4>{review.findings?.length ? review.findings.map((x) => <p key={x.id}><strong>{x.title}</strong> · {x.severity} · {x.status}<small>{x.reason}</small></p>) : <p>No findings recorded.</p>}</section>
             <section><h4>CVE matches ({review.cveMatches?.length || 0})</h4>{review.cveMatches?.length ? review.cveMatches.map((x) => <p key={x.id}>{x.cve_id || `Match #${x.id}`} · {x.match_status || x.status || 'Requires review'}</p>) : <p>No CVE matches recorded.</p>}</section>
-          </div><ReconEvidence deviceId={review.device.id} findings={review.findings || []}/><p className="recon-muted">CVE matches need to be verified before being described as confirmed vulnerabilities.</p>
+          </div><ReconEvidence key={review.device.id} deviceId={review.device.id} device={review.device} ports={review.ports || []} services={review.services || []} findings={review.findings || []}/><p className="recon-muted">CVE matches need to be verified before being described as confirmed vulnerabilities.</p>
         </div>}
       </section>
       </>}
