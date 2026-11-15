@@ -119,6 +119,7 @@ class ServiceDiscoveryResult:
     services: tuple[ServiceObservation, ...] = ()
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    scanner_version: str | None = None
 
     def __post_init__(self):
         normalized_target = normalize_ipv4(self.target_ip)
@@ -144,3 +145,6 @@ class ServiceDiscoveryResult:
         object.__setattr__(self, "services", normalized_services)
         object.__setattr__(self, "warnings", tuple(self.warnings))
         object.__setattr__(self, "errors", tuple(self.errors))
+        if self.scanner_version is not None:
+            version = self.scanner_version.strip() if isinstance(self.scanner_version, str) else ""
+            object.__setattr__(self, "scanner_version", version or None)

@@ -24,7 +24,7 @@ from services.sensor_transport import authenticated_sensor_headers
 def context(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError('No scanner or subprocess permitted')
-    monkeypatch.setattr('services.scanner_adapters.nmap_adapter.subprocess.run', forbidden)
+    monkeypatch.setattr('services.scanner_adapters.nmap_adapter._run_nmap', forbidden)
     now = [datetime(2026, 10, 13, tzinfo=timezone.utc)]
     store = RemoteSensorStore(tmp_path / 'enrollment.db', clock=lambda: now[0])
     app = FastAPI()

@@ -17,6 +17,9 @@ from services.scanner_adapters.nmap_adapter import (
 from services.service_discovery import discover_services
 from services.service_inventory import ServiceInventoryService
 from database.services import list_ports, list_services
+from database.scopes import get_scope_for_network
+from database.db import get_connection
+from services.scan_provenance import start_tcp_service_run
 
 
 NMAP_SERVICE_XML = """
@@ -66,7 +69,7 @@ def test_builds_conservative_single_target_command():
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ) as run:
         scanner.discover_services("192.168.1.20")
@@ -82,13 +85,7 @@ def test_builds_conservative_single_target_command():
     )
     assert command[-3:] == ["-oX", "-", "192.168.1.20"]
     assert command.count("192.168.1.20") == 1
-    assert options == {
-        "shell": False,
-        "timeout": 45,
-        "capture_output": True,
-        "text": True,
-        "check": False,
-    }
+    assert run.call_args.args[1:] == (45, 1_048_576)
     assert "-sS" not in command
     assert "-A" not in command
     assert "-O" not in command
@@ -102,7 +99,7 @@ def test_parses_open_tcp_ports_and_service_evidence():
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ):
         result = scanner.discover_services("192.168.1.20")
@@ -129,7 +126,7 @@ def test_service_name_only_is_low_confidence():
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout=xml),
     ):
         result = scanner.discover_services("192.168.1.20")
@@ -144,7 +141,7 @@ def test_empty_valid_result_is_supported():
     xml = "<?xml version='1.0'?><nmaprun />"
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout=xml),
     ):
         result = scanner.discover_services("192.168.1.20")
@@ -169,7 +166,7 @@ def test_mismatched_xml_target_is_rejected():
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout=xml),
     ):
         with pytest.raises(ScannerParseError):
@@ -179,15 +176,15 @@ def test_mismatched_xml_target_is_rejected():
 @pytest.mark.parametrize(
     ("side_effect", "error"),
     [
-        (FileNotFoundError, ScannerUnavailableError),
-        (subprocess.TimeoutExpired("nmap", 45), ScannerTimeoutError),
+        (ScannerUnavailableError("missing"), ScannerUnavailableError),
+        (ScannerTimeoutError("timed out"), ScannerTimeoutError),
     ],
 )
 def test_controlled_process_errors(side_effect, error):
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         side_effect=side_effect,
     ):
         with pytest.raises(error):
@@ -198,14 +195,14 @@ def test_nonzero_and_malformed_outputs_raise_controlled_errors():
     scanner = NmapServiceDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout="", returncode=1),
     ):
         with pytest.raises(ScannerExecutionError):
             scanner.discover_services("192.168.1.20")
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout="<nmaprun>"),
     ):
         with pytest.raises(ScannerParseError):
@@ -236,9 +233,11 @@ def test_authorized_service_discovery_to_inventory_is_mocked(tmp_path):
         db_path=db_path,
     )
     scanner = NmapServiceDiscoveryScanner()
+    scope = get_scope_for_network(network["id"], db_path)
+    run_id = start_tcp_service_run(scope["id"], device["last_ip_address"], device["id"], db_path)
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ):
         result = discover_services(network, device, scanner)
@@ -246,10 +245,15 @@ def test_authorized_service_discovery_to_inventory_is_mocked(tmp_path):
             network,
             device,
             result,
+            scan_run_id=run_id,
         )
 
     assert len(list_ports(device["id"], db_path)) == 3
     assert len(list_services(device["id"], db_path)) == 2
+    with get_connection(db_path) as connection:
+        assert connection.execute("SELECT status FROM recon_scan_runs WHERE id=?", (run_id,)).fetchone()[0] == "COMPLETED"
+        assert connection.execute("SELECT COUNT(*) FROM port_observations WHERE scan_run_id=?", (run_id,)).fetchone()[0] == 3
+        assert connection.execute("SELECT COUNT(*) FROM service_observations WHERE scan_run_id=?", (run_id,)).fetchone()[0] == 2
 
 
 def test_unauthorized_service_discovery_never_invokes_adapter():
@@ -267,7 +271,7 @@ def test_unauthorized_service_discovery_never_invokes_adapter():
     }
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run"
+        "services.scanner_adapters.nmap_adapter._run_nmap"
     ) as run:
         with pytest.raises(ValueError):
             discover_services(network, device, scanner)

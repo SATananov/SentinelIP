@@ -131,6 +131,7 @@ def save_port_observation(
     source: str,
     db_path=DB_PATH,
     conn: sqlite3.Connection | None = None,
+    scan_run_id: str | None = None,
 ):
     with connection_context(db_path, conn=conn) as connection:
         if conn is None:
@@ -146,8 +147,9 @@ def save_port_observation(
                 state,
                 observed_at,
                 source
+                ,scan_run_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 device_id,
@@ -158,6 +160,7 @@ def save_port_observation(
                 state,
                 observed_at,
                 source,
+                scan_run_id,
             ),
         )
         row = connection.execute(
@@ -330,6 +333,7 @@ def save_service_observation(
     source: str,
     db_path=DB_PATH,
     conn: sqlite3.Connection | None = None,
+    scan_run_id: str | None = None,
 ):
     with connection_context(db_path, conn=conn) as connection:
         if conn is None:
@@ -347,8 +351,9 @@ def save_service_observation(
                 confidence,
                 observed_at,
                 source
+                ,scan_run_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 service_id,
@@ -361,6 +366,7 @@ def save_service_observation(
                 confidence,
                 observed_at,
                 source,
+                scan_run_id,
             ),
         )
         row = connection.execute(

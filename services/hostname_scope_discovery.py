@@ -18,6 +18,7 @@ from services.scope_authorization import (
 )
 from services.service_inventory import ServiceInventoryService
 from services.service_models import ServiceDiscoveryResult
+from services.scan_provenance import start_tcp_service_run, fail_tcp_service_run
 
 
 class HostnameScopeDiscoveryError(ValueError):
@@ -124,12 +125,18 @@ def scan_hostname_scope(
         except (ValueError, DeviceInventoryError) as exc:
             raise HostnameScopeDiscoveryError(str(exc)) from exc
 
-        service_result = service_scanner.discover_public_services(address)
-        if not isinstance(service_result, ServiceDiscoveryResult):
-            raise HostnameScopeDiscoveryError("Service scanner returned invalid evidence.")
-        inventory = ServiceInventoryService(db_path=db_path).process_hostname_result(
-            scope, device, service_result
-        )
+        run_id = start_tcp_service_run(scope["id"], address, device["id"], db_path)
+        try:
+            service_result = service_scanner.discover_public_services(address)
+            if not isinstance(service_result, ServiceDiscoveryResult):
+                raise HostnameScopeDiscoveryError("Service scanner returned invalid evidence.")
+            inventory = ServiceInventoryService(db_path=db_path).process_hostname_result(
+                scope, device, service_result, run_id
+            )
+        except BaseException as exc:
+            category = "cancelled" if not isinstance(exc, Exception) else "timeout" if "timed out" in str(exc).lower() else "parse" if "invalid evidence" in str(exc).lower() else "persistence" if isinstance(exc, ValueError) else "execution"
+            fail_tcp_service_run(run_id, address, category, db_path)
+            raise
         current_device = inventory_db.get_device(device["id"], db_path=db_path)
         findings = RiskEngine(db_path=db_path).evaluate_scope_device(
             current_device, scope["id"]

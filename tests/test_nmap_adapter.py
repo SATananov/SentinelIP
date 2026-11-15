@@ -54,7 +54,7 @@ def test_builds_conservative_nmap_command():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ) as run:
         scanner.discover_hosts("192.168.1.9/24")
@@ -63,11 +63,7 @@ def test_builds_conservative_nmap_command():
     options = run.call_args.kwargs
 
     assert command == ["nmap", "-sn", "192.168.1.0/24", "-oX", "-"]
-    assert options["shell"] is False
-    assert options["timeout"] == 30
-    assert options["capture_output"] is True
-    assert options["text"] is True
-    assert options["check"] is False
+    assert run.call_args.args[1:] == (30, 1_048_576)
     assert "-sn" in command
     assert "-oX" in command
     assert "-sV" not in command
@@ -81,7 +77,7 @@ def test_parses_up_hosts_and_ignores_down_hosts():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ):
         result = scanner.discover_hosts("192.168.1.0/24")
@@ -107,7 +103,7 @@ def test_empty_scan_result_is_valid():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout=xml),
     ):
         result = scanner.discover_hosts("192.168.1.0/24")
@@ -119,7 +115,7 @@ def test_malformed_xml_raises_controlled_parse_error():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout="<nmaprun>"),
     ):
         with pytest.raises(ScannerParseError):
@@ -130,8 +126,8 @@ def test_missing_executable_raises_controlled_unavailable_error():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
-        side_effect=FileNotFoundError,
+        "services.scanner_adapters.nmap_adapter._run_nmap",
+        side_effect=ScannerUnavailableError,
     ):
         with pytest.raises(ScannerUnavailableError):
             scanner.discover_hosts("192.168.1.0/24")
@@ -141,8 +137,8 @@ def test_timeout_raises_controlled_timeout_error():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
-        side_effect=subprocess.TimeoutExpired("nmap", 30),
+        "services.scanner_adapters.nmap_adapter._run_nmap",
+        side_effect=ScannerTimeoutError("timed out"),
     ):
         with pytest.raises(ScannerTimeoutError):
             scanner.discover_hosts("192.168.1.0/24")
@@ -152,7 +148,7 @@ def test_nonzero_result_raises_controlled_execution_error():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout="", returncode=1),
     ):
         with pytest.raises(ScannerExecutionError):
@@ -163,7 +159,7 @@ def test_oversized_output_raises_controlled_execution_error():
     scanner = NmapHostDiscoveryScanner(max_output_bytes=10)
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(stdout="01234567890"),
     ):
         with pytest.raises(ScannerExecutionError):
@@ -174,7 +170,7 @@ def test_target_is_one_argument_and_unsafe_targets_are_rejected():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ) as run:
         scanner.discover_hosts("192.168.1.1/24")
@@ -189,7 +185,7 @@ def test_adapter_integrates_with_authorized_host_discovery_service():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run",
+        "services.scanner_adapters.nmap_adapter._run_nmap",
         return_value=completed_process(),
     ):
         result = discover_hosts(
@@ -210,7 +206,7 @@ def test_adapter_does_not_scan_unauthorized_or_disabled_networks():
     scanner = NmapHostDiscoveryScanner()
 
     with patch(
-        "services.scanner_adapters.nmap_adapter.subprocess.run"
+        "services.scanner_adapters.nmap_adapter._run_nmap"
     ) as run:
         with pytest.raises(ValueError):
             discover_hosts(

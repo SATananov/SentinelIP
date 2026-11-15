@@ -18,7 +18,7 @@ def context(monkeypatch, tmp_path):
     monkeypatch.setattr(api, 'DB_PATH', path)
     def forbidden(*args, **kwargs):
         raise AssertionError('No real subprocess or scan is permitted in this test')
-    monkeypatch.setattr('services.scanner_adapters.nmap_adapter.subprocess.run', forbidden)
+    monkeypatch.setattr('services.scanner_adapters.nmap_adapter._run_nmap', forbidden)
     return make_local_test_client(api.app), path
 
 
@@ -115,7 +115,7 @@ def test_exact_addresses_commands_inventory_and_existing_reviews(context, monkey
             assert command[command.index('--max-retries') + 1] == '2'
         ports = '' if '-sn' in command else '<ports><port protocol="tcp" portid="23"><state state="open"/><service name="telnet"/></port></ports>'
         return SimpleNamespace(returncode=0, stderr='', stdout=f'<nmaprun><host><status state="up"/><address addr="{address}" addrtype="ipv4"/>{ports}</host></nmaprun>')
-    monkeypatch.setattr('services.scanner_adapters.nmap_adapter.subprocess.run', fake_run)
+    monkeypatch.setattr('services.scanner_adapters.nmap_adapter._run_nmap', fake_run)
     # Unexpected body/query content cannot replace the persisted target.
     result = client.post(f"/scopes/{scope['id']}/discover?target=1.1.0.0/16", json={'target': '1.1.0.0/16'})
     assert result.status_code == 200, result.text

@@ -16,7 +16,7 @@ def context(monkeypatch, tmp_path):
     monkeypatch.setattr(api, 'DB_PATH', path)
     def forbidden(*args, **kwargs):
         raise AssertionError('No network/scanner/DNS behavior permitted')
-    monkeypatch.setattr('services.scanner_adapters.nmap_adapter.subprocess.run', forbidden)
+    monkeypatch.setattr('services.scanner_adapters.nmap_adapter._run_nmap', forbidden)
     client = TestClient(api.app, base_url='http://127.0.0.1', client=('127.0.0.1', 5050))
     return client, RemoteSensorStore(path)
 

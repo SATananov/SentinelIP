@@ -89,22 +89,24 @@ class ServiceInventoryService:
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
         conn: sqlite3.Connection | None = None,
+        scan_run_id: str | None = None,
     ) -> dict[str, list[dict]]:
-        return self._process_result(*_context(network, device), result, conn=conn)
+        return self._process_result(*_context(network, device), result, conn=conn, scan_run_id=scan_run_id)
 
     def process_public_result(
         self,
         scope: Mapping[str, object],
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
+        scan_run_id: str | None = None,
     ) -> dict[str, list[dict]]:
-        inventory = self._process_result(*_public_context(scope, device), result)
+        inventory = self._process_result(*_public_context(scope, device), result, scan_run_id=scan_run_id)
         inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
             scope, device, result
         )
         return inventory
 
-    def process_cidr_result(self, scope, device, result):
+    def process_cidr_result(self, scope, device, result, scan_run_id=None):
         if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
             raise ServiceInventoryError("A persisted CIDR scope and device are required.")
         addresses = scopes_db.require_cidr_membership(scope, self.db_path)
@@ -115,7 +117,7 @@ class ServiceInventoryService:
             or device.get("last_ip_address") not in addresses):
             raise ServiceInventoryError("The device is outside the authorized CIDR scope.")
         inventory = self._process_result(
-            None, device["id"], device["last_ip_address"], result
+            None, device["id"], device["last_ip_address"], result, scan_run_id=scan_run_id
         )
         inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
             scope, device, result
@@ -127,6 +129,7 @@ class ServiceInventoryService:
         scope: Mapping[str, object],
         device: Mapping[str, object],
         result: ServiceDiscoveryResult,
+        scan_run_id: str | None = None,
     ) -> dict[str, list[dict]]:
         if not isinstance(scope, Mapping) or not isinstance(device, Mapping):
             raise ServiceInventoryError("A stored hostname scope and device are required.")
@@ -141,7 +144,7 @@ class ServiceInventoryService:
             scope["id"], self.db_path
         ):
             raise ServiceInventoryError("The device address is not approved for the hostname scope.")
-        inventory = self._process_result(None, device["id"], target_ip, result)
+        inventory = self._process_result(None, device["id"], target_ip, result, scan_run_id=scan_run_id)
         inventory["external_exposures"] = ExternalExposureService(self.db_path).record_service_scan(
             scope, device, result
         )
@@ -154,12 +157,13 @@ class ServiceInventoryService:
         target_ip: str,
         result: ServiceDiscoveryResult,
         conn: sqlite3.Connection | None = None,
+        scan_run_id: str | None = None,
     ) -> dict[str, list[dict]]:
         services_to_persist = self._validate_result(target_ip, result)
 
         if conn is not None:
             return self._apply_result(
-                network_id, device_id, result, services_to_persist, conn
+                network_id, device_id, result, services_to_persist, conn, scan_run_id
             )
 
         initialize_database(self.db_path)
@@ -168,7 +172,7 @@ class ServiceInventoryService:
         try:
             connection.execute("BEGIN IMMEDIATE")
             inventory = self._apply_result(
-                network_id, device_id, result, services_to_persist, connection
+                network_id, device_id, result, services_to_persist, connection, scan_run_id
             )
             connection.commit()
             return inventory
@@ -228,6 +232,7 @@ class ServiceInventoryService:
         result: ServiceDiscoveryResult,
         services_to_persist: list[ServiceObservation],
         conn: sqlite3.Connection,
+        scan_run_id: str | None = None,
     ) -> dict[str, list[dict]]:
 
         ports = []
@@ -303,6 +308,7 @@ class ServiceInventoryService:
                 source=port.source,
                 db_path=self.db_path,
                 conn=conn,
+                scan_run_id=scan_run_id,
             )
             port_records[(port.port, port.transport)] = record
             ports.append(record)
@@ -391,7 +397,25 @@ class ServiceInventoryService:
                 source=service.source,
                 db_path=self.db_path,
                 conn=conn,
+                scan_run_id=scan_run_id,
             )
             services.append(record)
+
+        if scan_run_id is not None:
+            completed_at = result.completed_at.isoformat(timespec="seconds")
+            updated = conn.execute(
+                """UPDATE recon_scan_targets SET outcome='COMPLETED', completed_at=?
+                   WHERE run_id=? AND target_ip=? AND outcome='RUNNING'""",
+                (completed_at, scan_run_id, result.target_ip),
+            )
+            if updated.rowcount != 1:
+                raise ServiceInventoryError("Scan provenance target is missing or already finalized.")
+            updated = conn.execute(
+                """UPDATE recon_scan_runs SET status='COMPLETED', completed_at=?, scanner_version=?
+                   WHERE id=? AND status='RUNNING'""",
+                (completed_at, result.scanner_version, scan_run_id),
+            )
+            if updated.rowcount != 1:
+                raise ServiceInventoryError("Scan provenance run is missing or already finalized.")
 
         return {"ports": ports, "services": services}

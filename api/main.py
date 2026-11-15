@@ -53,6 +53,8 @@ from services.service_discovery import (
 )
 from services.service_inventory import ServiceInventoryService
 from database import networks as workspace_networks_db
+from database.scopes import get_scope_for_network
+from services.scan_provenance import start_tcp_service_run, fail_tcp_service_run
 from services.device_inventory import DeviceInventoryService
 from services.host_discovery import HostDiscoveryError, discover_hosts as workspace_discover_hosts
 from services.scanner_adapters.nmap_adapter import (
@@ -641,14 +643,20 @@ def discover_public_scope_device_services(scope_id: int, device_id: int):
         else:
             raise HTTPException(status_code=403, detail="This scope type does not support service discovery.")
         service_scanner = NmapServiceDiscoveryScanner()
-        result = service_scanner.discover_public_services(target)
+        run_id = start_tcp_service_run(scope_id, target, device_id, DB_PATH)
+        try:
+            result = service_scanner.discover_public_services(target)
+        except BaseException as exc:
+            category = "cancelled" if not isinstance(exc, Exception) else "timeout" if isinstance(exc, ScannerTimeoutError) else "capacity" if "capacity" in str(exc).lower() else "parse" if isinstance(exc, ScannerParseError) else "execution"
+            fail_tcp_service_run(run_id, target, category, DB_PATH)
+            raise
         inventory_service = ServiceInventoryService(db_path=DB_PATH)
         if hostname_scope:
-            inventory = inventory_service.process_hostname_result(scope, device, result)
+            inventory = inventory_service.process_hostname_result(scope, device, result, run_id)
         elif scope["scope_type"] == "PUBLIC_CIDR":
-            inventory = inventory_service.process_cidr_result(scope, device, result)
+            inventory = inventory_service.process_cidr_result(scope, device, result, run_id)
         else:
-            inventory = inventory_service.process_public_result(scope, device, result)
+            inventory = inventory_service.process_public_result(scope, device, result, run_id)
         current_device = workspace_inventory_db.get_device(device_id, db_path=DB_PATH)
         findings = RiskEngine(db_path=DB_PATH).evaluate_scope_device(
             current_device, scope_id
@@ -1494,12 +1502,17 @@ def _workspace_device_or_404(device_id: int):
 
 def _workspace_discover_services(network: dict, device: dict):
     scanner = NmapServiceDiscoveryScanner()
-    result = workspace_discover_services(network, device, scanner)
-    return ServiceInventoryService(db_path=DB_PATH).process_result(
-        network,
-        device,
-        result,
-    )
+    scope = _workspace_require_network_scope(network)
+    run_id = start_tcp_service_run(scope["id"], device["last_ip_address"], device["id"], DB_PATH)
+    try:
+        result = workspace_discover_services(network, device, scanner)
+        return ServiceInventoryService(db_path=DB_PATH).process_result(
+            network, device, result, scan_run_id=run_id,
+        )
+    except BaseException as exc:
+        category = "cancelled" if not isinstance(exc, Exception) else "timeout" if isinstance(exc, ScannerTimeoutError) else "capacity" if "capacity" in str(exc).lower() else "parse" if isinstance(exc, ScannerParseError) else "persistence" if isinstance(exc, ValueError) else "execution"
+        fail_tcp_service_run(run_id, device["last_ip_address"], category, DB_PATH)
+        raise
 
 
 @app.get("/devices/{device_id}", dependencies=[Depends(local_management)])

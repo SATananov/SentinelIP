@@ -1784,6 +1784,40 @@ MIGRATIONS = (
         )
         """,
     ),
+    (
+        48,
+        (
+            """CREATE TABLE IF NOT EXISTS recon_scan_runs (
+                id TEXT PRIMARY KEY,
+                scope_id INTEGER NOT NULL,
+                profile TEXT NOT NULL,
+                scanner TEXT NOT NULL,
+                scanner_version TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL CHECK (status IN ('RUNNING','COMPLETED','FAILED','INTERRUPTED')),
+                error_category TEXT,
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE IF NOT EXISTS recon_scan_targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                target_ip TEXT NOT NULL,
+                device_id INTEGER,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                outcome TEXT NOT NULL CHECK (outcome IN ('RUNNING','COMPLETED','FAILED','INTERRUPTED')),
+                error_category TEXT,
+                FOREIGN KEY (run_id) REFERENCES recon_scan_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE SET NULL,
+                UNIQUE (run_id, target_ip)
+            )""",
+            "ALTER TABLE port_observations ADD COLUMN scan_run_id TEXT REFERENCES recon_scan_runs(id)",
+            "ALTER TABLE service_observations ADD COLUMN scan_run_id TEXT REFERENCES recon_scan_runs(id)",
+            "CREATE INDEX IF NOT EXISTS idx_recon_scan_runs_scope_started ON recon_scan_runs(scope_id, started_at)",
+            "CREATE INDEX IF NOT EXISTS idx_recon_scan_targets_run ON recon_scan_targets(run_id, target_ip)",
+        ),
+    ),
 
 )
 

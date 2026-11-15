@@ -1,4 +1,8 @@
 import subprocess
+import os
+import signal
+import threading
+import time
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 
@@ -29,6 +33,10 @@ class ScannerExecutionError(RuntimeError):
     """Raised when the scanner exits unsuccessfully."""
 
 
+class ScannerCapacityError(ScannerUnavailableError):
+    pass
+
+
 class ScannerParseError(RuntimeError):
     """Raised when scanner XML cannot be normalized safely."""
 
@@ -56,6 +64,115 @@ CONSERVATIVE_TCP_PORTS = (
     8080,
     8443,
 )
+
+_NMAP_EXECUTION_SLOTS = threading.BoundedSemaphore(2)
+_NMAP_STREAM_CHUNK_BYTES = 8192
+_NMAP_STDERR_MAX_BYTES = 65536
+
+
+def _terminate_nmap_process(process):
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def _run_nmap(command, timeout_seconds, max_output_bytes):
+    if not _NMAP_EXECUTION_SLOTS.acquire(blocking=False):
+        raise ScannerCapacityError("Nmap execution capacity is currently full.")
+    process = None
+    lock = threading.Lock()
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    overflow = threading.Event()
+    reader_errors = []
+
+    def drain(stream_name, stream):
+        nonlocal total
+        try:
+            while True:
+                block = stream.read(_NMAP_STREAM_CHUNK_BYTES)
+                if not block:
+                    return
+                with lock:
+                    per_stream_limit = max_output_bytes if stream_name == "stdout" else min(max_output_bytes, _NMAP_STDERR_MAX_BYTES)
+                    if (len(captured[stream_name]) + len(block) > per_stream_limit
+                            or total + len(block) > max_output_bytes):
+                        overflow.set()
+                        return
+                    captured[stream_name].extend(block)
+                    total += len(block)
+        except (OSError, ValueError) as exc:
+            reader_errors.append(exc)
+
+    threads = []
+    try:
+        try:
+            process = subprocess.Popen(
+                command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=(os.name == "posix"),
+            )
+        except FileNotFoundError as exc:
+            raise ScannerUnavailableError("Nmap executable is not available.") from exc
+        except OSError as exc:
+            raise ScannerExecutionError("Nmap could not be started.") from exc
+
+        for stream_name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            thread = threading.Thread(target=drain, args=(stream_name, stream), daemon=True)
+            thread.start()
+            threads.append(thread)
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if overflow.is_set():
+                _terminate_nmap_process(process)
+                raise ScannerExecutionError("Nmap output exceeded the size limit.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_nmap_process(process)
+                raise ScannerTimeoutError("Nmap execution timed out.")
+            try:
+                return_code = process.wait(timeout=min(0.05, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        for thread in threads:
+            thread.join(timeout=2)
+        if overflow.is_set():
+            raise ScannerExecutionError("Nmap output exceeded the size limit.")
+        if reader_errors:
+            raise ScannerExecutionError("Nmap output could not be read safely.") from reader_errors[0]
+        return SimpleProcessResult(
+            returncode=return_code,
+            stdout=bytes(captured["stdout"]).decode("utf-8", errors="replace"),
+            stderr=bytes(captured["stderr"]).decode("utf-8", errors="replace"),
+        )
+    except BaseException:
+        if process is not None and process.poll() is None:
+            _terminate_nmap_process(process)
+        raise
+    finally:
+        if process is not None:
+            for thread in threads:
+                thread.join(timeout=2)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        _NMAP_EXECUTION_SLOTS.release()
+
+
+class SimpleProcessResult:
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def _check_output_size(stdout: str, stderr: str, max_output_bytes: int):
@@ -122,26 +239,13 @@ class NmapHostDiscoveryScanner:
         ]
 
         try:
-            completed = subprocess.run(
-                command,
-                shell=False,
-                timeout=self.timeout_seconds,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise ScannerUnavailableError(
-                "Nmap executable is not available."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ScannerTimeoutError(
-                "Nmap host discovery timed out."
-            ) from exc
-        except OSError as exc:
-            raise ScannerExecutionError(
-                "Nmap host discovery could not be started."
-            ) from exc
+            completed = _run_nmap(command, self.timeout_seconds, self.max_output_bytes)
+        except ScannerTimeoutError as exc:
+            raise ScannerTimeoutError("Nmap host discovery timed out.") from exc
+        except ScannerExecutionError as exc:
+            if "Nmap could not be started" in str(exc):
+                raise ScannerExecutionError("Nmap host discovery could not be started.") from exc
+            raise
 
         self._check_output_size(completed.stdout, completed.stderr)
 
@@ -279,26 +383,13 @@ class NmapServiceDiscoveryScanner:
         ]
 
         try:
-            completed = subprocess.run(
-                command,
-                shell=False,
-                timeout=self.timeout_seconds,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise ScannerUnavailableError(
-                "Nmap executable is not available."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ScannerTimeoutError(
-                "Nmap service discovery timed out."
-            ) from exc
-        except OSError as exc:
-            raise ScannerExecutionError(
-                "Nmap service discovery could not be started."
-            ) from exc
+            completed = _run_nmap(command, self.timeout_seconds, self.max_output_bytes)
+        except ScannerTimeoutError as exc:
+            raise ScannerTimeoutError("Nmap service discovery timed out.") from exc
+        except ScannerExecutionError as exc:
+            if "Nmap could not be started" in str(exc):
+                raise ScannerExecutionError("Nmap service discovery could not be started.") from exc
+            raise
 
         _check_output_size(
             completed.stdout,
@@ -317,6 +408,10 @@ class NmapServiceDiscoveryScanner:
             normalized_ip,
             completed_at,
         )
+        try:
+            scanner_version = ElementTree.fromstring(completed.stdout.lstrip()).get("version")
+        except (ElementTree.ParseError, TypeError):
+            scanner_version = None
 
         return ServiceDiscoveryResult(
             target_ip=normalized_ip,
@@ -325,6 +420,7 @@ class NmapServiceDiscoveryScanner:
             completed_at=completed_at,
             ports=tuple(ports),
             services=tuple(services),
+            scanner_version=scanner_version,
         )
 
     @staticmethod

@@ -12,6 +12,7 @@ from services.scope_authorization import (
 )
 from services.service_inventory import ServiceInventoryService
 from services.service_models import ServiceDiscoveryResult
+from services.scan_provenance import start_tcp_service_run, fail_tcp_service_run
 
 
 class PublicScopeDiscoveryError(ValueError):
@@ -84,14 +85,20 @@ def _scan_public_address(scope, target, host_scanner, service_scanner, *, db_pat
     except (ValueError, DeviceInventoryError) as exc:
         raise PublicScopeDiscoveryError(str(exc)) from exc
 
-    service_result = service_scanner.discover_public_services(target)
-    if not isinstance(service_result, ServiceDiscoveryResult):
-        raise PublicScopeDiscoveryError("Service scanner returned invalid evidence.")
-    inventory_service = ServiceInventoryService(db_path=db_path)
-    if scope["scope_type"] == "PUBLIC_CIDR":
-        inventory = inventory_service.process_cidr_result(scope, device, service_result)
-    else:
-        inventory = inventory_service.process_public_result(scope, device, service_result)
+    run_id = start_tcp_service_run(scope["id"], target, device["id"], db_path)
+    try:
+        service_result = service_scanner.discover_public_services(target)
+        if not isinstance(service_result, ServiceDiscoveryResult):
+            raise PublicScopeDiscoveryError("Service scanner returned invalid evidence.")
+        inventory_service = ServiceInventoryService(db_path=db_path)
+        if scope["scope_type"] == "PUBLIC_CIDR":
+            inventory = inventory_service.process_cidr_result(scope, device, service_result, run_id)
+        else:
+            inventory = inventory_service.process_public_result(scope, device, service_result, run_id)
+    except BaseException as exc:
+        category = "cancelled" if not isinstance(exc, Exception) else "timeout" if "timed out" in str(exc).lower() else "parse" if "invalid evidence" in str(exc).lower() else "persistence" if isinstance(exc, ValueError) else "execution"
+        fail_tcp_service_run(run_id, target, category, db_path)
+        raise
     current_device = inventory_db.get_device(device["id"], db_path=db_path)
     findings = RiskEngine(db_path=db_path).evaluate_scope_device(
         current_device, scope["id"]
