@@ -3,6 +3,7 @@ import ipaddress
 
 from api.remote_sensors import local_management, register_remote_routes
 from api.recon_evidence import register_recon_evidence_routes
+from api.http_fingerprint import register_http_fingerprint_routes
 from api.vulnerability_intelligence import register_vulnerability_intelligence_routes
 from api.sensor_enrollment import SensorBodyLimitMiddleware, register_machine_routes
 from api.remote_tasks import register_remote_task_routes
@@ -1597,3 +1598,4 @@ app.add_middleware(SensorBodyLimitMiddleware)
 
 register_recon_evidence_routes(app, lambda: DB_PATH)
 register_vulnerability_intelligence_routes(app, lambda: DB_PATH)
+register_http_fingerprint_routes(app, lambda: DB_PATH)
