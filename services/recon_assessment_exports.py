@@ -158,6 +158,14 @@ def render_assessment_pdf(report, images):
             story.append(Paragraph("No recorded port or service observations. Service coverage is incomplete.", small))
         if item["ports"] and not item["services"]:
             story.append(Paragraph("No service evidence is stored for this asset.", small))
+        http_tls_rows = _http_tls_observation_rows(item)
+        if http_tls_rows:
+            story.append(Paragraph("HTTP/TLS endpoint observations", styles["Heading3"]))
+            story += _pdf_data_table([["Endpoint", "Observed", "Outcome / HTTP", "TLS", "Run / target"]] + [
+                [_pdf_wrap_long_tokens(cell) for cell in row] for row in http_tls_rows
+            ], small)
+        if item.get("truncation", {}).get("http_tls_observations"):
+            story.append(Paragraph("HTTP/TLS observations are truncated; this section does not show the complete stored history.", small))
         if item["findings"]:
             story.append(Paragraph("Findings", styles["Heading3"]))
             service_names = {service["id"]: " ".join(filter(None, [service.get("service_name"), service.get("product"), service.get("version")]))
@@ -263,6 +271,12 @@ def render_assessment_docx(report, images):
             document.add_paragraph("No recorded port or service observations. Service coverage is incomplete.")
         if item["ports"] and not item["services"]:
             document.add_paragraph("No service evidence is stored for this asset.")
+        http_tls_rows = _http_tls_observation_rows(item)
+        if http_tls_rows:
+            document.add_heading("HTTP/TLS endpoint observations", level=3)
+            _docx_table(document, [["Endpoint", "Observed", "Outcome / HTTP", "TLS", "Run / target"]] + http_tls_rows)
+        if item.get("truncation", {}).get("http_tls_observations"):
+            document.add_paragraph("HTTP/TLS observations are truncated; this section does not show the complete stored history.")
         if item["findings"]:
             document.add_heading("Security findings", level=3)
             service_names = {service["id"]: " ".join(filter(None, [service.get("service_name"), service.get("product"), service.get("version")]))
@@ -351,6 +365,12 @@ def render_assessment_html(report, images):
             parts.append("<p>No recorded port or service observations. Service coverage is incomplete.</p>")
         if item["ports"] and not item["services"]:
             parts.append("<p>No service evidence is stored for this asset.</p>")
+        http_tls_rows = _http_tls_observation_rows(item)
+        if http_tls_rows:
+            parts.append("<h4>HTTP/TLS endpoint observations</h4>" + _html_table(
+                [["Endpoint", "Observed", "Outcome / HTTP", "TLS", "Run / target"]] + http_tls_rows))
+        if item.get("truncation", {}).get("http_tls_observations"):
+            parts.append("<p>HTTP/TLS observations are truncated; this section does not show the complete stored history.</p>")
         if item["findings"]:
             service_names = {service["id"]: " ".join(filter(None, [service.get("service_name"), service.get("product"), service.get("version")])) for service in item["services"]}
             parts.append("<h4>Security findings</h4>" + _html_table([["Title","Severity","Status","Verification","Service","Evidence type / description"]] + [[x.get("title"),x.get("severity"),x.get("finding_status"),x.get("verification_status"),service_names.get(x.get("service_id"),x.get("service_id")),f"{x.get('evidence_type')}: {x.get('description')}"] for x in item["findings"]]))
@@ -447,6 +467,75 @@ def _bounded_output(data):
     if len(data) > MAX_OUTPUT_BYTES:
         raise ReportOutputLimitError("The report exceeds the export size limit.")
     return data
+
+
+def _http_tls_observation_rows(device_report):
+    rows = []
+    for observation in device_report.get("http_tls_observations", []):
+        tls = observation.get("tls") or {}
+        tls_facts = [tls.get("verification_status") or "Not applicable"]
+        if tls.get("verification_status") == "VERIFIED":
+            tls_facts.extend(filter(None, [tls.get("protocol_version")]))
+            cipher = tls.get("cipher") or {}
+            if cipher.get("name"):
+                tls_facts.append(f"Cipher {cipher['name']} ({cipher.get('bits')} bits)")
+            for label, key in (("Subject", "certificate_subject"), ("Issuer", "certificate_issuer")):
+                entries = tls.get(key) or []
+                if entries:
+                    tls_facts.append(label + ": " + ", ".join(
+                        f"{entry.get('name')}: {entry.get('value')}" for entry in entries[:8]
+                    ))
+            validity = " — ".join(filter(None, [tls.get("not_before"), tls.get("not_after")]))
+            if validity:
+                tls_facts.append("Validity " + validity)
+            sans = tls.get("subject_alt_names") or []
+            if sans:
+                tls_facts.append("SAN " + ", ".join(
+                    f"{entry.get('type')}: {entry.get('value')}" for entry in sans[:8]
+                ))
+            if tls.get("sha256_fingerprint"):
+                tls_facts.append("SHA-256 " + tls["sha256_fingerprint"])
+        elif tls.get("verification_status") in {"FAILED", "NOT_COMPLETED"} and tls.get("error_category"):
+            tls_facts[0] = "Verification failed" if tls.get("verification_status") == "FAILED" else "Handshake not completed"
+            tls_facts.append(tls["error_category"])
+        tls_summary = "; ".join(tls_facts)
+        endpoint_host = observation.get("approved_hostname") or observation.get("target_ip")
+        endpoint = (f"Observation {observation.get('id')}; {observation.get('scheme')}://"
+                    f"{endpoint_host}:{observation.get('port_number')}/tcp")
+        outcome = observation.get("outcome") or "Unknown"
+        if observation.get("status_code") is not None:
+            outcome += f" / HTTP {observation['status_code']}"
+        if observation.get("error_category"):
+            outcome += f" ({observation['error_category']})"
+        http_facts = []
+        if observation.get("content_type"):
+            http_facts.append("Content-Type " + observation["content_type"])
+        if observation.get("content_length") is not None:
+            http_facts.append("Declared length " + str(observation["content_length"]))
+        headers = observation.get("response_headers") or {}
+        http_facts.extend(f"{name}: {value}" for name, value in sorted(headers.items()))
+        server = observation.get("server_identifier")
+        if server:
+            http_facts.append(f"Server (self-reported, low confidence): {server.get('value')}")
+        if observation.get("redirect_location"):
+            http_facts.append("Redirect observed: " + observation["redirect_location"])
+        if observation.get("error_category"):
+            http_facts.append("Error: " + observation["error_category"])
+        run = observation.get("scan") or {}
+        provenance = (f"Run {run.get('run_id')}; target {run.get('target_id')} / "
+                      f"{run.get('target_outcome')}; {run.get('scanner')} / {run.get('profile')}")
+        rows.append([endpoint, observation.get("observed_at"), outcome,
+                     "; ".join(http_facts) or "No response metadata", tls_summary + "; " + provenance])
+    return rows
+
+
+def _pdf_wrap_long_tokens(value, width=28):
+    parts = []
+    for token in str(value if value is not None else "-").split(" "):
+        if len(token) > width:
+            token = " ".join(token[index:index + width] for index in range(0, len(token), width))
+        parts.append(token)
+    return " ".join(parts)
 
 
 def _escape(value):

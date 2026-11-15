@@ -1,8 +1,10 @@
 import json
+import ipaddress
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -31,6 +33,10 @@ MAX_FINDINGS = 25
 MAX_CVE_MATCHES = 50
 MAX_EVIDENCE = 20
 MAX_REPORT_BYTES = 15_728_640
+MAX_HTTP_TLS_OBSERVATIONS_PER_DEVICE = 20
+MAX_HTTP_TLS_OBSERVATIONS_PER_REPORT = 200
+MAX_HTTP_TLS_METADATA_BYTES = 8_192
+MAX_HTTP_TLS_CERTIFICATE_ENTRIES = 8
 
 
 def register_recon_assessment_report_routes(app: FastAPI, db_path_provider: Callable):
@@ -133,6 +139,9 @@ def build_assessment_report(scope_id: int, db_path: str):
             raise HTTPException(403, "Unsupported authorized target type.")
         truncated = len(devices) > MAX_DEVICES
         devices = devices[:MAX_DEVICES]
+        endpoint_observations, endpoint_truncation = _http_tls_report_observations(
+            connection, scope, [device["id"] for device in devices]
+        )
         result_devices = []
         all_findings = []
         scan_evidence = []
@@ -262,7 +271,7 @@ def build_assessment_report(scope_id: int, db_path: str):
             ).fetchall() if _table_exists(connection, "recon_evidence") else []
             evidence_truncated = len(evidence) > MAX_EVIDENCE
             evidence = evidence[:MAX_EVIDENCE]
-            result_devices.append({
+            device_report = {
                 "device": {"id": device_id, "ip_address": _bounded_text(device["last_ip_address"], 64),
                            "hostname": _bounded_text(device["hostname"], 255),
                            "vendor": _bounded_text(device["vendor"], 255), "status": _bounded_text(device["status"], 32)},
@@ -276,7 +285,13 @@ def build_assessment_report(scope_id: int, db_path: str):
                 "truncation": {"ports": ports_truncated, "services": services_truncated,
                                "findings": findings_truncated, "cve_matches": cves_truncated,
                                "evidence": evidence_truncated},
-            })
+            }
+            observations = endpoint_observations.get(device_id, [])
+            observation_truncated = endpoint_truncation.get(device_id, False)
+            if observations or observation_truncated:
+                device_report["http_tls_observations"] = observations
+                device_report["truncation"]["http_tls_observations"] = observation_truncated
+            result_devices.append(device_report)
         generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
@@ -314,6 +329,203 @@ def _table_exists(connection, name):
     return connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone() is not None
+
+
+def _http_tls_report_observations(connection, scope, device_ids):
+    if not device_ids or not _table_exists(connection, "http_endpoint_observations"):
+        return {}, {}
+    placeholders = ",".join("?" for _ in device_ids)
+    rows = connection.execute(
+        f"""WITH eligible AS (
+                SELECT e.id,e.scope_id,e.device_id,e.port_id,p.port_number,e.scheme,e.target_ip,
+                       e.approved_hostname,e.observed_at,e.source,e.outcome,e.error_category,
+                       e.status_code,e.response_headers_json,e.content_type,e.content_length,
+                       e.server_identifier,e.redirect_location,e.scan_target_id,
+                       r.id AS scan_run_id,r.profile,r.scanner,r.scanner_version,r.status AS run_status,
+                       t.outcome AS target_outcome,t.error_category AS target_error_category,
+                       tls.verification_status,tls.hostname_verification,tls.ip_address_verification,
+                       tls.verification_name,tls.protocol_version,tls.cipher_name,tls.cipher_protocol,
+                       tls.cipher_bits,tls.certificate_subject_json,tls.certificate_issuer_json,
+                       tls.not_before,tls.not_after,tls.subject_alt_names_json,tls.sha256_fingerprint,
+                       tls.error_category AS tls_error_category,
+                       ROW_NUMBER() OVER (PARTITION BY e.device_id ORDER BY e.observed_at DESC,e.id DESC) AS device_rank,
+                       COUNT(*) OVER (PARTITION BY e.device_id) AS device_total
+                FROM http_endpoint_observations e
+                JOIN devices d ON d.id=e.device_id
+                JOIN ports p ON p.id=e.port_id AND p.device_id=e.device_id
+                JOIN recon_scan_targets t ON t.id=e.scan_target_id AND t.device_id=e.device_id
+                  AND t.target_ip=e.target_ip
+                JOIN recon_scan_runs r ON r.id=t.run_id AND r.scope_id=e.scope_id
+                  AND r.profile='http_endpoint_fingerprint'
+                LEFT JOIN http_tls_observations tls ON tls.endpoint_observation_id=e.id
+                WHERE e.scope_id=? AND e.device_id IN ({placeholders}) AND lower(p.transport)='tcp'
+                  AND d.last_ip_address=e.target_ip
+                  AND EXISTS (SELECT 1 FROM port_observations po WHERE po.device_id=e.device_id
+                    AND po.port_id=e.port_id AND po.ip_address=e.target_ip
+                    AND lower(po.transport)='tcp' AND lower(po.state)='open')
+                  AND ((?='HOSTNAME' AND e.approved_hostname=?)
+                    OR (?!='HOSTNAME' AND e.approved_hostname IS NULL))
+            ), limited AS (
+                SELECT * FROM eligible WHERE device_rank<=?
+            )
+            SELECT * FROM limited ORDER BY observed_at DESC,id DESC LIMIT ?""",
+        (scope["id"], *device_ids, scope["scope_type"], scope["canonical_target"], scope["scope_type"],
+         MAX_HTTP_TLS_OBSERVATIONS_PER_DEVICE + 1,
+         MAX_DEVICES * (MAX_HTTP_TLS_OBSERVATIONS_PER_DEVICE + 1)),
+    ).fetchall()
+    candidates = []
+    totals = {}
+    for row in rows:
+        totals[row["device_id"]] = row["device_total"]
+        candidates.append(_http_tls_observation_projection(row))
+    truncation = {device_id: totals.get(device_id, 0) > 0 for device_id in device_ids}
+    candidates = candidates[:MAX_HTTP_TLS_OBSERVATIONS_PER_REPORT]
+    projected = {device_id: [] for device_id in device_ids}
+    for item in candidates:
+        device_id = item["device_id"]
+        if len(projected[device_id]) < MAX_HTTP_TLS_OBSERVATIONS_PER_DEVICE:
+            projected[device_id].append(item)
+    for device_id in device_ids:
+        selected = len(projected[device_id])
+        truncation[device_id] = totals.get(device_id, 0) > selected
+    return projected, truncation
+
+
+def _http_tls_observation_projection(row):
+    def text(field, limit, nullable=False):
+        value = row[field]
+        if value is None and nullable:
+            return None
+        if (not isinstance(value, str) or len(value.encode("utf-8")) > limit
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+            raise ValueError(f"Stored endpoint report field {field} exceeds its limit.")
+        return value
+
+    def json_value(field, byte_limit, expected_type):
+        value = text(field, byte_limit, nullable=True)
+        if value is None or len(value.encode("utf-8")) > MAX_HTTP_TLS_METADATA_BYTES:
+            raise ValueError(f"Stored endpoint report metadata {field} exceeds its limit.")
+        parsed = json.loads(value)
+        if not isinstance(parsed, expected_type):
+            raise ValueError(f"Stored endpoint report metadata {field} is invalid.")
+        return parsed
+
+    headers = json_value("response_headers_json", MAX_HTTP_TLS_METADATA_BYTES, dict)
+    allowed_headers = {"date", "cache-control", "strict-transport-security", "x-content-type-options",
+                       "x-frame-options", "content-security-policy", "referrer-policy", "permissions-policy"}
+    if set(headers) - allowed_headers or len(headers) > len(allowed_headers):
+        raise ValueError("Stored endpoint report headers are invalid.")
+    for name, value in headers.items():
+        if (not isinstance(name, str) or not isinstance(value, str) or len(value.encode("utf-8")) > 512
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+            raise ValueError("Stored endpoint report header exceeds its limit.")
+    outcome = row["outcome"]
+    if outcome not in {"RESPONSE_RECEIVED", "TLS_VERIFICATION_FAILED", "TLS_HANDSHAKE_FAILED",
+                       "TIMEOUT", "HEADER_LIMIT_EXCEEDED", "MALFORMED_RESPONSE",
+                       "CONNECTION_FAILED", "DNS_REVALIDATION_FAILED"}:
+        raise ValueError("Stored endpoint outcome is invalid.")
+    if outcome == "RESPONSE_RECEIVED":
+        if type(row["status_code"]) is not int or not 100 <= row["status_code"] <= 599:
+            raise ValueError("Stored endpoint response status is invalid.")
+    elif row["status_code"] is not None or headers or row["content_type"] is not None or row["content_length"] is not None:
+        raise ValueError("Failed endpoint observation contains response facts.")
+    if row["scheme"] not in {"http", "https"}:
+        raise ValueError("Stored endpoint scheme is invalid.")
+    target_ip = text("target_ip", 15)
+    parsed_target = ipaddress.ip_address(target_ip)
+    if not isinstance(parsed_target, ipaddress.IPv4Address) or str(parsed_target) != target_ip:
+        raise ValueError("Stored endpoint target is not canonical IPv4.")
+    if type(row["port_number"]) is not int or not 1 <= row["port_number"] <= 65535:
+        raise ValueError("Stored endpoint TCP port is invalid.")
+    if row["source"] != ("http-head-v1" if row["scheme"] == "http" else "https-tls-head-v1"):
+        raise ValueError("Stored endpoint source does not match its scheme.")
+    timestamp = text("observed_at", 64)
+    parsed_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() is None:
+        raise ValueError("Stored endpoint timestamp is not timezone-aware.")
+    redirect_location = text("redirect_location", 1024, True)
+    if redirect_location is not None:
+        redirect = urlsplit(redirect_location)
+        if (redirect.username or redirect.password or redirect.query or redirect.fragment
+                or (redirect.scheme and redirect.scheme not in {"http", "https"})):
+            raise ValueError("Stored redirect metadata is not sanitized.")
+    result = {
+        "id": row["id"], "scope_id": row["scope_id"], "device_id": row["device_id"],
+        "port_id": row["port_id"], "port_number": row["port_number"], "transport": "tcp",
+        "target_ip": target_ip, "approved_hostname": text("approved_hostname", 255, True),
+        "scheme": row["scheme"], "observed_at": text("observed_at", 64),
+        "source": text("source", 64), "outcome": outcome,
+        "error_category": text("error_category", 64, True), "status_code": row["status_code"],
+        "response_headers": headers, "content_type": text("content_type", 512, True),
+        "content_length": row["content_length"], "server_identifier": text("server_identifier", 512, True),
+        "redirect_location": redirect_location,
+        "scan": {"run_id": text("scan_run_id", 64), "target_id": row["scan_target_id"],
+                 "profile": text("profile", 64), "scanner": text("scanner", 128),
+                 "scanner_version": text("scanner_version", 64, True),
+                 "run_outcome": text("run_status", 32), "target_outcome": text("target_outcome", 32),
+                 "error_category": text("target_error_category", 64, True)},
+        "tls": None,
+    }
+    if result["server_identifier"] is not None:
+        result["server_identifier"] = {"value": result["server_identifier"],
+                                       "confidence": "LOW", "source": "http_response_header"}
+    if result["scheme"] == "https":
+        verification = row["verification_status"]
+        if verification not in {"VERIFIED", "FAILED", "NOT_COMPLETED"}:
+            raise ValueError("Stored TLS verification state is invalid.")
+        tls = {"verification_status": verification,
+               "hostname_verification": row["hostname_verification"],
+               "ip_address_verification": row["ip_address_verification"],
+               "verification_name": text("verification_name", 255),
+               "error_category": text("tls_error_category", 64, True)}
+        if verification == "VERIFIED":
+            subject = json_value("certificate_subject_json", 2048, list)
+            issuer = json_value("certificate_issuer_json", 2048, list)
+            sans = json_value("subject_alt_names_json", 4096, list)
+            if any(len(value) > MAX_HTTP_TLS_CERTIFICATE_ENTRIES for value in (subject, issuer, sans)):
+                raise ValueError("Stored TLS certificate collection exceeds its limit.")
+            for collection, keys in ((subject, {"name", "value"}), (issuer, {"name", "value"}),
+                                      (sans, {"type", "value"})):
+                if any(not isinstance(item, dict) or set(item) != keys
+                       or any(not isinstance(item[key], str) or len(item[key].encode("utf-8")) > 128
+                              or any(ord(character) < 32 or ord(character) == 127 for character in item[key])
+                              for key in keys) for item in collection):
+                    raise ValueError("Stored TLS certificate fact is invalid.")
+            fingerprint = text("sha256_fingerprint", 64)
+            if len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint):
+                raise ValueError("Stored certificate fingerprint is invalid.")
+            tls.update({"protocol_version": text("protocol_version", 32, True),
+                        "cipher": {"name": text("cipher_name", 128),
+                                   "protocol": text("cipher_protocol", 32), "bits": row["cipher_bits"]},
+                        "certificate_subject": subject, "certificate_issuer": issuer,
+                        "not_before": text("not_before", 64, True), "not_after": text("not_after", 64, True),
+                        "subject_alt_names": sans, "sha256_fingerprint": fingerprint})
+        elif any(row[field] is not None for field in (
+                "protocol_version", "cipher_name", "cipher_protocol", "cipher_bits",
+                "certificate_subject_json", "certificate_issuer_json", "not_before", "not_after",
+                "subject_alt_names_json", "sha256_fingerprint")):
+            raise ValueError("Unverified TLS observation contains certificate facts.")
+        result["tls"] = tls
+    elif row["verification_status"] is not None:
+        raise ValueError("HTTP observation unexpectedly contains TLS data.")
+    if result["outcome"] == "RESPONSE_RECEIVED":
+        if row["run_status"] != "COMPLETED" or row["target_outcome"] != "COMPLETED":
+            raise ValueError("Completed endpoint response has inconsistent scan provenance.")
+    elif row["run_status"] == "COMPLETED" or row["target_outcome"] == "COMPLETED":
+        raise ValueError("Failed endpoint result has completed scan provenance.")
+    if result["scheme"] == "https":
+        verification = result["tls"]["verification_status"]
+        expected_verification = {
+            "RESPONSE_RECEIVED": "VERIFIED",
+            "TLS_VERIFICATION_FAILED": "FAILED",
+            "TLS_HANDSHAKE_FAILED": "NOT_COMPLETED",
+        }.get(result["outcome"])
+        if expected_verification is not None and verification != expected_verification:
+            raise ValueError("Endpoint outcome and TLS verification state disagree.")
+    if len(json.dumps({"headers": headers, "tls": result["tls"]}, ensure_ascii=True,
+                      separators=(",", ":")).encode("ascii")) > MAX_HTTP_TLS_METADATA_BYTES:
+        raise ValueError("Stored endpoint report metadata exceeds its combined limit.")
+    return result
 
 
 def _bounded_text(value, limit):

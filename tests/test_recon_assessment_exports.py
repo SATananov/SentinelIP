@@ -121,6 +121,68 @@ def test_html_is_self_contained_escaped_and_contains_screenshot(stored_report):
     assert _data_counts(path) == before
 
 
+def test_http_tls_evidence_is_escaped_bounded_and_not_vulnerability_classified(stored_report):
+    _, _, report, images, _, _ = stored_report
+    report["devices"][0]["http_tls_observations"] = [{
+        "id": 12, "scope_id": report["assessment"]["scope_id"],
+        "device_id": report["devices"][0]["device"]["id"], "port_id": 1,
+        "port_number": 443, "transport": "tcp", "target_ip": "192.168.72.5",
+        "approved_hostname": None, "scheme": "https", "observed_at": "2026-11-15T12:00:00+00:00",
+        "source": "https-tls-head-v1", "outcome": "RESPONSE_RECEIVED", "error_category": None,
+        "status_code": 200, "response_headers": {"cache-control": "<img src=x onerror=alert(1)>"},
+        "content_type": "text/html", "content_length": 10,
+        "server_identifier": {"value": "<script>bad</script>", "confidence": "LOW",
+                              "source": "http_response_header"},
+        "redirect_location": None,
+        "tls": {"verification_status": "VERIFIED", "hostname_verification": None,
+                "ip_address_verification": "MATCHED", "verification_name": "192.168.72.5",
+                "error_category": None, "protocol_version": "TLSv1.3",
+                "cipher": {"name": "TLS_AES_256_GCM_SHA384", "protocol": "TLSv1.3", "bits": 256},
+                "certificate_subject": [{"name": "commonName", "value": "<svg onload=alert(1)>"}],
+                "certificate_issuer": [{"name": "organizationName", "value": "Example CA"}],
+                "not_before": "2026-01-01T00:00:00+00:00", "not_after": "2027-01-01T00:00:00+00:00",
+                "subject_alt_names": [{"type": "DNS", "value": "fixture.example"}],
+                "sha256_fingerprint": "a" * 64},
+        "scan": {"run_id": "fixture-run", "target_id": 4, "profile": "http_endpoint_fingerprint",
+                 "scanner": "sentinelip-http-tls-fingerprint", "scanner_version": "1.0",
+                 "run_outcome": "COMPLETED", "target_outcome": "COMPLETED", "error_category": None},
+    }]
+    report["devices"][0]["truncation"]["http_tls_observations"] = False
+    html = render_assessment_html(report, images).decode("utf-8")
+    assert "<script>bad</script>" not in html
+    assert "&lt;script&gt;bad&lt;/script&gt;" in html
+    assert "&lt;svg onload=alert(1)&gt;" in html
+    assert "Server (self-reported, low confidence)" in html
+    assert "CVE-" not in html.split("HTTP/TLS endpoint observations", 1)[1]
+    assert f"Content-Security-Policy" in html
+    if importlib.util.find_spec("docx"):
+        docx = render_assessment_docx(report, images)
+        with ZipFile(BytesIO(docx)) as archive:
+            document = archive.read("word/document.xml")
+        assert b"&lt;svg onload=alert(1)&gt;" in document
+        assert b"Server (self-reported, low confidence)" in document
+
+
+def test_failed_tls_export_has_no_certificate_facts(stored_report):
+    _, _, report, images, _, _ = stored_report
+    report["devices"][0]["http_tls_observations"] = [{
+        "id": 13, "scheme": "https", "target_ip": "192.168.72.5", "approved_hostname": None,
+        "port_number": 443, "observed_at": "2026-11-15T12:00:00+00:00",
+        "outcome": "TLS_VERIFICATION_FAILED", "status_code": None,
+        "error_category": "untrusted_certificate", "response_headers": {}, "content_type": None,
+        "content_length": None, "server_identifier": None, "redirect_location": None,
+        "tls": {"verification_status": "FAILED", "error_category": "untrusted_certificate"},
+        "scan": {"run_id": "failed-run", "target_id": 5, "target_outcome": "FAILED",
+                 "scanner": "sentinelip-http-tls-fingerprint", "profile": "http_endpoint_fingerprint"},
+    }]
+    report["devices"][0]["truncation"]["http_tls_observations"] = False
+    output = render_assessment_html(report, images).decode("utf-8")
+    evidence = output.split("HTTP/TLS endpoint observations", 1)[1]
+    assert "Verification failed" in evidence
+    assert "certificate_subject" not in evidence
+    assert "SHA-256" not in evidence
+
+
 def test_missing_screenshot_is_not_invented(stored_report):
     path, _, report, _, evidence_id, _ = stored_report
     with get_connection(path) as connection:
