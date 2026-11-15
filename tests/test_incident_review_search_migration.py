@@ -44,7 +44,7 @@ def test_migration_45_rebuilds_historical_reviews_and_installs_sync_triggers(tmp
 
     assert [row["id"] for row in search_reviews(title="fire auth", db_path=path)["items"]] == [historical_id]
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 49
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=45").fetchone()[0] == 1
         objects = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type IN ('table','trigger')")}

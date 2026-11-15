@@ -1818,6 +1818,69 @@ MIGRATIONS = (
             "CREATE INDEX IF NOT EXISTS idx_recon_scan_targets_run ON recon_scan_targets(run_id, target_ip)",
         ),
     ),
+    (
+        49,
+        (
+            """CREATE TABLE IF NOT EXISTS http_endpoint_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
+                port_id INTEGER NOT NULL,
+                scan_target_id INTEGER NOT NULL UNIQUE,
+                scheme TEXT NOT NULL CHECK (scheme IN ('http', 'https')),
+                target_ip TEXT NOT NULL CHECK (length(target_ip) BETWEEN 7 AND 15),
+                approved_hostname TEXT CHECK (approved_hostname IS NULL OR length(approved_hostname) <= 255),
+                observed_at TEXT NOT NULL CHECK (length(observed_at) <= 64),
+                source TEXT NOT NULL CHECK (length(source) BETWEEN 1 AND 64),
+                outcome TEXT NOT NULL CHECK (outcome IN (
+                    'RESPONSE_RECEIVED', 'TLS_VERIFICATION_FAILED', 'TLS_HANDSHAKE_FAILED',
+                    'TIMEOUT', 'HEADER_LIMIT_EXCEEDED', 'MALFORMED_RESPONSE',
+                    'CONNECTION_FAILED', 'DNS_REVALIDATION_FAILED'
+                )),
+                error_category TEXT CHECK (error_category IS NULL OR length(error_category) <= 64),
+                status_code INTEGER CHECK (status_code IS NULL OR status_code BETWEEN 100 AND 599),
+                response_headers_json TEXT NOT NULL CHECK (length(CAST(response_headers_json AS BLOB)) <= 8192),
+                content_type TEXT CHECK (content_type IS NULL OR length(CAST(content_type AS BLOB)) <= 512),
+                content_length INTEGER CHECK (content_length IS NULL OR content_length >= 0),
+                server_identifier TEXT CHECK (server_identifier IS NULL OR length(CAST(server_identifier AS BLOB)) <= 1024),
+                redirect_location TEXT CHECK (redirect_location IS NULL OR length(CAST(redirect_location AS BLOB)) <= 1024),
+                FOREIGN KEY (scope_id) REFERENCES authorized_scopes(id) ON DELETE CASCADE,
+                FOREIGN KEY (device_id) REFERENCES devices(id),
+                FOREIGN KEY (port_id) REFERENCES ports(id),
+                FOREIGN KEY (scan_target_id) REFERENCES recon_scan_targets(id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE IF NOT EXISTS http_tls_observations (
+                endpoint_observation_id INTEGER PRIMARY KEY,
+                verification_status TEXT NOT NULL CHECK (verification_status IN ('VERIFIED', 'FAILED', 'NOT_COMPLETED')),
+                hostname_verification TEXT CHECK (hostname_verification IS NULL OR hostname_verification IN ('MATCHED', 'FAILED', 'NOT_COMPLETED')),
+                ip_address_verification TEXT CHECK (ip_address_verification IS NULL OR ip_address_verification IN ('MATCHED', 'FAILED', 'NOT_COMPLETED')),
+                verification_name TEXT NOT NULL CHECK (length(verification_name) BETWEEN 1 AND 255),
+                protocol_version TEXT CHECK (protocol_version IS NULL OR length(protocol_version) <= 32),
+                cipher_name TEXT CHECK (cipher_name IS NULL OR length(cipher_name) <= 128),
+                cipher_protocol TEXT CHECK (cipher_protocol IS NULL OR length(cipher_protocol) <= 32),
+                cipher_bits INTEGER CHECK (cipher_bits IS NULL OR cipher_bits BETWEEN 0 AND 65535),
+                certificate_subject_json TEXT CHECK (certificate_subject_json IS NULL OR length(CAST(certificate_subject_json AS BLOB)) <= 2048),
+                certificate_issuer_json TEXT CHECK (certificate_issuer_json IS NULL OR length(CAST(certificate_issuer_json AS BLOB)) <= 2048),
+                not_before TEXT CHECK (not_before IS NULL OR length(not_before) <= 64),
+                not_after TEXT CHECK (not_after IS NULL OR length(not_after) <= 64),
+                subject_alt_names_json TEXT CHECK (subject_alt_names_json IS NULL OR length(CAST(subject_alt_names_json AS BLOB)) <= 4096),
+                sha256_fingerprint TEXT CHECK (sha256_fingerprint IS NULL OR (length(sha256_fingerprint) = 64 AND sha256_fingerprint NOT GLOB '*[^0-9a-f]*')),
+                error_category TEXT CHECK (error_category IS NULL OR length(error_category) <= 64),
+                CHECK (
+                    (verification_status = 'VERIFIED' AND sha256_fingerprint IS NOT NULL
+                     AND certificate_subject_json IS NOT NULL AND certificate_issuer_json IS NOT NULL
+                     AND subject_alt_names_json IS NOT NULL AND error_category IS NULL)
+                    OR
+                    (verification_status != 'VERIFIED' AND sha256_fingerprint IS NULL
+                     AND certificate_subject_json IS NULL AND certificate_issuer_json IS NULL
+                     AND not_before IS NULL AND not_after IS NULL AND subject_alt_names_json IS NULL)
+                ),
+                FOREIGN KEY (endpoint_observation_id) REFERENCES http_endpoint_observations(id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_http_endpoint_scope_device_port_time ON http_endpoint_observations(scope_id, device_id, port_id, observed_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_http_endpoint_target ON http_endpoint_observations(scan_target_id)",
+        ),
+    ),
 
 )
 

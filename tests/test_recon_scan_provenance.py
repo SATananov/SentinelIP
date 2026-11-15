@@ -32,28 +32,76 @@ def test_migration_48_preserves_existing_schema_and_records_failed_scope_run(tmp
         assert "scan_run_id" in {row[1] for row in connection.execute("PRAGMA table_info(port_observations)")}
         assert run == ("FAILED", "timeout")
         assert target == ("FAILED",)
-        assert version == 48
+        assert version == 49
         assert scope_id["id"] > 0
 
 
-def test_migration_48_is_idempotent(tmp_path):
+def test_migration_49_is_idempotent(tmp_path):
     path = tmp_path / "migrations.db"
     initialize_database(path)
     initialize_database(path)
     with get_connection(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=48").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=49").fetchone()[0] == 1
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 49
 
 
 def test_migration_47_database_upgrades_additively_to_48(tmp_path, monkeypatch):
     path = tmp_path / "from-47.db"
-    connection = sqlite3.connect(path)
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, source_ip TEXT NOT NULL, username TEXT, event_type TEXT NOT NULL, severity TEXT NOT NULL, message TEXT NOT NULL, event_count INTEGER NOT NULL)")
     all_migrations = migrations.MIGRATIONS
-    monkeypatch.setattr(migrations, "MIGRATIONS", tuple(item for item in all_migrations if item[0] < 48))
-    migrations.apply_migrations(connection)
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
-    monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-    migrations.apply_migrations(connection)
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 48
-    connection.close()
+    with monkeypatch.context() as version_47:
+        version_47.setattr(migrations, "MIGRATIONS", tuple(item for item in all_migrations if item[0] <= 47))
+        initialize_database(path)
+    assert migrations.MIGRATIONS is all_migrations
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='recon_scan_runs'").fetchone() is None
+        assert "scan_run_id" not in {row[1] for row in connection.execute("PRAGMA table_info(port_observations)")}
+        connection.execute(
+            """INSERT INTO events
+               (timestamp, source_ip, username, event_type, severity, message, event_count)
+               VALUES ('2026-01-01T00:00:00+00:00', '192.0.2.10', NULL, 'TEST', 'INFO', 'preserved', 1)"""
+        )
+    with monkeypatch.context() as version_48:
+        version_48.setattr(migrations, "MIGRATIONS", tuple(item for item in all_migrations if item[0] <= 48))
+        initialize_database(path)
+    assert migrations.MIGRATIONS is all_migrations
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 48
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=48").fetchone()[0] == 1
+        assert connection.execute("SELECT message FROM events").fetchone()[0] == "preserved"
+        assert {"recon_scan_runs", "recon_scan_targets"} <= {
+            row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {"scan_run_id"} <= {
+            row[1] for row in connection.execute("PRAGMA table_info(port_observations)")
+        }
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_migration_48_database_upgrades_additively_to_49(tmp_path, monkeypatch):
+    path = tmp_path / "from-48.db"
+    all_migrations = migrations.MIGRATIONS
+    with monkeypatch.context() as version_48:
+        version_48.setattr(migrations, "MIGRATIONS", tuple(item for item in all_migrations if item[0] <= 48))
+        initialize_database(path)
+    assert migrations.MIGRATIONS is all_migrations
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 48
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='recon_scan_targets'").fetchone()
+        assert "scan_run_id" in {row[1] for row in connection.execute("PRAGMA table_info(port_observations)")}
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='http_endpoint_observations'").fetchone() is None
+        connection.execute(
+            """INSERT INTO events
+               (timestamp, source_ip, username, event_type, severity, message, event_count)
+               VALUES ('2026-01-01T00:00:00+00:00', '192.0.2.11', NULL, 'TEST', 'INFO', 'preserved', 1)"""
+        )
+    initialize_database(path)
+    initialize_database(path)
+    with get_connection(path) as connection:
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 49
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=49").fetchone()[0] == 1
+        assert connection.execute("SELECT message FROM events").fetchone()[0] == "preserved"
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='http_endpoint_observations'").fetchone()
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name='http_tls_observations'").fetchone()
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

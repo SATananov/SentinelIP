@@ -91,7 +91,7 @@ def test_schema_45_upgrade_adds_only_expected_indexes_and_preserves_rows(tmp_pat
     initialize_database(path)
 
     with get_connection(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 49
         after_rows = {
             table: connection.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
             for table in before_rows
@@ -120,8 +120,8 @@ def test_fresh_database_reaches_schema_47_with_both_perimeter_indexes(tmp_path):
     initialize_database(path)
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 47
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 49
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 49
         for index_name, (table, column) in INDEX_COLUMNS.items():
             assert _perimeter_index_columns(connection, table)[index_name] == (column,)
             assert connection.execute(
