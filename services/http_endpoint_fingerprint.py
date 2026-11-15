@@ -1,10 +1,12 @@
 import asyncio
 from datetime import datetime, timezone
+import hashlib
 import ipaddress
 import json
 import re
 import sqlite3
 import socket
+import ssl
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -38,6 +40,9 @@ HTTP_MAX_HEADER_BYTES = 32_768
 HTTP_MAX_METADATA_BYTES = 8_192
 HTTP_MAX_HEADER_VALUE_BYTES = 512
 HTTP_MAX_REDIRECT_BYTES = 1_024
+TLS_MAX_HANDSHAKE_BYTES = 262_144
+TLS_MAX_METADATA_ENTRIES = 8
+TLS_MAX_METADATA_VALUE_BYTES = 128
 _HTTP_OPERATION_SLOTS = threading.BoundedSemaphore(HTTP_OPERATION_LIMIT)
 _STATUS_LINE = re.compile(rb"HTTP/1\.[01] ([1-5][0-9]{2})(?: [^\r\n]*)?\Z")
 _HEADER_NAME = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -74,6 +79,14 @@ class _DeadlineExceeded(Exception):
     pass
 
 
+class _TLSHandshakeFailure(Exception):
+    def __init__(self, category, *, verification_failed=False, hostname_failed=False):
+        super().__init__(category)
+        self.category = category
+        self.verification_failed = verification_failed
+        self.hostname_failed = hostname_failed
+
+
 class _DirectSocketChannel:
     def __init__(self, sock):
         self.sock = sock
@@ -87,6 +100,100 @@ class _DirectSocketChannel:
 
     def close(self):
         self.sock.close()
+
+
+class _TLSChannel:
+    def __init__(self, channel, ssl_object, incoming, outgoing):
+        self.channel = channel
+        self.ssl_object = ssl_object
+        self.incoming = incoming
+        self.outgoing = outgoing
+        self.received_handshake_bytes = 0
+
+    @classmethod
+    async def establish(cls, channel, context, server_hostname, deadline):
+        if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+            raise _TLSHandshakeFailure("verification_policy_invalid", verification_failed=True)
+        incoming = ssl.MemoryBIO()
+        outgoing = ssl.MemoryBIO()
+        try:
+            ssl_object = context.wrap_bio(
+                incoming, outgoing, server_side=False, server_hostname=server_hostname,
+            )
+            wrapped = cls(channel, ssl_object, incoming, outgoing)
+            await wrapped._handshake(deadline)
+            return wrapped
+        except _TLSHandshakeFailure:
+            raise
+        except ssl.SSLCertVerificationError as exc:
+            category = _certificate_error_category(exc)
+            raise _TLSHandshakeFailure(
+                category, verification_failed=True,
+                hostname_failed=category in {"hostname_mismatch", "ip_address_mismatch"},
+            ) from exc
+        except ssl.SSLError as exc:
+            raise _TLSHandshakeFailure(_tls_error_category(exc)) from exc
+        except _DeadlineExceeded as exc:
+            raise _TLSHandshakeFailure("handshake_timeout") from exc
+
+    async def _flush(self, deadline):
+        while self.outgoing.pending:
+            block = self.outgoing.read(min(self.outgoing.pending, 16_384))
+            await _wait_until(self.channel.sendall(block, deadline), deadline)
+
+    async def _receive_encrypted(self, deadline, *, handshake=False):
+        limit = TLS_MAX_HANDSHAKE_BYTES - self.received_handshake_bytes if handshake else 16_384
+        if limit <= 0:
+            raise _TLSHandshakeFailure("handshake_size_limit")
+        block = await _wait_until(
+            self.channel.recv(min(16_384, limit), deadline), deadline,
+        )
+        if not block:
+            self.incoming.write_eof()
+            return
+        if handshake:
+            self.received_handshake_bytes += len(block)
+        self.incoming.write(block)
+
+    async def _handshake(self, deadline):
+        while True:
+            try:
+                self.ssl_object.do_handshake()
+                await self._flush(deadline)
+                return
+            except ssl.SSLWantReadError:
+                await self._flush(deadline)
+                await self._receive_encrypted(deadline, handshake=True)
+            except ssl.SSLWantWriteError:
+                await self._flush(deadline)
+
+    async def sendall(self, data, deadline):
+        view = memoryview(data)
+        while view:
+            try:
+                written = self.ssl_object.write(view)
+                view = view[written:]
+                await self._flush(deadline)
+            except ssl.SSLWantReadError:
+                await self._flush(deadline)
+                await self._receive_encrypted(deadline)
+            except ssl.SSLWantWriteError:
+                await self._flush(deadline)
+
+    async def recv(self, size, deadline):
+        while True:
+            try:
+                return self.ssl_object.read(size)
+            except ssl.SSLWantReadError:
+                await self._flush(deadline)
+                await self._receive_encrypted(deadline)
+            except ssl.SSLWantWriteError:
+                await self._flush(deadline)
+            except ssl.SSLZeroReturnError:
+                return b""
+
+    def close(self):
+        self.channel.close()
 
 
 class DirectIPv4Connector:
@@ -120,6 +227,118 @@ async def _wait_until(awaitable, deadline, timeout_cap=None):
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise _DeadlineExceeded from exc
+
+
+def _certificate_error_category(error):
+    code = getattr(error, "verify_code", None)
+    message = str(getattr(error, "verify_message", "") or error).lower()
+    if code in {10, 11} or "expired" in message:
+        return "certificate_expired"
+    if code in {9} or "not yet valid" in message:
+        return "certificate_not_yet_valid"
+    if code in {18, 19} or "self signed" in message:
+        return "self_signed_certificate"
+    if code in {62} or "hostname mismatch" in message:
+        return "hostname_mismatch"
+    if code in {64} or "ip address mismatch" in message:
+        return "ip_address_mismatch"
+    if any(token in message for token in ("malformed", "decode", "bad certificate")):
+        return "malformed_certificate"
+    return "untrusted_certificate"
+
+
+def _tls_error_category(error):
+    reason = str(getattr(error, "reason", "")).upper()
+    message = str(error).lower()
+    if (reason in {"UNSUPPORTED_PROTOCOL", "PROTOCOL_VERSION"}
+            or "protocol version" in message or "unsupported protocol" in message):
+        return "unsupported_protocol"
+    if (reason in {"BAD_CERTIFICATE", "CERTIFICATE_UNKNOWN", "DECODE_ERROR"}
+            or any(token in message for token in ("bad certificate", "decode error", "malformed certificate"))):
+        return "malformed_certificate"
+    return "handshake_failure"
+
+
+def _bounded_certificate_values(values, *, nested=False):
+    result = []
+    limit = 4 if nested else TLS_MAX_METADATA_ENTRIES
+    for item in values[:limit]:
+        if nested and isinstance(item, (list, tuple)):
+            for key, value in item[:4]:
+                result.append({
+                    "name": _truncate_utf8(str(key), 64),
+                    "value": _truncate_utf8(str(value), TLS_MAX_METADATA_VALUE_BYTES),
+                })
+                if len(result) >= TLS_MAX_METADATA_ENTRIES:
+                    return result
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            result.append({
+                "type": _truncate_utf8(str(item[0]), 32),
+                "value": _truncate_utf8(str(item[1]), TLS_MAX_METADATA_VALUE_BYTES),
+            })
+    return result
+
+
+def _empty_tls_observation(endpoint, *, error_category=None, certificate_status="NOT_COMPLETED"):
+    hostname = endpoint["hostname"]
+    return {
+        "protocol_version": None,
+        "cipher": None,
+        "certificate_subject": [],
+        "certificate_issuer": [],
+        "not_before": None,
+        "not_after": None,
+        "subject_alt_names": [],
+        "sha256_fingerprint": None,
+        "certificate_verification": certificate_status,
+        "hostname_verification": "NOT_COMPLETED" if hostname else None,
+        "ip_address_verification": None if hostname else "NOT_COMPLETED",
+        "verification_name": hostname or endpoint["target_ip"],
+        "error_category": error_category,
+    }
+
+
+def _verified_tls_observation(ssl_object, endpoint):
+    try:
+        certificate = ssl_object.getpeercert()
+        certificate_der = ssl_object.getpeercert(binary_form=True)
+    except (ssl.SSLError, ValueError) as exc:
+        raise _TLSHandshakeFailure("malformed_certificate") from exc
+    if not certificate or not certificate_der:
+        raise _TLSHandshakeFailure("malformed_certificate")
+    cipher = ssl_object.cipher()
+    if not cipher:
+        raise _TLSHandshakeFailure("handshake_failure")
+    return {
+        "protocol_version": _truncate_utf8(str(ssl_object.version() or ""), 32),
+        "cipher": {
+            "name": _truncate_utf8(str(cipher[0]), 128),
+            "protocol": _truncate_utf8(str(cipher[1]), 32),
+            "bits": int(cipher[2]),
+        },
+        "certificate_subject": _bounded_certificate_values(certificate.get("subject", ()), nested=True),
+        "certificate_issuer": _bounded_certificate_values(certificate.get("issuer", ()), nested=True),
+        "not_before": _truncate_utf8(str(certificate.get("notBefore", "")), 64) or None,
+        "not_after": _truncate_utf8(str(certificate.get("notAfter", "")), 64) or None,
+        "subject_alt_names": _bounded_certificate_values(certificate.get("subjectAltName", ())),
+        "sha256_fingerprint": hashlib.sha256(certificate_der).hexdigest(),
+        "certificate_verification": "VERIFIED",
+        "hostname_verification": "MATCHED" if endpoint["hostname"] else None,
+        "ip_address_verification": None if endpoint["hostname"] else "MATCHED",
+        "verification_name": endpoint["hostname"] or endpoint["target_ip"],
+        "error_category": None,
+    }
+
+
+def _result_with_tls(result, scheme, endpoint, observation=None, error_category=None):
+    if scheme != "https":
+        return result
+    tls = observation or _empty_tls_observation(endpoint, error_category=error_category)
+    if error_category is not None and observation is None:
+        tls["error_category"] = error_category
+    combined = {**result, "tls": tls}
+    _bound_metadata(combined)
+    return combined
 
 
 def _timestamp():
@@ -300,19 +519,19 @@ class HttpEndpointFingerprintService:
             raise HostnameReauthorizationRequired("Approved hostname address set changed.")
 
     async def inspect(self, scope_id, device_id, port_id, *, scheme="http"):
-        if scheme != "http":
-            raise HttpEndpointError("Only the HTTP scheme is supported in this phase.", 422)
+        if not isinstance(scheme, str) or scheme not in ("http", "https"):
+            raise HttpEndpointError("Only HTTP and HTTPS schemes are supported.", 422)
         deadline = time.monotonic() + self.total_timeout_seconds
         endpoint = self._authorized_endpoint(scope_id, device_id, port_id)
         base = {
             "scope_id": scope_id,
             "device_id": device_id,
             "port_id": port_id,
-            "scheme": "http",
+            "scheme": scheme,
             "target_ip": endpoint["target_ip"],
             "host": endpoint["host_header"],
             "observed_at": _timestamp(),
-            "source": SOURCE_ID,
+            "source": SOURCE_ID if scheme == "http" else "https-tls-head-v1",
             "status_code": None,
             "response_headers": {},
             "content_type": None,
@@ -323,20 +542,31 @@ class HttpEndpointFingerprintService:
             "error_category": None,
         }
         if not self.operation_slots.acquire(blocking=False):
-            return {**base, "outcome": "CAPACITY_REJECTED", "error_category": "capacity"}
+            result = {**base, "outcome": "CAPACITY_REJECTED", "error_category": "capacity"}
+            return _result_with_tls(result, scheme, endpoint, error_category="capacity")
 
         channel = None
+        tls_observation = None
+        phase = "authorization"
         try:
             await self._revalidate_hostname(endpoint, deadline)
             endpoint = self._authorized_endpoint(scope_id, device_id, port_id)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _DeadlineExceeded
+            phase = "connect"
             channel = await _wait_until(
                 self.connector.connect(endpoint["target_ip"], endpoint["port"], deadline),
                 deadline,
                 HTTP_CONNECT_TIMEOUT_SECONDS,
             )
+            if scheme == "https":
+                phase = "tls_handshake"
+                context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+                server_hostname = endpoint["hostname"] or endpoint["target_ip"]
+                channel = await _TLSChannel.establish(channel, context, server_hostname, deadline)
+                tls_observation = _verified_tls_observation(channel.ssl_object, endpoint)
+            phase = "http_request"
             request = (
                 f"HEAD / HTTP/1.1\r\nHost: {endpoint['host_header']}\r\n"
                 f"User-Agent: SentinelIP-HTTP-Fingerprint/1.0\r\n"
@@ -369,19 +599,51 @@ class HttpEndpointFingerprintService:
                 "outcome": "RESPONSE_RECEIVED",
             }
             _bound_metadata(result)
-            return result
+            return _result_with_tls(result, scheme, endpoint, tls_observation)
         except asyncio.CancelledError:
             raise
+        except _TLSHandshakeFailure as exc:
+            status = "FAILED" if exc.verification_failed else "NOT_COMPLETED"
+            tls_observation = _empty_tls_observation(
+                endpoint, error_category=exc.category, certificate_status=status,
+            )
+            if exc.hostname_failed:
+                if endpoint["hostname"]:
+                    tls_observation["hostname_verification"] = "FAILED"
+                else:
+                    tls_observation["ip_address_verification"] = "FAILED"
+            outcome = "TLS_VERIFICATION_FAILED" if exc.verification_failed else (
+                "TIMEOUT" if exc.category == "handshake_timeout" else "TLS_HANDSHAKE_FAILED"
+            )
+            result = {
+                **base,
+                "outcome": outcome,
+                "error_category": exc.category,
+            }
+            return _result_with_tls(result, scheme, endpoint, tls_observation)
         except _DeadlineExceeded:
-            return {**base, "outcome": "TIMEOUT", "error_category": "timeout"}
+            result = {**base, "outcome": "TIMEOUT", "error_category": "timeout"}
+            tls_error = (
+                "connection_timeout" if phase == "connect" else
+                "operation_timeout" if phase == "http_request" else
+                "authorization_timeout"
+            )
+            return _result_with_tls(
+                result, scheme, endpoint, tls_observation,
+                tls_error if scheme == "https" else None,
+            )
         except _HeaderLimitExceeded:
-            return {**base, "outcome": "HEADER_LIMIT_EXCEEDED", "error_category": "header_limit"}
+            result = {**base, "outcome": "HEADER_LIMIT_EXCEEDED", "error_category": "header_limit"}
+            return _result_with_tls(result, scheme, endpoint, tls_observation, "header_limit")
         except _MalformedResponse:
-            return {**base, "outcome": "MALFORMED_RESPONSE", "error_category": "malformed_response"}
+            result = {**base, "outcome": "MALFORMED_RESPONSE", "error_category": "malformed_response"}
+            return _result_with_tls(result, scheme, endpoint, tls_observation, "malformed_response")
         except (OSError, asyncio.TimeoutError):
-            return {**base, "outcome": "CONNECTION_FAILED", "error_category": "connection_error"}
+            result = {**base, "outcome": "CONNECTION_FAILED", "error_category": "connection_error"}
+            return _result_with_tls(result, scheme, endpoint, tls_observation, "connection_error")
         except HostnameResolverUnavailable:
-            return {**base, "outcome": "DNS_REVALIDATION_FAILED", "error_category": "dns_unavailable"}
+            result = {**base, "outcome": "DNS_REVALIDATION_FAILED", "error_category": "dns_unavailable"}
+            return _result_with_tls(result, scheme, endpoint, tls_observation, "dns_unavailable")
         finally:
             try:
                 if channel is not None:

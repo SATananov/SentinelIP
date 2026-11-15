@@ -10,7 +10,7 @@ from services.http_endpoint_fingerprint import HttpEndpointError, HttpEndpointFi
 
 class HttpFingerprintRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    scheme: Literal["http"]
+    scheme: Literal["http", "https"]
 
 
 def register_http_fingerprint_routes(app: FastAPI, db_path_provider: Callable):
