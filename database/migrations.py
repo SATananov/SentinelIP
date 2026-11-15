@@ -1771,6 +1771,19 @@ MIGRATIONS = (
             "CREATE INDEX idx_perimeter_policy_correlations_primary_event ON perimeter_policy_correlations(primary_event_id)",
         ),
     ),
+    (
+        47,
+        """
+        CREATE TABLE IF NOT EXISTS cve_intelligence (
+            cve_id TEXT PRIMARY KEY,
+            intelligence_json TEXT NOT NULL,
+            source_status_json TEXT NOT NULL,
+            source_timestamps_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+    ),
 
 )
 

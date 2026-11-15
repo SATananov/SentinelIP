@@ -28,7 +28,7 @@ def test_new_database_is_secure_before_sqlite_initialization(tmp_path, umask):
 
     assert _mode(path) == 0o600
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
 
 
 def test_sqlite_never_opens_new_database_before_mode_is_secure(tmp_path, monkeypatch):
@@ -395,7 +395,7 @@ def test_secure_online_backup_and_restore_preserve_schema_and_integrity(tmp_path
         try:
             source.backup(backup)
             assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-            assert backup.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
+            assert backup.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
         finally:
             backup.close()
     finally:
@@ -407,7 +407,7 @@ def test_secure_online_backup_and_restore_preserve_schema_and_integrity(tmp_path
     try:
         backup.backup(restored)
         assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert restored.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 46
+        assert restored.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 47
     finally:
         restored.close()
         backup.close()

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from services.recon_assessment_exports import (
     render_assessment_html,
     render_assessment_pdf,
 )
+from services.vulnerability_intelligence import project_cached_intelligence
 
 REPORT_SCHEMA_VERSION = "1.0"
 MAX_DEVICES = 100
@@ -28,16 +30,17 @@ MAX_SERVICES = 50
 MAX_FINDINGS = 25
 MAX_CVE_MATCHES = 50
 MAX_EVIDENCE = 20
+MAX_REPORT_BYTES = 15_728_640
 
 
 def register_recon_assessment_report_routes(app: FastAPI, db_path_provider: Callable):
     @app.get("/recon/scopes/{scope_id}/assessment-report", dependencies=[Depends(local_management)])
     def get_assessment_report(scope_id: int):
-        return build_assessment_report(scope_id, db_path_provider())
+        return _bounded_assessment_report(scope_id, db_path_provider())
 
     def export(scope_id, renderer, media_type, extension):
         path = db_path_provider()
-        report = build_assessment_report(scope_id, path)
+        report = _bounded_assessment_report(scope_id, path)
         images = load_export_images(report, path)
         try:
             body = renderer(report, images)
@@ -63,6 +66,13 @@ def register_recon_assessment_report_routes(app: FastAPI, db_path_provider: Call
     @app.get("/recon/scopes/{scope_id}/assessment-report/html", dependencies=[Depends(local_management)])
     def get_assessment_report_html(scope_id: int):
         return export(scope_id, render_assessment_html, HTML_MIME, "html")
+
+
+def _bounded_assessment_report(scope_id, db_path):
+    report = build_assessment_report(scope_id, db_path)
+    if len(json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_REPORT_BYTES:
+        raise HTTPException(413, "Assessment report exceeds the configured output limit.")
+    return report
 
 
 def build_assessment_report(scope_id: int, db_path: str):
@@ -129,6 +139,7 @@ def build_assessment_report(scope_id: int, db_path: str):
         services_scanned = 0
         assets_without_services = 0
         unverified_cves = 0
+        manually_verified_cves = 0
         for device in devices:
             device_id = device["id"]
             ports = connection.execute(
@@ -183,16 +194,66 @@ def build_assessment_report(scope_id: int, db_path: str):
                 value["finding_status"] = value.pop("status")
                 value["verification_status"] = "NOT_RECORDED"
                 all_findings.append(value)
+            intelligence_columns = (
+                "ci.intelligence_json,ci.source_status_json,ci.source_timestamps_json,ci.fetched_at"
+                if _table_exists(connection, "cve_intelligence")
+                else "NULL AS intelligence_json,NULL AS source_status_json,NULL AS source_timestamps_json,NULL AS fetched_at"
+            )
+            intelligence_join = "LEFT JOIN cve_intelligence ci ON ci.cve_id=r.cve_id" if _table_exists(connection, "cve_intelligence") else ""
             cves = connection.execute(
-                """SELECT m.id,r.cve_id,m.status AS match_status,m.confidence,m.match_reason,
-                          m.service_id,m.finding_id
-                   FROM cve_matches m JOIN cve_records r ON r.id=m.cve_record_id
+                f"""SELECT m.id,r.cve_id,m.status AS match_status,m.confidence,m.match_reason,
+                          m.service_id,m.finding_id,m.observed_product,m.observed_version,
+                          m.metadata_json AS match_metadata_json,r.source,r.product,r.vendor,
+                          r.version_expression,{intelligence_columns}
+                   FROM cve_matches m JOIN cve_records r ON r.id=m.cve_record_id {intelligence_join}
                    WHERE m.device_id=? ORDER BY m.id LIMIT ?""",
                 (device_id, MAX_CVE_MATCHES + 1),
             ).fetchall()
             cves_truncated = len(cves) > MAX_CVE_MATCHES
             cves = cves[:MAX_CVE_MATCHES]
-            unverified_cves += len(cves)
+            cve_projection = []
+            for match in cves:
+                value = _bounded_row(match, {"cve_id": 32, "match_status": 32, "confidence": 32,
+                                              "match_reason": 1000, "observed_product": 255,
+                                              "observed_version": 128, "source": 255,
+                                              "product": 255, "vendor": 255,
+                                              "version_expression": 500})
+                try:
+                    match_metadata = json.loads(match["match_metadata_json"]) if match["match_metadata_json"] else None
+                except (TypeError, json.JSONDecodeError):
+                    match_metadata = None
+                value.pop("match_metadata_json", None)
+                try:
+                    cached_intelligence = ({
+                        "cve_id": match["cve_id"],
+                        "intelligence": json.loads(match["intelligence_json"]),
+                        "source_status": json.loads(match["source_status_json"]),
+                        "source_timestamps": json.loads(match["source_timestamps_json"]),
+                        "fetched_at": match["fetched_at"],
+                    } if match["intelligence_json"] else None)
+                except (TypeError, json.JSONDecodeError):
+                    cached_intelligence = None
+                value["intelligence"] = project_cached_intelligence(
+                    cached_intelligence, match["match_status"], match["confidence"],
+                    match["observed_product"], match["observed_version"],
+                    match["match_reason"], match_metadata,
+                )
+                value["verification_status"] = (
+                    value["intelligence"]["version_match"]
+                    if match["match_status"] == "CONFIRMED_ISSUE"
+                    else "UNVERIFIED"
+                )
+                manual_verification = match_metadata.get("manual_verification") if isinstance(match_metadata, dict) else None
+                if value["verification_status"] == "MANUALLY_VERIFIED" and isinstance(manual_verification, dict):
+                    value["manual_verification"] = {
+                        "verified_at": _bounded_text(manual_verification.get("verified_at"), 64),
+                        "verified_by": _bounded_text(manual_verification.get("verified_by"), 128),
+                        "evidence": _bounded_text(manual_verification.get("evidence"), 2000),
+                    }
+                    manually_verified_cves += 1
+                else:
+                    unverified_cves += 1
+                cve_projection.append(value)
             evidence = connection.execute(
                 """SELECT id,device_id,finding_id,description,filename,media_type,created_at
                        FROM recon_evidence WHERE device_id=? AND (finding_id IS NULL OR finding_id IN
@@ -209,8 +270,7 @@ def build_assessment_report(scope_id: int, db_path: str):
                 "services": [_bounded_row(row, {"service_name": 255, "product": 255, "version": 255,
                                                    "extra_info": 1000, "confidence": 32}) for row in services],
                 "findings": [_finding_projection(row) for row in findings],
-                "cve_matches": [_bounded_row(row, {"cve_id": 32, "match_status": 32, "confidence": 32,
-                                                     "match_reason": 1000}) for row in cves],
+                "cve_matches": cve_projection,
                 "evidence": [_bounded_row(row, {"description": 500, "filename": 160, "media_type": 64,
                                                    "created_at": 64}) for row in evidence],
                 "truncation": {"ports": ports_truncated, "services": services_truncated,
@@ -241,6 +301,7 @@ def build_assessment_report(scope_id: int, db_path: str):
                          "assets_without_service_evidence": assets_without_services,
                          "potential_vulnerabilities": len(all_findings) + unverified_cves,
                          "confirmed_findings": sum(1 for x in all_findings if str(x["verification_status"]).upper() in {"CONFIRMED", "VERIFIED"}),
+                         "manually_verified_cve_matches": manually_verified_cves,
                          "unverified_cve_matches": unverified_cves,
                          "data_incomplete": truncated or any(any(d["truncation"].values()) for d in result_devices),
                          "limitations": ["No findings does not prove that a device is secure.",

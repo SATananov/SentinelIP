@@ -173,10 +173,10 @@ def render_assessment_pdf(report, images):
                     story.append(Paragraph(_escape(f"Screenshots linked to finding: {finding.get('title')}"), styles["Heading4"]))
                     _pdf_render_evidence(story, linked, images, small, mm)
         if item["cve_matches"]:
-            story.append(Paragraph("CVE matches — not confirmed vulnerabilities", styles["Heading3"]))
-            story += _pdf_data_table([["CVE", "Match status", "Verification", "Confidence", "Service ID", "Finding ID", "Match evidence"]] + [
-                [match.get("cve_id"), match.get("match_status"), "NOT_VERIFIED", match.get("confidence"),
-                 match.get("service_id"), match.get("finding_id"), match.get("match_reason")]
+            story.append(Paragraph("CVE matches and verification status", styles["Heading3"]))
+            story += _pdf_data_table([["CVE", "Match status", "Verification", "Confidence", "Service ID", "Finding ID", "Match evidence and intelligence"]] + [
+                [match.get("cve_id"), match.get("match_status"), match.get("verification_status", "UNVERIFIED"), match.get("confidence"),
+                 match.get("service_id"), match.get("finding_id"), _cve_intelligence_summary(match)]
                 for match in item["cve_matches"]], small)
         if item["evidence"]:
             visible_findings = {finding["id"] for finding in item["findings"]}
@@ -277,10 +277,10 @@ def render_assessment_docx(report, images):
                     document.add_heading(f"Evidence linked to: {finding.get('title')}", level=4)
                     _docx_render_evidence(document, linked, images)
         if item["cve_matches"]:
-            document.add_heading("CVE matches — unverified", level=3)
-            _docx_table(document, [["CVE", "Match status", "Verification", "Confidence", "Service ID", "Finding ID", "Evidence"]] + [
-                [x.get("cve_id"), x.get("match_status"), "NOT_VERIFIED", x.get("confidence"),
-                 x.get("service_id"), x.get("finding_id"), x.get("match_reason")]
+            document.add_heading("CVE matches and verification status", level=3)
+            _docx_table(document, [["CVE", "Match status", "Verification", "Confidence", "Service ID", "Finding ID", "Evidence and intelligence"]] + [
+                [x.get("cve_id"), x.get("match_status"), x.get("verification_status", "UNVERIFIED"), x.get("confidence"),
+                 x.get("service_id"), x.get("finding_id"), _cve_intelligence_summary(x)]
                 for x in item["cve_matches"]])
         if item["evidence"]:
             visible_findings = {finding["id"] for finding in item["findings"]}
@@ -359,7 +359,7 @@ def render_assessment_html(report, images):
                 if linked:
                     parts.append(f"<h5>Evidence linked to: {e(str(finding.get('title')))}</h5>" + _html_render_evidence(linked, images))
         if item["cve_matches"]:
-            parts.append("<h4>CVE matches — not confirmed vulnerabilities</h4>" + _html_table([["CVE","Match status","Verification","Confidence","Service ID","Finding ID","Evidence"]] + [[x.get("cve_id"),x.get("match_status"),"NOT_VERIFIED",x.get("confidence"),x.get("service_id"),x.get("finding_id"),x.get("match_reason")] for x in item["cve_matches"]]))
+            parts.append("<h4>CVE matches and verification status</h4>" + _html_table([["CVE","Match status","Verification","Confidence","Service ID","Finding ID","Evidence and intelligence"]] + [[x.get("cve_id"),x.get("match_status"),x.get("verification_status", "UNVERIFIED"),x.get("confidence"),x.get("service_id"),x.get("finding_id"),_cve_intelligence_summary(x)] for x in item["cve_matches"]]))
         if item["evidence"]:
             visible_findings = {finding["id"] for finding in item["findings"]}
             general = [evidence for evidence in item["evidence"]
@@ -498,6 +498,62 @@ def _pdf_page_number(canvas, document):
     canvas.setFillColorRGB(.25,.34,.42)
     canvas.drawRightString(195*mm, 9*mm, f"SentinelIP · Page {document.page}")
     canvas.restoreState()
+
+
+def _cve_intelligence_summary(match):
+    parts = [match.get("match_reason") or "No correlation explanation recorded."]
+    manual = match.get("manual_verification")
+    if isinstance(manual, dict):
+        parts.append(f"Manual verification recorded {manual.get('verified_at') or 'date unavailable'}: {manual.get('evidence') or 'evidence unavailable'}.")
+    intel = match.get("intelligence") or {}
+    data = intel.get("intelligence") or {}
+    parts.append(f"Version assessment: {intel.get('version_match', 'UNAVAILABLE')}.")
+    if data.get("vulnerability_status"):
+        parts.append(f"NVD vulnerability status: {data['vulnerability_status']}.")
+    cvss = data.get("cvss")
+    if isinstance(cvss, dict) and cvss.get("score") is not None:
+        parts.append(f"CVSS {cvss['score']} v{cvss.get('version') or 'unknown'}; source {cvss.get('source') or 'not recorded'}; vector {cvss.get('vector') or 'not recorded'}.")
+    else:
+        parts.append("CVSS unavailable.")
+    epss = data.get("epss")
+    if isinstance(epss, dict) and epss.get("probability") is not None:
+        parts.append(f"EPSS probability {epss['probability']}; percentile {epss.get('percentile') if epss.get('percentile') is not None else 'unavailable'}; observed {epss.get('observed_at') or 'date unavailable'}.")
+    else:
+        parts.append("EPSS unavailable.")
+    kev = data.get("kev")
+    kev_timestamps = intel.get("source_timestamps", {}).get("cisa_kev", {})
+    catalog_released = kev_timestamps.get("catalog_released_at")
+    if isinstance(kev, dict) and kev.get("member") is True:
+        parts.append(f"CISA KEV listed; added {kev.get('date_added') or 'date unavailable'}; due {kev.get('due_date') or 'date unavailable'}; catalog released {catalog_released or 'date unavailable'}.")
+    elif isinstance(kev, dict) and kev.get("member") is False:
+        parts.append(f"Not listed in cached CISA KEV catalog released {catalog_released or 'date unavailable'}.")
+    else:
+        parts.append("CISA KEV status unavailable.")
+    cwes = data.get("cwes") or []
+    if cwes:
+        parts.append("CWE: " + ", ".join(str(item) for item in cwes[:10]) + ".")
+    affected = data.get("affected_products") or []
+    affected_names = []
+    for item in affected[:3]:
+        if isinstance(item, dict):
+            label = " ".join(filter(None, [item.get("vendor"), item.get("product"), item.get("cpe")]))
+            bounds = [f"{key} {item[key]}" for key in ("version_start_including", "version_start_excluding",
+                      "version_end_including", "version_end_excluding") if item.get(key)]
+            if bounds:
+                label = " ".join(filter(None, [label, ", ".join(bounds)]))
+            if label:
+                affected_names.append(label[:300])
+    if affected_names:
+        parts.append("Affected product evidence: " + "; ".join(affected_names) + ".")
+    references = data.get("advisories") or []
+    urls = [item.get("url") for item in references[:3] if isinstance(item, dict) and item.get("url")]
+    if urls:
+        parts.append("References: " + "; ".join(str(url)[:300] for url in urls) + ".")
+    statuses = intel.get("source_status") or {}
+    if statuses:
+        parts.append("Source states: " + ", ".join(f"{source} {state}" for source, state in sorted(statuses.items())) + ".")
+    parts.append(f"Intelligence freshness: {intel.get('freshness', 'UNAVAILABLE')}.")
+    return " ".join(parts)
 
 
 def _docx_table(document, rows):
